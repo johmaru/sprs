@@ -1,0 +1,71 @@
+grammar;
+
+use crate::ast::{Item, VarDecl, Expr};
+use crate::lexer::Token;
+
+extern {
+    type Location = usize;
+    type Error = String;
+
+    enum Token {
+        LBrace => Token::LBrace,
+        RBrace => Token::RBrace,
+        LParen => Token::LParen,
+        RParen => Token::RParen,
+        Plus   => Token::Plus,
+        Star   => Token::Star,
+        Eq     => Token::Eq,
+        Semi   => Token::Semi,
+        IDENT  => Token::Ident(String),
+        NUM    => Token::Num(i64),
+    }
+}
+
+pub Start: Vec<Item> =
+    <first:ItemNode> <rest:MoreItems> => {
+        let mut v = vec![first];
+        v.extend(rest);
+        v
+    };
+
+MoreItems: Vec<Item> = {
+    => vec![],
+    <i:ItemNode> <mut rest:MoreItems> => {
+        let mut v = vec![i];
+        v.append(&mut rest);
+        v
+    }
+};
+
+ItemNode: Item =
+    <id:Ident> LBrace <decls:VarDecls> RBrace => Item { ident: id, blk: decls };
+
+VarDecls: Vec<VarDecl> = {
+    => vec![],
+    <v:VarDecl> <mut rest:VarDecls> => { rest.insert(0, v); rest }
+};
+
+VarDecl: VarDecl =
+    <id:Ident> Eq <e:Expr> Semi => VarDecl { ident: id, expr: e };
+
+Ident: String = <tok:IDENT> => {
+    match tok { Token::Ident(s) => s, _ => unreachable!() }
+};
+Num: i64     = <tok:NUM>   => {
+    match tok { Token::Num(n) => n, _ => unreachable!() }
+};
+
+Expr: Expr = {
+    <l:Expr> Plus <r:Term> => Expr::Add(Box::new(l), Box::new(r)),
+    <t:Term>               => t,
+};
+
+Term: Expr = {
+    <l:Term> Star <r:Factor> => Expr::Mul(Box::new(l), Box::new(r)),
+    <f:Factor>               => f,
+};
+
+Factor: Expr = {
+    <n:Num> => Expr::Number(n),
+    LParen <e:Expr> RParen => e,
+};
