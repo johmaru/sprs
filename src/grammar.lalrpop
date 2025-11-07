@@ -1,6 +1,6 @@
 grammar;
 
-use crate::ast::{Item, VarDecl, Expr};
+use crate::ast::{Item, VarDecl, Expr, Stmt};
 use crate::lexer::Token;
 
 extern {
@@ -15,7 +15,11 @@ extern {
         Plus   => Token::Plus,
         Star   => Token::Star,
         Eq     => Token::Eq,
+        EqEq   => Token::EqEq,
         Semi   => Token::Semi,
+        If     => Token::If,
+        Then   => Token::Then,
+        Else   => Token::Else,
         IDENT  => Token::Ident(String),
         NUM    => Token::Num(i64),
     }
@@ -38,7 +42,31 @@ MoreItems: Vec<Item> = {
 };
 
 ItemNode: Item =
-    <id:Ident> LBrace <decls:VarDecls> RBrace => Item { ident: id, blk: decls };
+    <id:Ident> <blk:Block> => Item { ident: id, blk };
+
+Block: Vec<Stmt> =
+    LBrace <stmts:Stmts> RBrace => stmts;
+
+Stmts: Vec<Stmt> = {
+    => vec![],
+    <s:Stmt> <mut rest:Stmts> => { rest.insert(0, s); rest }
+};
+
+Stmt: Stmt = {
+    <v:VarDecl> => Stmt::Var(v),
+    If <c:Expr> Then <then:Block> Else <else_blk:Block> =>
+        Stmt::If {
+            cond: c,
+            then_blk: then,
+            else_blk: Some(else_blk),
+        },
+    If <c:Expr> Then <then:Block> =>
+        Stmt::If {
+            cond: c,
+            then_blk: then,
+            else_blk: None,
+        },
+}
 
 VarDecls: Vec<VarDecl> = {
     => vec![],
@@ -55,13 +83,20 @@ Num: i64     = <tok:NUM>   => {
     match tok { Token::Num(n) => n, _ => unreachable!() }
 };
 
-Expr: Expr = {
-    <l:Expr> Plus <r:Term> => Expr::Add(Box::new(l), Box::new(r)),
-    <t:Term>               => t,
+Expr: Expr = Equality;
+
+Equality: Expr = {
+    <l:Equality> EqEq <r:Add> => Expr::Eq(Box::new(l), Box::new(r)),
+    <a:Add>                   => a,
+}
+
+Add: Expr = {
+    <l:Add> Plus <r:Mul> => Expr::Add(Box::new(l), Box::new(r)),
+    <m:Mul>              => m,
 };
 
-Term: Expr = {
-    <l:Term> Star <r:Factor> => Expr::Mul(Box::new(l), Box::new(r)),
+Mul: Expr = {
+    <l:Mul> Star <r:Factor> => Expr::Mul(Box::new(l), Box::new(r)),
     <f:Factor>               => f,
 };
 

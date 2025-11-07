@@ -2,24 +2,54 @@ use logos::Logos;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
-    LBrace, RBrace, LParen, RParen, Plus, Star, Eq, Semi,
+    LBrace,
+    RBrace,
+    LParen,
+    RParen,
+    Plus,
+    Star,
+    Eq,
+    EqEq,
+    Semi,
+    If,
+    Then,
+    Else,
     Ident(String),
     Num(i64),
 }
 
 #[derive(Logos, Debug, Clone, PartialEq)]
 enum RawTok {
-    #[token("{")] LBrace,
-    #[token("}")] RBrace,
-    #[token("(")] LParen,
-    #[token(")")] RParen,
-    #[token("+")] Plus,
-    #[token("*")] Star,
-    #[token("=")] Eq,
-    #[token(";")] Semi,
-    #[regex(r"[A-Za-z_][A-Za-z0-9_]*")] Ident,
-    #[regex(r"[0-9]+")] Num,
-    #[regex(r"[ \t\r\n\f]+", logos::skip)] WS,
+    #[token("{")]
+    LBrace,
+    #[token("}")]
+    RBrace,
+    #[token("(")]
+    LParen,
+    #[token(")")]
+    RParen,
+    #[token("+")]
+    Plus,
+    #[token("*")]
+    Star,
+    #[token("=")]
+    Eq,
+    #[token("==")]
+    EqEq,
+    #[token(";")]
+    Semi,
+    #[token("if")]
+    If,
+    #[token("then")]
+    Then,
+    #[token("else")]
+    Else,
+    #[regex(r"[A-Za-z_][A-Za-z0-9_]*")]
+    Ident,
+    #[regex(r"[0-9]+")]
+    Num,
+    #[regex(r"[ \t\r\n\f]+", logos::skip)]
+    WS,
 }
 
 pub struct Lexer<'input> {
@@ -59,7 +89,11 @@ impl<'input> Iterator for Lexer<'input> {
             RawTok::Plus => Token::Plus,
             RawTok::Star => Token::Star,
             RawTok::Eq => Token::Eq,
+            RawTok::EqEq => Token::EqEq,
             RawTok::Semi => Token::Semi,
+            RawTok::If => Token::If,
+            RawTok::Then => Token::Then,
+            RawTok::Else => Token::Else,
             RawTok::Ident => Token::Ident(text.to_string()),
             RawTok::Num => Token::Num(text.parse().unwrap()),
             RawTok::WS => unreachable!(),

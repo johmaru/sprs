@@ -1,12 +1,14 @@
-use core::slice;
-
 mod ast;
 mod grammar;
-mod sema_builder;
 mod lexer;
+mod sema_builder;
+mod type_helper;
 
 fn main() {
+    // Example input
     let input = "test{a=1;b=2*3;} test2{c=4;}";
+
+    // Debug: print all tokens
     {
         let mut lex = lexer::Lexer::new(input);
         println!("-- tokens --");
@@ -18,6 +20,8 @@ fn main() {
         }
         println!("------------");
     }
+
+    // Parse the input
     let mut lex = lexer::Lexer::new(input);
     match grammar::StartParser::new().parse(&mut lex) {
         Ok(items) => {
@@ -25,11 +29,16 @@ fn main() {
             for sig in &sigs {
                 println!("Item signature: {:?}", sig);
             }
-            let vardecls = sema_builder::collect_all_vardecls(&items, &sigs);
+            let vardecls = sema_builder::build_var_table(&items, &sigs);
             for (item_name, vardecl) in &vardecls {
-                println!("VarDecl in {}: {:?}", item_name, vardecl);
+                for var_info in vardecl {
+                    println!(
+                        "In item '{}', found var decl: {:?} with type hint: {:?}",
+                        item_name, var_info.decl, var_info.ty_hint
+                    );
+                }
             }
-        },
+        }
         Err(e) => eprintln!("Error parsing input: {:?}", e),
     }
 }
