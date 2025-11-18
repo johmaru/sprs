@@ -11,11 +11,13 @@ pub enum Token {
     Eq,
     EqEq,
     Semi,
+    Comma,
     If,
     Then,
     Else,
     Ident(String),
     Num(i64),
+    Function,
 }
 
 #[derive(Logos, Debug, Clone, PartialEq)]
@@ -38,6 +40,8 @@ enum RawTok {
     EqEq,
     #[token(";")]
     Semi,
+    #[token(",")]
+    Comma,
     #[token("if")]
     If,
     #[token("then")]
@@ -50,6 +54,8 @@ enum RawTok {
     Num,
     #[regex(r"[ \t\r\n\f]+", logos::skip)]
     WS,
+    #[token("fn")]
+    Function,
 }
 
 pub struct Lexer<'input> {
@@ -91,12 +97,14 @@ impl<'input> Iterator for Lexer<'input> {
             RawTok::Eq => Token::Eq,
             RawTok::EqEq => Token::EqEq,
             RawTok::Semi => Token::Semi,
+            RawTok::Comma => Token::Comma,
             RawTok::If => Token::If,
             RawTok::Then => Token::Then,
             RawTok::Else => Token::Else,
             RawTok::Ident => Token::Ident(text.to_string()),
             RawTok::Num => Token::Num(text.parse().unwrap()),
             RawTok::WS => unreachable!(),
+            RawTok::Function => Token::Function,
         };
         Some(Ok((s, t, e)))
     }

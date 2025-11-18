@@ -4,9 +4,25 @@ mod lexer;
 mod sema_builder;
 mod type_helper;
 
+fn find_entry<'a>(sigs: &'a [sema_builder::ItemSig]) -> Result<&'a sema_builder::ItemSig, String> {
+    if let Some(main) = sigs.iter().find(|s| s.name == "main") {
+        return Ok(main);
+    }
+    sigs.first().ok_or_else(|| "no functions found".to_string())
+}
+
 fn main() {
     // Example input
-    let input = "test{a=1;b=2*3;} test2{c=4;}";
+    let input = r#"
+        fn test() {
+            a = 5;
+            b = 10;
+        }
+
+        fn main() {
+            x = 1;
+        }
+    "#;
 
     // Debug: print all tokens
     {
@@ -23,22 +39,29 @@ fn main() {
 
     // Parse the input
     let mut lex = lexer::Lexer::new(input);
-    match grammar::StartParser::new().parse(&mut lex) {
-        Ok(items) => {
-            let sigs = sema_builder::collect_signatures(&items);
-            for sig in &sigs {
-                println!("Item signature: {:?}", sig);
-            }
-            let vardecls = sema_builder::build_var_table(&items, &sigs);
-            for (item_name, vardecl) in &vardecls {
-                for var_info in vardecl {
-                    println!(
-                        "In item '{}', found var decl: {:?} with type hint: {:?}",
-                        item_name, var_info.decl, var_info.ty_hint
-                    );
-                }
-            }
+    let items = match grammar::StartParser::new().parse(&mut lex) {
+        Ok(items) => items,
+        Err(e) => {
+            eprintln!("Error parsing input: {:?}", e);
+            return;
         }
-        Err(e) => eprintln!("Error parsing input: {:?}", e),
+    };
+
+    let sigs = sema_builder::collect_signatures(&items);
+    if sigs.is_empty() {
+        eprintln!("No functions found");
+        return;
     }
+
+    let entry = match find_entry(&sigs) {
+        Ok(entry) => entry,
+        Err(e) => {
+            eprintln!("Error finding entry function: {}", e);
+            return;
+        }
+    };
+
+    println!("Entry function: {}", entry.name);
+
+    // items[entry.ix] is the entry function item
 }

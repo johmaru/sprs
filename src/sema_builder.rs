@@ -4,8 +4,16 @@ use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub struct ItemSig {
+    pub ty_: String,
     pub name: String,
     pub ix: usize,
+}
+
+#[derive(Debug)]
+pub struct FunctionSig {
+    pub name: String,
+    pub ix: usize,
+    pub params: Vec<ast::FunctionParam>,
 }
 
 #[derive(Debug, Clone)]
@@ -22,9 +30,13 @@ pub fn collect_signatures(items: &[ast::Item]) -> Vec<ItemSig> {
     items
         .iter()
         .enumerate()
-        .map(|(ix, item)| ItemSig {
-            name: item.ident.clone(),
-            ix,
+        .filter_map(|(ix, item)| match item {
+            ast::Item::FunctionItem(func) => Some(ItemSig {
+                ty_: "function".to_string(),
+                name: func.ident.clone(),
+                ix,
+            }),
+            ast::Item::VarItem(_) => None,
         })
         .collect()
 }
@@ -37,7 +49,9 @@ pub fn collect_all_vardecls<'a>(
     let mut out = Vec::new();
     for sig in sigs {
         let item = &items[sig.ix];
-        collect_vardecls_in_block(&item.blk, &item.ident, &mut out);
+        if let ast::Item::FunctionItem(func) = item {
+            collect_vardecls_in_block(&func.blk, &func.ident, &mut out);
+        }
     }
     out
 }
@@ -71,9 +85,11 @@ pub fn build_var_table<'a>(items: &'a [ast::Item], sigs: &[ItemSig]) -> VarTable
     let mut var_table: VarTable<'a> = HashMap::new();
     for sig in sigs {
         let item = &items[sig.ix];
-        let mut rows = Vec::new();
-        collect_varinfo_in_block(&item.blk, &mut rows);
-        var_table.insert(&item.ident, rows);
+        if let ast::Item::FunctionItem(func) = item {
+            let mut varinfos = Vec::new();
+            collect_varinfo_in_block(&func.blk, &mut varinfos);
+            var_table.insert(&func.ident, varinfos);
+        }
     }
     var_table
 }

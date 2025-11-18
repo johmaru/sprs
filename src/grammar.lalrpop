@@ -1,6 +1,6 @@
 grammar;
 
-use crate::ast::{Item, VarDecl, Expr, Stmt};
+use crate::ast::{Item, VarDecl, Expr, Stmt, Function, FunctionParam};
 use crate::lexer::Token;
 
 extern {
@@ -22,6 +22,8 @@ extern {
         Else   => Token::Else,
         IDENT  => Token::Ident(String),
         NUM    => Token::Num(i64),
+        Comma  => Token::Comma,
+        Function => Token::Function,
     }
 }
 
@@ -41,8 +43,43 @@ MoreItems: Vec<Item> = {
     }
 };
 
-ItemNode: Item =
-    <id:Ident> <blk:Block> => Item { ident: id, blk };
+ItemNode: Item = {
+    FunctionDef,
+    <v:VarDecl> => Item::VarItem(v),
+};
+
+
+FnKw: () = <tok:Function> => ();
+
+FunctionDef: Item =
+    FnKw <name:Ident> LParen <params:ParamList> RParen <body:Block> => {
+        Item::FunctionItem(Function {
+            ident: name,
+            params,
+            blk: body,
+        })
+    };
+
+ParamList: Vec<FunctionParam> = {
+    => vec![],
+    <first:FunctionParamNode> <rest:MoreParams> => {
+        let mut v = vec![first];
+        v.extend(rest);
+        v
+    }
+};
+
+MoreParams: Vec<FunctionParam> = {
+    => vec![],
+    Comma <p:FunctionParamNode> <mut rest:MoreParams> => {
+        let mut v = vec![p];
+        v.append(&mut rest);
+        v
+    }
+};
+
+FunctionParamNode: FunctionParam =
+    <id:Ident> => FunctionParam { ident: id };
 
 Block: Vec<Stmt> =
     LBrace <stmts:Stmts> RBrace => stmts;

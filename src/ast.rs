@@ -1,15 +1,32 @@
+use crate::type_helper::Type;
+
 #[derive(Debug, PartialEq)]
 pub enum Expr {
-    Number(i64),
-    Add(Box<Expr>, Box<Expr>),
-    Mul(Box<Expr>, Box<Expr>),
-    Eq(Box<Expr>, Box<Expr>),
-    If(Box<Expr>, Box<Expr>, Box<Expr>),
+    Number(i64),               // Value
+    Add(Box<Expr>, Box<Expr>), // Lhs, Rhs
+    Mul(Box<Expr>, Box<Expr>), // Lhs, Rhs
+    Eq(Box<Expr>, Box<Expr>),  // Lhs, Rhs
+    If(Box<Expr>, Box<Expr>, Box<Expr>), // Cond, Then, Else
+
+                               // Call(String, Vec<Expr>, Option<Type>), // Ident, Args, RetTy
 }
 
 #[derive(Debug, PartialEq)]
-pub struct Item {
+pub struct FunctionParam {
     pub ident: String,
+}
+
+#[derive(Debug, PartialEq)]
+pub enum Item {
+    VarItem(VarDecl),
+    FunctionItem(Function),
+}
+
+#[derive(Debug, PartialEq)]
+pub struct Function {
+    pub ident: String,
+    pub params: Vec<FunctionParam>,
+    // pub ret_ty: Option<Type>, currently all any
     pub blk: Vec<Stmt>,
 }
 
