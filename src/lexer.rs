@@ -18,6 +18,7 @@ pub enum Token {
     Ident(String),
     Num(i64),
     Function,
+    Return,
 }
 
 #[derive(Logos, Debug, Clone, PartialEq)]
@@ -56,6 +57,8 @@ enum RawTok {
     WS,
     #[token("fn")]
     Function,
+    #[token("return")]
+    Return,
 }
 
 pub struct Lexer<'input> {
@@ -105,6 +108,7 @@ impl<'input> Iterator for Lexer<'input> {
             RawTok::Num => Token::Num(text.parse().unwrap()),
             RawTok::WS => unreachable!(),
             RawTok::Function => Token::Function,
+            RawTok::Return => Token::Return,
         };
         Some(Ok((s, t, e)))
     }

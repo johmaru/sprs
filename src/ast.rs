@@ -2,13 +2,13 @@ use crate::type_helper::Type;
 
 #[derive(Debug, PartialEq)]
 pub enum Expr {
-    Number(i64),               // Value
-    Add(Box<Expr>, Box<Expr>), // Lhs, Rhs
-    Mul(Box<Expr>, Box<Expr>), // Lhs, Rhs
-    Eq(Box<Expr>, Box<Expr>),  // Lhs, Rhs
-    If(Box<Expr>, Box<Expr>, Box<Expr>), // Cond, Then, Else
-
-                               // Call(String, Vec<Expr>, Option<Type>), // Ident, Args, RetTy
+    Number(i64),                           // Value
+    Add(Box<Expr>, Box<Expr>),             // Lhs, Rhs
+    Mul(Box<Expr>, Box<Expr>),             // Lhs, Rhs
+    Eq(Box<Expr>, Box<Expr>),              // Lhs, Rhs
+    If(Box<Expr>, Box<Expr>, Box<Expr>),   // Cond, Then, Else
+    Call(String, Vec<Expr>, Option<Type>), // Ident, Args, RetTy
+    Var(String),                           // Ident
 }
 
 #[derive(Debug, PartialEq)]
@@ -39,9 +39,11 @@ pub struct VarDecl {
 #[derive(Debug, PartialEq)]
 pub enum Stmt {
     Var(VarDecl),
+    Expr(Expr),
     If {
         cond: Expr,
         then_blk: Vec<Stmt>,
         else_blk: Option<Vec<Stmt>>,
     },
+    Return(Option<Expr>),
 }

@@ -24,6 +24,7 @@ extern {
         NUM    => Token::Num(i64),
         Comma  => Token::Comma,
         Function => Token::Function,
+        Return => Token::Return,
     }
 }
 
@@ -81,6 +82,24 @@ MoreParams: Vec<FunctionParam> = {
 FunctionParamNode: FunctionParam =
     <id:Ident> => FunctionParam { ident: id };
 
+ArgList: Vec<Expr> = {
+    => vec![],
+    <first:Expr> <rest:MoreArgs> => {
+        let mut v = vec![first];
+        v.extend(rest);
+        v
+    }
+};
+
+MoreArgs: Vec<Expr> = {
+    => vec![],
+    Comma <a:Expr> <mut rest:MoreArgs> => {
+        let mut v = vec![a];
+        v.append(&mut rest);
+        v
+    }
+};
+
 Block: Vec<Stmt> =
     LBrace <stmts:Stmts> RBrace => stmts;
 
@@ -91,6 +110,7 @@ Stmts: Vec<Stmt> = {
 
 Stmt: Stmt = {
     <v:VarDecl> => Stmt::Var(v),
+    <e:Expr> Semi => Stmt::Expr(e),
     If <c:Expr> Then <then:Block> Else <else_blk:Block> =>
         Stmt::If {
             cond: c,
@@ -103,6 +123,8 @@ Stmt: Stmt = {
             then_blk: then,
             else_blk: None,
         },
+    Return <e:Expr> Semi => Stmt::Return(Some(e)),
+    Return Semi => Stmt::Return(None),
 }
 
 VarDecls: Vec<VarDecl> = {
@@ -139,5 +161,7 @@ Mul: Expr = {
 
 Factor: Expr = {
     <n:Num> => Expr::Number(n),
+    <id:Ident> LParen <args:ArgList> RParen => Expr::Call(id, args, None),
+    <id:Ident> => Expr::Var(id),
     LParen <e:Expr> RParen => e,
 };

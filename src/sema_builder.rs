@@ -7,6 +7,7 @@ pub struct ItemSig {
     pub ty_: String,
     pub name: String,
     pub ix: usize,
+    pub ret_ty: Type,
 }
 
 #[derive(Debug)]
@@ -27,7 +28,7 @@ pub type VarTable<'a> = HashMap<&'a str, Vec<VarInfo<'a>>>;
 
 // Collect signatures of all items
 pub fn collect_signatures(items: &[ast::Item]) -> Vec<ItemSig> {
-    items
+    let mut sigs: Vec<ItemSig> = items
         .iter()
         .enumerate()
         .filter_map(|(ix, item)| match item {
@@ -35,10 +36,30 @@ pub fn collect_signatures(items: &[ast::Item]) -> Vec<ItemSig> {
                 ty_: "function".to_string(),
                 name: func.ident.clone(),
                 ix,
+                ret_ty: Type::Any, // currently all any
             }),
             ast::Item::VarItem(_) => None,
         })
-        .collect()
+        .collect();
+
+    let updates: Vec<(usize, Type)> = sigs
+        .iter()
+        .map(|sig| {
+            let item = &items[sig.ix];
+            if let ast::Item::FunctionItem(func) = item {
+                let ret_ty = infer_return_type_from_block(&func.blk);
+                (sig.ix, ret_ty)
+            } else {
+                (sig.ix, Type::Any)
+            }
+        })
+        .collect();
+    for (ix, ret_ty) in updates {
+        if let Some(sig) = sigs.iter_mut().find(|s| s.ix == ix) {
+            sig.ret_ty = ret_ty;
+        }
+    }
+    sigs
 }
 
 // Collect all variable declarations from all items
@@ -66,6 +87,7 @@ pub fn collect_vardecls_in_block<'a>(
             ast::Stmt::Var(var) => {
                 out.push((item_name, var));
             }
+            &ast::Stmt::Expr(_) => {}
             ast::Stmt::If {
                 cond,
                 then_blk,
@@ -77,6 +99,7 @@ pub fn collect_vardecls_in_block<'a>(
                     collect_vardecls_in_block(else_blk, item_name, out);
                 }
             }
+            ast::Stmt::Return(_) => {}
         }
     }
 }
@@ -99,8 +122,9 @@ fn collect_varinfo_in_block<'a>(stmts: &'a [ast::Stmt], table: &mut Vec<VarInfo<
         match stmt {
             ast::Stmt::Var(var) => table.push(VarInfo {
                 decl: var,
-                ty_hint: infer_type_hint(&var.expr).unwrap_or(Type::Any),
+                ty_hint: infer_type_hint(&var.expr, &[]).unwrap_or(Type::Any),
             }),
+            ast::Stmt::Expr(_) => {}
             ast::Stmt::If {
                 cond: _,
                 then_blk,
@@ -111,29 +135,61 @@ fn collect_varinfo_in_block<'a>(stmts: &'a [ast::Stmt], table: &mut Vec<VarInfo<
                     collect_varinfo_in_block(else_blk, table);
                 }
             }
+            ast::Stmt::Return(_) => {}
         }
     }
 }
 
-fn infer_type_hint(expr: &ast::Expr) -> Option<Type> {
+fn infer_return_type_from_block(stmts: &[ast::Stmt]) -> Type {
+    for stmt in stmts {
+        match stmt {
+            ast::Stmt::Return(Some(expr)) => {
+                return infer_type_hint(&expr, &[]).unwrap_or(Type::Any);
+            }
+            ast::Stmt::If {
+                then_blk, else_blk, ..
+            } => {
+                let then_ty = infer_return_type_from_block(then_blk);
+                if then_ty != Type::Any {
+                    return then_ty;
+                }
+                if let Some(blk) = else_blk {
+                    let else_ty = infer_return_type_from_block(blk);
+                    if else_ty != Type::Any {
+                        return else_ty;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Type::Any
+}
+
+fn infer_type_hint(expr: &ast::Expr, sigs: &[ItemSig]) -> Option<Type> {
     use ast::Expr::*;
     match expr {
         Number(_) => Some(Type::Int),
+        Var(_) => Some(Type::Any),
         Add(left, right) | Mul(left, right) => {
-            match (infer_type_hint(left), infer_type_hint(right)) {
+            match (infer_type_hint(left, sigs), infer_type_hint(right, sigs)) {
                 (Some(Type::Int), Some(Type::Int)) => Some(Type::Int),
                 _ => None,
             }
         }
         Eq(_, _) => Some(Type::Bool),
         If(_, then_expr, else_expr) => {
-            let then_type = infer_type_hint(then_expr)?;
-            let else_type = infer_type_hint(else_expr)?;
+            let then_type = infer_type_hint(then_expr, sigs)?;
+            let else_type = infer_type_hint(else_expr, sigs)?;
             if then_type == else_type {
                 Some(then_type)
             } else {
                 None
             }
         }
+        Call(ident, args, ret_ty) => sigs
+            .iter()
+            .find(|sig| sig.name == *ident)
+            .map(|sig| sig.ret_ty.clone()),
     }
 }
