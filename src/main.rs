@@ -15,6 +15,11 @@ fn main() {
         fn test() {
             a = 5;
             b = 10;
+
+            if a == 5 then {
+                return a;
+            }
+
             return b;
         }
 

@@ -9,6 +9,7 @@ pub enum Value {
     Bool(bool),
     Str(String),
     Unit,
+    Return(Box<Value>),
 }
 
 impl std::fmt::Display for Value {
@@ -18,6 +19,7 @@ impl std::fmt::Display for Value {
             Value::Bool(b) => write!(f, "{}", b),
             Value::Str(s) => write!(f, "{}", s),
             Value::Unit => write!(f, "()"),
+            Value::Return(val) => write!(f, "Return({})", val),
         }
     }
 }
@@ -90,7 +92,11 @@ fn call_function(
         println!("  Param {}: {} = {}", idx, param.ident, val);
     }
 
-    execute_block(body, functions, &mut scope)
+   let result =  execute_block(body, functions, &mut scope)?;
+   match result {
+       Value::Return(val) => Ok(*val),
+       _ => Ok(result),
+   }
 }
 
 fn execute_block(
@@ -116,20 +122,48 @@ fn execute_block(
                 cond,
                 then_blk,
                 else_blk,
-            } => {}
+            } => {
+                println!("  Evaluating if condition: {:?}", cond);
+                match evalute_expr(cond, functions, scope) {
+                    Ok(val) => {
+                        let is_true = match val {
+                            Value::Bool(b) => b,
+                            Value::Int(n) => n != 0,
+                            _ => false,
+                        };
+
+                        if is_true {
+                            println!("    Condition is true, executing then block");
+                            let result = execute_block(then_blk, functions, scope)?;
+                            if let Value::Return(_) = result {
+                                return Ok(result);
+                            }
+                        } else if let Some(else_block) = else_blk {
+                            println!("    Condition is false, executing else block");
+                            let result = execute_block(else_block, functions, scope)?;
+                            if let Value::Return(_) = result {
+                                return Ok(result);
+                            }
+                        } else {
+                            println!("    Condition is false, no else block to execute");
+                        }
+                    }
+                    Err(e) => return Err(format!("Error evaluating if condition: {}", e)),
+                }
+            }
             ast::Stmt::Return(opt_expr) => {
                 if let Some(expr) = opt_expr {
                     println!("  Evaluating return expression: {:?}", expr);
                     match evalute_expr(expr, functions, scope) {
                         Ok(val) => {
                             println!("    Return value: {}", val);
-                            return Ok(val);
+                            return Ok(Value::Return(Box::new(val)));
                         }
                         Err(e) => return Err(format!("Error evaluating return expression: {}", e)),
                     }
                 } else {
                     println!("  Return with no value");
-                    return Ok(Value::Unit);
+                    return Ok(Value::Return(Box::new(Value::Unit)));
                 }
             }
         }
