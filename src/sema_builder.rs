@@ -170,6 +170,7 @@ fn infer_type_hint(expr: &ast::Expr, sigs: &[ItemSig]) -> Option<Type> {
     use ast::Expr::*;
     match expr {
         Number(_) => Some(Type::Int),
+        Str(_) => Some(Type::Str),
         Var(_) => Some(Type::Any),
         Add(left, right) | Mul(left, right) => {
             match (infer_type_hint(left, sigs), infer_type_hint(right, sigs)) {
@@ -177,7 +178,15 @@ fn infer_type_hint(expr: &ast::Expr, sigs: &[ItemSig]) -> Option<Type> {
                 _ => None,
             }
         }
+        Minus(left, right) | Div(left, right) => {
+            match (infer_type_hint(left, sigs), infer_type_hint(right, sigs)) {
+                (Some(Type::Int), Some(Type::Int)) => Some(Type::Int),
+                _ => None,
+            }
+        }
+        Increment(expr) | Decrement(expr) => infer_type_hint(expr, sigs),
         Eq(_, _) => Some(Type::Bool),
+        Neq(_, _) => Some(Type::Bool),
         If(_, then_expr, else_expr) => {
             let then_type = infer_type_hint(then_expr, sigs)?;
             let else_type = infer_type_hint(else_expr, sigs)?;

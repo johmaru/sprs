@@ -7,11 +7,17 @@ pub enum Token {
     LParen,
     RParen,
     Plus,
+    PlusPlus,
     Star,
+    Minus,
+    MinusMinus,
+    Div,
     Eq,
     EqEq,
+    Neq,
     Semi,
     Comma,
+    StrLiteral(String),
     If,
     Then,
     Else,
@@ -33,16 +39,31 @@ enum RawTok {
     RParen,
     #[token("+")]
     Plus,
+    #[token("++")]
+    PlusPlus,
     #[token("*")]
     Star,
+    #[token("-")]
+    Minus,
+    #[token("--")]
+    MinusMinus,
+    #[token("/")]
+    Div,
     #[token("=")]
     Eq,
     #[token("==")]
     EqEq,
+    #[token("!=")]
+    Neq,
     #[token(";")]
     Semi,
     #[token(",")]
     Comma,
+    #[regex(r#""[^"]*""#, |lex| {
+        let slice = lex.slice();
+        slice[1..slice.len()-1].to_string()
+    })]
+    StrLiteral(String),
     #[token("if")]
     If,
     #[token("then")]
@@ -55,6 +76,8 @@ enum RawTok {
     Num,
     #[regex(r"[ \t\r\n\f]+", logos::skip)]
     WS,
+    #[regex(r"#[^\n]*", logos::skip)]
+    Comment,
     #[token("fn")]
     Function,
     #[token("return")]
@@ -96,11 +119,17 @@ impl<'input> Iterator for Lexer<'input> {
             RawTok::LParen => Token::LParen,
             RawTok::RParen => Token::RParen,
             RawTok::Plus => Token::Plus,
+            RawTok::PlusPlus => Token::PlusPlus,
             RawTok::Star => Token::Star,
+            RawTok::Minus => Token::Minus,
+            RawTok::MinusMinus => Token::MinusMinus,
+            RawTok::Div => Token::Div,
             RawTok::Eq => Token::Eq,
             RawTok::EqEq => Token::EqEq,
+            RawTok::Neq => Token::Neq,
             RawTok::Semi => Token::Semi,
             RawTok::Comma => Token::Comma,
+            RawTok::StrLiteral(s) => Token::StrLiteral(s),
             RawTok::If => Token::If,
             RawTok::Then => Token::Then,
             RawTok::Else => Token::Else,
@@ -109,6 +138,7 @@ impl<'input> Iterator for Lexer<'input> {
             RawTok::WS => unreachable!(),
             RawTok::Function => Token::Function,
             RawTok::Return => Token::Return,
+            RawTok::Comment => return self.next(),
         };
         Some(Ok((s, t, e)))
     }

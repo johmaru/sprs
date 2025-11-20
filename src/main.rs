@@ -13,11 +13,20 @@ fn main() {
     // Example input
     let input = r#"
         fn test() {
-            a = 5;
+            a = 5 - 1;
             b = 10;
+            c = "hello" + " world";
+            print(c);
 
-            if a == 5 then {
+            # test equality
+            if a == 3 then {
                 return a;
+            }
+
+            if a != 3 then {
+                return a++;
+            } else {
+                return a + 2;
             }
 
             return b;

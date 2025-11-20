@@ -3,12 +3,18 @@ use crate::type_helper::Type;
 #[derive(Debug, PartialEq)]
 pub enum Expr {
     Number(i64),                           // Value
+    Str(String),                          // Value
     Add(Box<Expr>, Box<Expr>),             // Lhs, Rhs
     Mul(Box<Expr>, Box<Expr>),             // Lhs, Rhs
+    Minus(Box<Expr>, Box<Expr>),           // Lhs, Rhs
+    Div(Box<Expr>, Box<Expr>),             // Lhs, Rhs
     Eq(Box<Expr>, Box<Expr>),              // Lhs, Rhs
+    Neq(Box<Expr>, Box<Expr>),             // Lhs, Rhs
     If(Box<Expr>, Box<Expr>, Box<Expr>),   // Cond, Then, Else
     Call(String, Vec<Expr>, Option<Type>), // Ident, Args, RetTy
     Var(String),                           // Ident
+    Increment(Box<Expr>),                     // Ident
+    Decrement(Box<Expr>),                     // Ident
 }
 
 #[derive(Debug, PartialEq)]

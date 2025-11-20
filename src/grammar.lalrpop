@@ -13,10 +13,16 @@ extern {
         LParen => Token::LParen,
         RParen => Token::RParen,
         Plus   => Token::Plus,
+        PlusPlus => Token::PlusPlus,
         Star   => Token::Star,
+        Minus  => Token::Minus,
+        MinusMinus => Token::MinusMinus,
+        Div    => Token::Div,
         Eq     => Token::Eq,
         EqEq   => Token::EqEq,
+        Neq    => Token::Neq,
         Semi   => Token::Semi,
+        StrLiteral => Token::StrLiteral(String),
         If     => Token::If,
         Then   => Token::Then,
         Else   => Token::Else,
@@ -142,25 +148,44 @@ Num: i64     = <tok:NUM>   => {
     match tok { Token::Num(n) => n, _ => unreachable!() }
 };
 
+StringLiteral: String = {
+    <s:StrLiteral> => {
+        match s {
+            Token::StrLiteral(str) => str,
+            _ => unreachable!(),
+        }
+    }
+};
+
 Expr: Expr = Equality;
 
 Equality: Expr = {
-    <l:Equality> EqEq <r:Add> => Expr::Eq(Box::new(l), Box::new(r)),
-    <a:Add>                   => a,
+    <l:Equality> EqEq <r:AddAndMinus> => Expr::Eq(Box::new(l), Box::new(r)),
+    <l:Equality> Neq <r:AddAndMinus> => Expr::Neq(Box::new(l), Box::new(r)),
+    <a:AddAndMinus>                   => a,
 }
 
-Add: Expr = {
-    <l:Add> Plus <r:Mul> => Expr::Add(Box::new(l), Box::new(r)),
-    <m:Mul>              => m,
+AddAndMinus: Expr = {
+    <l:AddAndMinus> Plus <r:MulAndDiv> => Expr::Add(Box::new(l), Box::new(r)),
+    <l:AddAndMinus> Minus <r:MulAndDiv> => Expr::Minus(Box::new(l), Box::new(r)),
+    <m:MulAndDiv>              => m,
 };
 
-Mul: Expr = {
-    <l:Mul> Star <r:Factor> => Expr::Mul(Box::new(l), Box::new(r)),
-    <f:Factor>               => f,
+MulAndDiv: Expr = {
+    <l:MulAndDiv> Star <r:Factor> => Expr::Mul(Box::new(l), Box::new(r)),
+    <l:MulAndDiv> Div <r:Factor> => Expr::Div(Box::new(l), Box::new(r)),
+    <p:Postfix> => p,
 };
+
+Postfix: Expr = {
+    <e:Postfix> PlusPlus => Expr::Increment(Box::new(e)),
+    <e:Postfix> MinusMinus => Expr::Decrement(Box::new(e)),
+    <f:Factor> => f,
+}
 
 Factor: Expr = {
     <n:Num> => Expr::Number(n),
+    <s:StringLiteral> => Expr::Str(s),
     <id:Ident> LParen <args:ArgList> RParen => Expr::Call(id, args, None),
     <id:Ident> => Expr::Var(id),
     LParen <e:Expr> RParen => e,

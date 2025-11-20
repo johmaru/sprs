@@ -46,6 +46,28 @@ impl std::ops::Mul for Value {
     }
 }
 
+impl std::ops::Sub for Value {
+    type Output = Value;
+
+    fn sub(self, other: Value) -> Value {
+        match (self, other) {
+            (Value::Int(a), Value::Int(b)) => Value::Int(a - b),
+            _ => Value::Unit, // Simplified for demo purposes
+        }
+    }
+}
+
+impl std::ops::Div for Value {
+    type Output = Value;
+
+    fn div(self, other: Value) -> Value {
+        match (self, other) {
+            (Value::Int(a), Value::Int(b)) => Value::Int(a / b),
+            _ => Value::Unit, // Simplified for demo purposes
+        }
+    }
+}
+
 pub fn execute(items: &Vec<ast::Item>, entry_idx: usize) -> Result<(), String> {
     let mut functions = HashMap::new();
 
@@ -178,20 +200,69 @@ fn evalute_expr(
 ) -> Result<Value, String> {
     match expr {
         ast::Expr::Number(n) => Ok(Value::Int(*n)),
+        ast::Expr::Str(s) => Ok(Value::Str(s.clone())),
         ast::Expr::Add(lhs, rhs) => {
             let left = evalute_expr(lhs, functions, scope)?;
             let right = evalute_expr(rhs, functions, scope)?;
-            Ok(left + right)
+            
+            match (left, right) {
+                (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a + b)),
+                (Value::Str(a), Value::Str(b)) => Ok(Value::Str(a + &b)),
+                _ => Err("Type error in addition".to_string()),
+            }
         }
         ast::Expr::Mul(lhs, rhs) => {
             let left = evalute_expr(lhs, functions, scope)?;
             let right = evalute_expr(rhs, functions, scope)?;
             Ok(left * right)
         }
+        ast::Expr::Minus(lhs, rhs) => {
+            let left = evalute_expr(lhs, functions, scope)?;
+            let right = evalute_expr(rhs, functions, scope)?;
+            Ok(left - right)
+        }
+        ast::Expr::Div(lhs, rhs) => {
+            let left = evalute_expr(lhs, functions, scope)?;
+            let right = evalute_expr(rhs, functions, scope)?;
+            Ok(left / right)
+        }
+        ast::Expr::Increment(expr) => {
+            if let ast::Expr::Var(ident) = &**expr {
+                if let Some(val) = scope.get(ident) {
+                    if let Value::Int(n) = val {
+                        let new_val = Value::Int(n + 1);
+                        println!("  Incrementing variable {}: {} -> {}", ident, n, n + 1);
+                        return Ok(new_val);
+                    }
+                }
+                Err(format!("Variable {} not found or not an integer", ident))
+            } else {
+                Err("Increment operation requires a variable".to_string())
+            }
+        }
+        ast::Expr::Decrement(expr) => {
+            if let ast::Expr::Var(ident) = &**expr {
+                if let Some(val) = scope.get(ident) {
+                    if let Value::Int(n) = val {
+                        let new_val = Value::Int(n - 1);
+                        println!("  Decrementing variable {}: {} -> {}", ident, n, n - 1);
+                        return Ok(new_val);
+                    }
+                }
+                Err(format!("Variable {} not found or not an integer", ident))
+            } else {
+                Err("Decrement operation requires a variable".to_string())
+            }
+        }
         ast::Expr::Eq(lhs, rhs) => {
             let left = evalute_expr(lhs, functions, scope)?;
             let right = evalute_expr(rhs, functions, scope)?;
             Ok(Value::Bool(left == right))
+        }
+        ast::Expr::Neq(lhs, rhs) => {
+            let left = evalute_expr(lhs, functions, scope)?;
+            let right = evalute_expr(rhs, functions, scope)?;
+            Ok(Value::Bool(left != right))
         }
         ast::Expr::If(cond, then_expr, else_expr) => {
             let condition = evalute_expr(cond, functions, scope)?;
@@ -229,6 +300,5 @@ fn evalute_expr(
                 Err(format!("Variable {} not found", ident))
             }
         }
-        _ => Err("Not implemented".to_string()),
     }
 }
