@@ -1,5 +1,5 @@
 // auto-generated: "lalrpop 0.22.2"
-// sha3: dd1e620979c571c90c31d6e7f3afd0a4a3eab1d211e985a7cb91cdf12c05c877
+// sha3: 08f8c020f9eab35d891893e9b87423260c9766d2f06c916435521812f1b96fd8
 use crate::ast::{Item, VarDecl, Expr, Stmt, Function, FunctionParam};
 use crate::lexer::Token;
 #[allow(unused_extern_crates)]
