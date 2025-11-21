@@ -22,11 +22,8 @@ extern {
         Div    => Token::Div,
         Eq     => Token::Eq,
         EqEq   => Token::EqEq,
-<<<<<<< Updated upstream
         Neq    => Token::Neq,
-=======
         DotDot => Token::DotDot,
->>>>>>> Stashed changes
         Semi   => Token::Semi,
         StrLiteral => Token::StrLiteral(String),
         If     => Token::If,
