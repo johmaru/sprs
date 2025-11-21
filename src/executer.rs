@@ -10,6 +10,7 @@ pub enum Value {
     Str(String),
     Unit,
     Return(Box<Value>),
+    List(std::rc::Rc<std::cell::RefCell<Vec<Value>>>),
 }
 
 impl std::fmt::Display for Value {
@@ -20,6 +21,17 @@ impl std::fmt::Display for Value {
             Value::Str(s) => write!(f, "{}", s),
             Value::Unit => write!(f, "()"),
             Value::Return(val) => write!(f, "Return({})", val),
+            Value::List(elements) => {
+                let value = elements.borrow();
+                write!(f, "[")?;
+                for (i, elem) in value.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", elem)?;
+                }
+                write!(f, "]")
+            }
         }
     }
 }
@@ -114,11 +126,11 @@ fn call_function(
         println!("  Param {}: {} = {}", idx, param.ident, val);
     }
 
-   let result =  execute_block(body, functions, &mut scope)?;
-   match result {
-       Value::Return(val) => Ok(*val),
-       _ => Ok(result),
-   }
+    let result = execute_block(body, functions, &mut scope)?;
+    match result {
+        Value::Return(val) => Ok(*val),
+        _ => Ok(result),
+    }
 }
 
 fn execute_block(
@@ -204,7 +216,7 @@ fn evalute_expr(
         ast::Expr::Add(lhs, rhs) => {
             let left = evalute_expr(lhs, functions, scope)?;
             let right = evalute_expr(rhs, functions, scope)?;
-            
+
             match (left, right) {
                 (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a + b)),
                 (Value::Str(a), Value::Str(b)) => Ok(Value::Str(a + &b)),
@@ -282,6 +294,15 @@ fn evalute_expr(
                 return Ok(Value::Unit);
             }
 
+            if ident == "vec_push!" {
+                let mut arg_values = Vec::new();
+                for arg in args {
+                    arg_values.push(evalute_expr(arg, functions, scope)?);
+                    println!("  vec_push! argument: {}", arg_values.last().unwrap());
+                }
+                return crate::builtin::builtin_function_push(&arg_values);
+            }
+
             if let Some(func) = functions.get(ident.as_str()) {
                 let mut arg_values = Vec::new();
                 for arg in args {
@@ -299,6 +320,17 @@ fn evalute_expr(
             } else {
                 Err(format!("Variable {} not found", ident))
             }
+        }
+        ast::Expr::List(elements) => {
+            let mut list_values = Vec::new();
+            for elem in elements {
+                let val = evalute_expr(elem, functions, scope)?;
+                list_values.push(val.clone());
+                println!("  Added element to list: {}", val);
+            }
+            Ok(Value::List(std::rc::Rc::new(std::cell::RefCell::new(
+                list_values,
+            ))))
         }
     }
 }

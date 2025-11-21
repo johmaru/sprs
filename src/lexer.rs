@@ -4,6 +4,8 @@ use logos::Logos;
 pub enum Token {
     LBrace,
     RBrace,
+    LBracket,
+    RBracket,
     LParen,
     RParen,
     Plus,
@@ -15,6 +17,7 @@ pub enum Token {
     Eq,
     EqEq,
     Neq,
+    DotDot,
     Semi,
     Comma,
     StrLiteral(String),
@@ -33,6 +36,10 @@ enum RawTok {
     LBrace,
     #[token("}")]
     RBrace,
+    #[token("[")]
+    LBracket,
+    #[token("]")]
+    RBracket,
     #[token("(")]
     LParen,
     #[token(")")]
@@ -55,6 +62,8 @@ enum RawTok {
     EqEq,
     #[token("!=")]
     Neq,
+    #[token("..")]
+    DotDot,
     #[token(";")]
     Semi,
     #[token(",")]
@@ -70,7 +79,7 @@ enum RawTok {
     Then,
     #[token("else")]
     Else,
-    #[regex(r"[A-Za-z_][A-Za-z0-9_]*")]
+    #[regex(r"[A-Za-z_][A-Za-z0-9_]*!?")]
     Ident,
     #[regex(r"[0-9]+")]
     Num,
@@ -116,6 +125,8 @@ impl<'input> Iterator for Lexer<'input> {
         let t = match tok {
             RawTok::LBrace => Token::LBrace,
             RawTok::RBrace => Token::RBrace,
+            RawTok::LBracket => Token::LBracket,
+            RawTok::RBracket => Token::RBracket,
             RawTok::LParen => Token::LParen,
             RawTok::RParen => Token::RParen,
             RawTok::Plus => Token::Plus,
@@ -127,6 +138,7 @@ impl<'input> Iterator for Lexer<'input> {
             RawTok::Eq => Token::Eq,
             RawTok::EqEq => Token::EqEq,
             RawTok::Neq => Token::Neq,
+            RawTok::DotDot => Token::DotDot,
             RawTok::Semi => Token::Semi,
             RawTok::Comma => Token::Comma,
             RawTok::StrLiteral(s) => Token::StrLiteral(s),

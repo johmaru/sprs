@@ -2,6 +2,7 @@ use crate::runner::debug_run;
 use crate::runner::parse_run;
 
 mod ast;
+mod builtin;
 mod executer;
 mod grammar;
 mod lexer;
@@ -34,7 +35,13 @@ fn main() {
 
         fn main() {
            x = test();
+           y = [];
+           z = 20;
+           alpha = "test";
            print(x);
+           vec_push!(y, z);
+           vec_push!(y, alpha);
+           print(y);
         }
     "#;
 

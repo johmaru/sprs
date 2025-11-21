@@ -10,6 +10,8 @@ extern {
     enum Token {
         LBrace => Token::LBrace,
         RBrace => Token::RBrace,
+        LBracket => Token::LBracket,
+        RBracket => Token::RBracket,
         LParen => Token::LParen,
         RParen => Token::RParen,
         Plus   => Token::Plus,
@@ -20,7 +22,11 @@ extern {
         Div    => Token::Div,
         Eq     => Token::Eq,
         EqEq   => Token::EqEq,
+<<<<<<< Updated upstream
         Neq    => Token::Neq,
+=======
+        DotDot => Token::DotDot,
+>>>>>>> Stashed changes
         Semi   => Token::Semi,
         StrLiteral => Token::StrLiteral(String),
         If     => Token::If,
@@ -189,4 +195,5 @@ Factor: Expr = {
     <id:Ident> LParen <args:ArgList> RParen => Expr::Call(id, args, None),
     <id:Ident> => Expr::Var(id),
     LParen <e:Expr> RParen => e,
+    LBracket <args:ArgList> RBracket => Expr::List(args),
 };

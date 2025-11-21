@@ -1,9 +1,12 @@
+use std::{cell::RefCell, rc::Rc};
+
+use crate::executer::Value;
 use crate::type_helper::Type;
 
 #[derive(Debug, PartialEq)]
 pub enum Expr {
     Number(i64),                           // Value
-    Str(String),                          // Value
+    Str(String),                           // Value
     Add(Box<Expr>, Box<Expr>),             // Lhs, Rhs
     Mul(Box<Expr>, Box<Expr>),             // Lhs, Rhs
     Minus(Box<Expr>, Box<Expr>),           // Lhs, Rhs
@@ -13,8 +16,9 @@ pub enum Expr {
     If(Box<Expr>, Box<Expr>, Box<Expr>),   // Cond, Then, Else
     Call(String, Vec<Expr>, Option<Type>), // Ident, Args, RetTy
     Var(String),                           // Ident
-    Increment(Box<Expr>),                     // Ident
-    Decrement(Box<Expr>),                     // Ident
+    Increment(Box<Expr>),                  // Ident
+    Decrement(Box<Expr>),                  // Ident
+    List(Vec<Expr>),                       // Elements
 }
 
 #[derive(Debug, PartialEq)]
