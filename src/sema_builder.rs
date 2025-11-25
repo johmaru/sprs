@@ -201,5 +201,7 @@ fn infer_type_hint(expr: &ast::Expr, sigs: &[ItemSig]) -> Option<Type> {
             .find(|sig| sig.name == *ident)
             .map(|sig| sig.ret_ty.clone()),
         List(_) => Some(Type::Any), // Currently, we treat all lists as Any type
+        Range(_, _) => Some(Type::Any),
+        Index(_, _) => Some(Type::Any),
     }
 }

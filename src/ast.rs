@@ -19,6 +19,8 @@ pub enum Expr {
     Increment(Box<Expr>),                  // Ident
     Decrement(Box<Expr>),                  // Ident
     List(Vec<Expr>),                       // Elements
+    Range(Box<Expr>, Box<Expr>),           // Start, End
+    Index(Box<Expr>, Box<Expr>),           // Collection, Index
 }
 
 #[derive(Debug, PartialEq)]

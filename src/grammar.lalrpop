@@ -160,7 +160,12 @@ StringLiteral: String = {
     }
 };
 
-Expr: Expr = Equality;
+Expr: Expr = RangeExpr;
+
+RangeExpr: Expr = {
+    <l:Equality> DotDot <r:Equality> => Expr::Range(Box::new(l), Box::new(r)),
+    <e:Equality> => e,
+}
 
 Equality: Expr = {
     <l:Equality> EqEq <r:AddAndMinus> => Expr::Eq(Box::new(l), Box::new(r)),
@@ -181,6 +186,7 @@ MulAndDiv: Expr = {
 };
 
 Postfix: Expr = {
+    <base:Postfix> LBracket <index:Expr> RBracket => Expr::Index(Box::new(base), Box::new(index)),
     <e:Postfix> PlusPlus => Expr::Increment(Box::new(e)),
     <e:Postfix> MinusMinus => Expr::Decrement(Box::new(e)),
     <f:Factor> => f,

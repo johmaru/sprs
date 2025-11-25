@@ -41,7 +41,7 @@ fn main() {
            print(x);
            vec_push!(y, z);
            vec_push!(y, alpha);
-           print(y);
+           print(y[1]);
         }
     "#;
 

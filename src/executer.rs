@@ -11,6 +11,7 @@ pub enum Value {
     Unit,
     Return(Box<Value>),
     List(std::rc::Rc<std::cell::RefCell<Vec<Value>>>),
+    Range(i64, i64),
 }
 
 impl std::fmt::Display for Value {
@@ -32,6 +33,7 @@ impl std::fmt::Display for Value {
                 }
                 write!(f, "]")
             }
+            Value::Range(start, end) => write!(f, "{}..{}", start, end),
         }
     }
 }
@@ -331,6 +333,34 @@ fn evalute_expr(
             Ok(Value::List(std::rc::Rc::new(std::cell::RefCell::new(
                 list_values,
             ))))
+        }
+        ast::Expr::Range(start_expr, end_expr) => {
+            let start_val = evalute_expr(start_expr, functions, scope)?;
+            let end_val = evalute_expr(end_expr, functions, scope)?;
+            if let (Value::Int(start), Value::Int(end)) = (start_val, end_val) {
+                Ok(Value::Range(start, end))
+            } else {
+                Err("Range bounds must be integers".to_string())
+            }
+        }
+        ast::Expr::Index(collection_expr, index_expr) => {
+            let collection_val = evalute_expr(collection_expr, functions, scope)?;
+            let index_val = evalute_expr(index_expr, functions, scope)?;
+            if let Value::List(ref elements_rc) = collection_val {
+                let elements = elements_rc.borrow();
+                if let Value::Int(index) = index_val {
+                    let idx = index as usize;
+                    if idx < elements.len() {
+                        Ok(elements[idx].clone())
+                    } else {
+                        Err("Index out of bounds".to_string())
+                    }
+                } else {
+                    Err("Index must be an integer".to_string())
+                }
+            } else {
+                Err("Collection must be a list".to_string())
+            }
         }
     }
 }
