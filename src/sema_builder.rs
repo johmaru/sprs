@@ -39,6 +39,7 @@ pub fn collect_signatures(items: &[ast::Item]) -> Vec<ItemSig> {
                 ret_ty: Type::Any, // currently all any
             }),
             ast::Item::VarItem(_) => None,
+            ast::Item::Preprocessor(_) => None,
         })
         .collect();
 
@@ -99,6 +100,10 @@ pub fn collect_vardecls_in_block<'a>(
                     collect_vardecls_in_block(else_blk, item_name, out);
                 }
             }
+            ast::Stmt::While { cond, body } => {
+                _ = cond; // ignore condition
+                collect_vardecls_in_block(body, item_name, out);
+            }
             ast::Stmt::Return(_) => {}
         }
     }
@@ -135,6 +140,9 @@ fn collect_varinfo_in_block<'a>(stmts: &'a [ast::Stmt], table: &mut Vec<VarInfo<
                     collect_varinfo_in_block(else_blk, table);
                 }
             }
+            ast::Stmt::While { cond: _, body } => {
+                collect_varinfo_in_block(body, table);
+            }
             ast::Stmt::Return(_) => {}
         }
     }
@@ -170,6 +178,7 @@ fn infer_type_hint(expr: &ast::Expr, sigs: &[ItemSig]) -> Option<Type> {
     use ast::Expr::*;
     match expr {
         Number(_) => Some(Type::Int),
+        Bool(_) => Some(Type::Bool),
         Str(_) => Some(Type::Str),
         Var(_) => Some(Type::Any),
         Add(left, right) | Mul(left, right) => {
@@ -187,6 +196,10 @@ fn infer_type_hint(expr: &ast::Expr, sigs: &[ItemSig]) -> Option<Type> {
         Increment(expr) | Decrement(expr) => infer_type_hint(expr, sigs),
         Eq(_, _) => Some(Type::Bool),
         Neq(_, _) => Some(Type::Bool),
+        Lt(_, _) => Some(Type::Bool),
+        Gt(_, _) => Some(Type::Bool),
+        Le(_, _) => Some(Type::Bool),
+        Ge(_, _) => Some(Type::Bool),
         If(_, then_expr, else_expr) => {
             let then_type = infer_type_hint(then_expr, sigs)?;
             let else_type = infer_type_hint(else_expr, sigs)?;

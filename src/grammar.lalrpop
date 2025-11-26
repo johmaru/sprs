@@ -2,6 +2,7 @@ grammar;
 
 use crate::ast::{Item, VarDecl, Expr, Stmt, Function, FunctionParam};
 use crate::lexer::Token;
+use lalrpop_util::ParseError;
 
 extern {
     type Location = usize;
@@ -23,40 +24,40 @@ extern {
         Eq     => Token::Eq,
         EqEq   => Token::EqEq,
         Neq    => Token::Neq,
+        Lt     => Token::Lt,
+        Gt     => Token::Gt,
+        Le     => Token::Le,
+        Ge     => Token::Ge,
         DotDot => Token::DotDot,
         Semi   => Token::Semi,
         StrLiteral => Token::StrLiteral(String),
         If     => Token::If,
         Then   => Token::Then,
         Else   => Token::Else,
+        While  => Token::While,
         IDENT  => Token::Ident(String),
         NUM    => Token::Num(i64),
+        TRUE  => Token::Bool(true),
+        FALSE => Token::Bool(false),
         Comma  => Token::Comma,
         Function => Token::Function,
         Return => Token::Return,
+        Preprocessor => Token::Preprocessor,
     }
 }
 
 pub Start: Vec<Item> =
-    <first:ItemNode> <rest:MoreItems> => {
-        let mut v = vec![first];
-        v.extend(rest);
-        v
-    };
-
-MoreItems: Vec<Item> = {
-    => vec![],
-    <i:ItemNode> <mut rest:MoreItems> => {
-        let mut v = vec![i];
-        v.append(&mut rest);
-        v
-    }
-};
+    <items:ItemNode*> => items;
 
 ItemNode: Item = {
     FunctionDef,
     <v:VarDecl> => Item::VarItem(v),
+    <p:PreprocessorDirective> => Item::Preprocessor(p),
 };
+
+PreprocessorDirective: String = {
+    Preprocessor <id:Ident> => id,
+}
 
 
 FnKw: () = <tok:Function> => ();
@@ -112,14 +113,21 @@ MoreArgs: Vec<Expr> = {
 Block: Vec<Stmt> =
     LBrace <stmts:Stmts> RBrace => stmts;
 
-Stmts: Vec<Stmt> = {
-    => vec![],
-    <s:Stmt> <mut rest:Stmts> => { rest.insert(0, s); rest }
-};
+Stmts: Vec<Stmt> = Stmt*;
 
 Stmt: Stmt = {
-    <v:VarDecl> => Stmt::Var(v),
-    <e:Expr> Semi => Stmt::Expr(e),
+    <e:Expr> <tail:StmtTail> =>? {
+        match tail {
+            None => Ok(Stmt::Expr(e)),
+            Some(val) => {
+                if let Expr::Var(id) = e {
+                    Ok(Stmt::Var(VarDecl { ident: id, expr: val }))
+                } else {
+                    Err(ParseError::User { error: "Invalid assignment target".to_string() })
+                }
+            }
+        }
+    },
     If <c:Expr> Then <then:Block> Else <else_blk:Block> =>
         Stmt::If {
             cond: c,
@@ -132,9 +140,19 @@ Stmt: Stmt = {
             then_blk: then,
             else_blk: None,
         },
+    While <c:Expr> <body:Block> =>
+        Stmt::While {
+            cond: c,
+            body: body,
+        },
     Return <e:Expr> Semi => Stmt::Return(Some(e)),
     Return Semi => Stmt::Return(None),
 }
+
+StmtTail: Option<Expr> = {
+    Semi => None,
+    Eq <e:Expr> Semi => Some(e),
+};
 
 VarDecls: Vec<VarDecl> = {
     => vec![],
@@ -160,6 +178,11 @@ StringLiteral: String = {
     }
 };
 
+BooleanLiteral: bool = {
+    TRUE => true,
+    FALSE => false,
+};
+
 Expr: Expr = RangeExpr;
 
 RangeExpr: Expr = {
@@ -170,6 +193,10 @@ RangeExpr: Expr = {
 Equality: Expr = {
     <l:Equality> EqEq <r:AddAndMinus> => Expr::Eq(Box::new(l), Box::new(r)),
     <l:Equality> Neq <r:AddAndMinus> => Expr::Neq(Box::new(l), Box::new(r)),
+    <l:Equality> Lt <r:AddAndMinus> => Expr::Lt(Box::new(l), Box::new(r)),
+    <l:Equality> Gt <r:AddAndMinus> => Expr::Gt(Box::new(l), Box::new(r)),
+    <l:Equality> Le <r:AddAndMinus> => Expr::Le(Box::new(l), Box::new(r)),
+    <l:Equality> Ge <r:AddAndMinus> => Expr::Ge(Box::new(l), Box::new(r)),
     <a:AddAndMinus>                   => a,
 }
 
@@ -195,6 +222,7 @@ Postfix: Expr = {
 Factor: Expr = {
     <n:Num> => Expr::Number(n),
     <s:StringLiteral> => Expr::Str(s),
+    <b:BooleanLiteral> => Expr::Bool(b),
     <id:Ident> LParen <args:ArgList> RParen => Expr::Call(id, args, None),
     <id:Ident> => Expr::Var(id),
     LParen <e:Expr> RParen => e,

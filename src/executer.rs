@@ -82,17 +82,36 @@ impl std::ops::Div for Value {
     }
 }
 
+pub struct ProgramSig {
+    pub runtime_os: OS,
+}
+
+pub enum OS {
+    Windows,
+    Linux,
+}
+
 pub fn execute(items: &Vec<ast::Item>, entry_idx: usize) -> Result<(), String> {
     let mut functions = HashMap::new();
+    let mut preprocessors = Vec::new();
+
+    let mut program_data = ProgramSig {
+        runtime_os: OS::Windows, // Default OS
+    };
 
     for item in items {
         match item {
             ast::Item::FunctionItem(func) => {
                 functions.insert(func.ident.as_str(), func);
             }
+            ast::Item::Preprocessor(pre) => {
+                preprocessors.push(pre);
+            }
             _ => { /* Ignore other items for now */ }
         }
     }
+
+    execute_preprocessor(preprocessors, &mut program_data);
 
     let entry_item = &items[entry_idx];
     match entry_item {
@@ -108,6 +127,18 @@ pub fn execute(items: &Vec<ast::Item>, entry_idx: usize) -> Result<(), String> {
 
     println!("Executing {} items...", items.len());
     Ok(())
+}
+
+fn execute_preprocessor(pre: Vec<&String>, program_data: &mut ProgramSig) {
+    for directive in pre {
+        if directive.starts_with("Windows") {
+            program_data.runtime_os = OS::Windows;
+        } else if directive.starts_with("Linux") {
+            program_data.runtime_os = OS::Linux;
+        } else {
+            println!("Unknown preprocessor directive: {}", directive);
+        }
+    }
 }
 
 fn call_function(
@@ -187,6 +218,32 @@ fn execute_block(
                     Err(e) => return Err(format!("Error evaluating if condition: {}", e)),
                 }
             }
+            ast::Stmt::While { cond, body } => {
+                println!("  Entering while loop with condition: {:?}", cond);
+                loop {
+                    match evalute_expr(&cond, functions, scope) {
+                        Ok(val) => {
+                            let is_true = match val {
+                                Value::Bool(b) => b,
+                                Value::Int(n) => n != 0,
+                                _ => false,
+                            };
+
+                            if is_true {
+                                println!("    Condition is true, executing loop body");
+                                let result = execute_block(body, functions, scope)?;
+                                if let Value::Return(_) = result {
+                                    return Ok(result);
+                                }
+                            } else {
+                                println!("    Condition is false, exiting loop");
+                                break;
+                            }
+                        }
+                        Err(e) => return Err(format!("Error evaluating while condition: {}", e)),
+                    }
+                }
+            }
             ast::Stmt::Return(opt_expr) => {
                 if let Some(expr) = opt_expr {
                     println!("  Evaluating return expression: {:?}", expr);
@@ -215,6 +272,7 @@ fn evalute_expr(
     match expr {
         ast::Expr::Number(n) => Ok(Value::Int(*n)),
         ast::Expr::Str(s) => Ok(Value::Str(s.clone())),
+        ast::Expr::Bool(b) => Ok(Value::Bool(*b)),
         ast::Expr::Add(lhs, rhs) => {
             let left = evalute_expr(lhs, functions, scope)?;
             let right = evalute_expr(rhs, functions, scope)?;
@@ -277,6 +335,38 @@ fn evalute_expr(
             let left = evalute_expr(lhs, functions, scope)?;
             let right = evalute_expr(rhs, functions, scope)?;
             Ok(Value::Bool(left != right))
+        }
+        ast::Expr::Lt(lhs, rhs) => {
+            let left = evalute_expr(lhs, functions, scope)?;
+            let right = evalute_expr(rhs, functions, scope)?;
+            match (left, right) {
+                (Value::Int(a), Value::Int(b)) => Ok(Value::Bool(a < b)),
+                _ => Err("Type error in less-than comparison".to_string()),
+            }
+        }
+        ast::Expr::Gt(lhs, rhs) => {
+            let left = evalute_expr(lhs, functions, scope)?;
+            let right = evalute_expr(rhs, functions, scope)?;
+            match (left, right) {
+                (Value::Int(a), Value::Int(b)) => Ok(Value::Bool(a > b)),
+                _ => Err("Type error in greater-than comparison".to_string()),
+            }
+        }
+        ast::Expr::Le(lhs, rhs) => {
+            let left = evalute_expr(lhs, functions, scope)?;
+            let right = evalute_expr(rhs, functions, scope)?;
+            match (left, right) {
+                (Value::Int(a), Value::Int(b)) => Ok(Value::Bool(a <= b)),
+                _ => Err("Type error in less-than-or-equal comparison".to_string()),
+            }
+        }
+        ast::Expr::Ge(lhs, rhs) => {
+            let left = evalute_expr(lhs, functions, scope)?;
+            let right = evalute_expr(rhs, functions, scope)?;
+            match (left, right) {
+                (Value::Int(a), Value::Int(b)) => Ok(Value::Bool(a >= b)),
+                _ => Err("Type error in greater-than-or-equal comparison".to_string()),
+            }
         }
         ast::Expr::If(cond, then_expr, else_expr) => {
             let condition = evalute_expr(cond, functions, scope)?;

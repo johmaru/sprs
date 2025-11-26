@@ -17,17 +17,24 @@ pub enum Token {
     Eq,
     EqEq,
     Neq,
+    Lt,
+    Gt,
+    Le,
+    Ge,
     DotDot,
     Semi,
     Comma,
     StrLiteral(String),
+    Bool(bool),
     If,
     Then,
     Else,
+    While,
     Ident(String),
     Num(i64),
     Function,
     Return,
+    Preprocessor,
 }
 
 #[derive(Logos, Debug, Clone, PartialEq)]
@@ -62,6 +69,14 @@ enum RawTok {
     EqEq,
     #[token("!=")]
     Neq,
+    #[token("<")]
+    Lt,
+    #[token(">")]
+    Gt,
+    #[token("<=")]
+    Le,
+    #[token(">=")]
+    Ge,
     #[token("..")]
     DotDot,
     #[token(";")]
@@ -79,18 +94,26 @@ enum RawTok {
     Then,
     #[token("else")]
     Else,
+    #[token("while")]
+    While,
     #[regex(r"[A-Za-z_][A-Za-z0-9_]*!?")]
     Ident,
     #[regex(r"[0-9]+")]
     Num,
     #[regex(r"[ \t\r\n\f]+", logos::skip)]
     WS,
-    #[regex(r"#[^\n]*", logos::skip)]
+    #[regex(r"# [^\n]*", logos::skip)]
     Comment,
+    #[token("true")]
+    True,
+    #[token("false")]
+    False,
     #[token("fn")]
     Function,
     #[token("return")]
     Return,
+    #[token("#define")]
+    Preprocessor,
 }
 
 pub struct Lexer<'input> {
@@ -138,6 +161,10 @@ impl<'input> Iterator for Lexer<'input> {
             RawTok::Eq => Token::Eq,
             RawTok::EqEq => Token::EqEq,
             RawTok::Neq => Token::Neq,
+            RawTok::Lt => Token::Lt,
+            RawTok::Gt => Token::Gt,
+            RawTok::Le => Token::Le,
+            RawTok::Ge => Token::Ge,
             RawTok::DotDot => Token::DotDot,
             RawTok::Semi => Token::Semi,
             RawTok::Comma => Token::Comma,
@@ -145,11 +172,15 @@ impl<'input> Iterator for Lexer<'input> {
             RawTok::If => Token::If,
             RawTok::Then => Token::Then,
             RawTok::Else => Token::Else,
+            RawTok::While => Token::While,
             RawTok::Ident => Token::Ident(text.to_string()),
             RawTok::Num => Token::Num(text.parse().unwrap()),
+            RawTok::True => Token::Bool(true),
+            RawTok::False => Token::Bool(false),
             RawTok::WS => unreachable!(),
             RawTok::Function => Token::Function,
             RawTok::Return => Token::Return,
+            RawTok::Preprocessor => Token::Preprocessor,
             RawTok::Comment => return self.next(),
         };
         Some(Ok((s, t, e)))

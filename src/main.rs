@@ -13,6 +13,8 @@ mod type_helper;
 fn main() {
     // Example input
     let input = r#"
+        #define Windows
+
         fn test() {
             a = 5 - 1;
             b = 10;
@@ -38,10 +40,22 @@ fn main() {
            y = [];
            z = 20;
            alpha = "test";
+           beta = true;
            print(x);
            vec_push!(y, z);
            vec_push!(y, alpha);
            print(y[1]);
+
+           # test calc
+              result = (x + 10) * 2;
+              print(result);
+
+           # test while
+              i = 0;
+                while i <= 5 {
+                    print(i);
+                    i = i + 1;
+                }
         }
     "#;
 
