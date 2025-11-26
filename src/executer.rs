@@ -1,5 +1,12 @@
-use crate::ast::{self, Function};
-use std::collections::{HashMap, hash_map};
+use crate::{
+    ast::{self, Function},
+    runner::{parse_only, parse_run},
+};
+use std::{
+    collections::{HashMap, hash_map},
+    fmt::format,
+    fs::read_to_string,
+};
 
 type Scope = HashMap<String, Value>;
 
@@ -13,6 +20,46 @@ pub enum Value {
     List(std::rc::Rc<std::cell::RefCell<Vec<Value>>>),
     Range(i64, i64),
 }
+
+pub struct Module {
+    pub name: String,
+    pub functions: HashMap<String, Callable<'static>>,
+    pub variables: HashMap<String, Value>,
+}
+impl Module {
+    pub fn new(name: &str) -> Self {
+        Module {
+            name: name.to_string(),
+            functions: HashMap::new(),
+            variables: HashMap::new(),
+        }
+    }
+}
+pub struct RuntimeContext<'a> {
+    pub modules: HashMap<String, Module>,
+    pub global_scope: Scope,
+    pub functions: HashMap<&'a str, Callable<'a>>,
+    pub program_data: ProgramSig,
+}
+impl<'a> RuntimeContext<'a> {
+    pub fn new() -> Self {
+        RuntimeContext {
+            modules: HashMap::new(),
+            global_scope: HashMap::new(),
+            functions: HashMap::new(),
+            program_data: ProgramSig {
+                runtime_os: OS::Windows, // Default OS
+            },
+        }
+    }
+}
+
+pub enum Callable<'a> {
+    User(&'a ast::Function),
+    Builtin(NativeFunction),
+}
+
+type NativeFunction = fn(&[Value]) -> Result<Value, String>;
 
 impl std::fmt::Display for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -91,18 +138,85 @@ pub enum OS {
     Linux,
 }
 
-pub fn execute(items: &Vec<ast::Item>, entry_idx: usize) -> Result<(), String> {
-    let mut functions = HashMap::new();
+fn entry_builtin_functions() -> HashMap<&'static str, Callable<'static>> {
+    let mut map = HashMap::new();
+    map.insert(
+        "println",
+        Callable::Builtin(crate::builtin::builtin_function_println),
+    );
+    map.insert(
+        "vec_push!",
+        Callable::Builtin(crate::builtin::builtin_function_push),
+    );
+    map
+}
+
+fn load_modules(ctx: &mut RuntimeContext, module_name: &str) -> Result<(), String> {
+    if ctx.modules.contains_key(module_name) {
+        return Ok(());
+    }
+
+    let path = format!("{}.sprs", module_name);
+    let source = std::fs::read_to_string(&path).map_err(|_| "file not found");
+    let source = match source {
+        Ok(s) => s,
+        Err(e) => return Err(format!("Error reading module {}: {}", module_name, e)),
+    };
+    let ast =
+        parse_only(&source).map_err(|e| format!("Error parsing module {}: {}", module_name, e));
+    let ast = match ast {
+        Ok(a) => a,
+        Err(e) => return Err(format!("Error parsing module {}: {}", module_name, e)),
+    };
+
+    let mut preprocessors = Vec::new();
+    for item in &ast {
+        match item {
+            ast::Item::Import(sub_module) => {
+                load_modules(ctx, &sub_module).map_err(|e| format!("Error Load Module {}", e))?;
+            }
+            ast::Item::Preprocessor(pre) => {
+                preprocessors.push(pre);
+            }
+            ast::Item::Import(ident) => {
+                load_modules(ctx, ident)
+                    .map_err(|e| format!("Error loading module {}: {}", ident, e))?;
+            }
+            &ast::Item::Package(ref name) => {
+                // Package declaration, can be used for namespacing if needed
+                println!("Loading package: {}", name);
+            }
+            _ => {}
+        }
+    }
+
+    execute_preprocessor(preprocessors, &mut ctx.program_data);
+
+    let mut module = Module::new(module_name);
+
+    ctx.modules.insert(module_name.to_string(), module);
+    Ok(())
+}
+
+pub fn execute(
+    ctx: &mut RuntimeContext,
+    items: &Vec<ast::Item>,
+    entry_idx: usize,
+) -> Result<(), String> {
+    let mut functions: HashMap<&str, Callable> = HashMap::new();
     let mut preprocessors = Vec::new();
 
-    let mut program_data = ProgramSig {
-        runtime_os: OS::Windows, // Default OS
-    };
+    let mut builtins = entry_builtin_functions();
+    functions.extend(builtins.drain());
 
     for item in items {
         match item {
+            ast::Item::Import(module_name) => {
+                load_modules(ctx, module_name)
+                    .map_err(|e| format!("Error loading module {}: {}", module_name, e))?;
+            }
             ast::Item::FunctionItem(func) => {
-                functions.insert(func.ident.as_str(), func);
+                functions.insert(func.ident.as_str(), Callable::User(func));
             }
             ast::Item::Preprocessor(pre) => {
                 preprocessors.push(pre);
@@ -111,17 +225,19 @@ pub fn execute(items: &Vec<ast::Item>, entry_idx: usize) -> Result<(), String> {
         }
     }
 
-    execute_preprocessor(preprocessors, &mut program_data);
+    execute_preprocessor(preprocessors, &mut ctx.program_data);
 
     let entry_item = &items[entry_idx];
     match entry_item {
-        ast::Item::FunctionItem(func) => match call_function(func, &[], &functions) {
-            Ok(var) => {
-                println!("Program finished with return value: {}", var);
-                ()
+        ast::Item::FunctionItem(func) => {
+            match call_function(&Callable::User(func), &[], &functions) {
+                Ok(var) => {
+                    println!("Program finished with return value: {}", var);
+                    ()
+                }
+                Err(e) => return Err(format!("Error executing function {}: {}", func.ident, e)),
             }
-            Err(e) => return Err(format!("Error executing function {}: {}", func.ident, e)),
-        },
+        }
         _ => return Err("Entry item is not a function".to_string()),
     }
 
@@ -142,33 +258,36 @@ fn execute_preprocessor(pre: Vec<&String>, program_data: &mut ProgramSig) {
 }
 
 fn call_function(
-    func: &Function,
+    func: &Callable,
     arg_value: &[Value],
-    functions: &HashMap<&str, &Function>,
+    functions: &HashMap<&str, Callable>,
 ) -> Result<Value, String> {
-    println!("Calling function: {}", func.ident);
+    match func {
+        Callable::Builtin(builtin_fn) => builtin_fn(arg_value),
+        Callable::User(func) => {
+            let body = &func.blk;
+            let args = &func.params;
 
-    let body = &func.blk;
-    let args = &func.params;
+            let mut scope: Scope = HashMap::new();
 
-    let mut scope: Scope = HashMap::new();
+            for (idx, param) in args.iter().enumerate() {
+                let val = arg_value.get(idx).cloned().unwrap_or(Value::Unit);
+                scope.insert(param.ident.clone(), val.clone());
+                println!("  Param {}: {} = {}", idx, param.ident, val);
+            }
 
-    for (idx, param) in args.iter().enumerate() {
-        let val = arg_value.get(idx).cloned().unwrap_or(Value::Unit);
-        scope.insert(param.ident.clone(), val.clone());
-        println!("  Param {}: {} = {}", idx, param.ident, val);
-    }
-
-    let result = execute_block(body, functions, &mut scope)?;
-    match result {
-        Value::Return(val) => Ok(*val),
-        _ => Ok(result),
+            let result = execute_block(body, functions, &mut scope)?;
+            match result {
+                Value::Return(val) => Ok(*val),
+                _ => Ok(result),
+            }
+        }
     }
 }
 
 fn execute_block(
     stmts: &Vec<ast::Stmt>,
-    functions: &HashMap<&str, &Function>,
+    functions: &HashMap<&str, Callable>,
     scope: &mut Scope,
 ) -> Result<Value, String> {
     for stmt in stmts {
@@ -266,7 +385,7 @@ fn execute_block(
 
 fn evalute_expr(
     expr: &ast::Expr,
-    functions: &HashMap<&str, &Function>,
+    functions: &HashMap<&str, Callable>,
     scope: &Scope,
 ) -> Result<Value, String> {
     match expr {
@@ -377,24 +496,6 @@ fn evalute_expr(
             }
         }
         ast::Expr::Call(ident, args, _) => {
-            // builtin functions
-            if ident == "print" {
-                for arg in args {
-                    let val = evalute_expr(arg, functions, scope)?;
-                    println!("{}", val);
-                }
-                return Ok(Value::Unit);
-            }
-
-            if ident == "vec_push!" {
-                let mut arg_values = Vec::new();
-                for arg in args {
-                    arg_values.push(evalute_expr(arg, functions, scope)?);
-                    println!("  vec_push! argument: {}", arg_values.last().unwrap());
-                }
-                return crate::builtin::builtin_function_push(&arg_values);
-            }
-
             if let Some(func) = functions.get(ident.as_str()) {
                 let mut arg_values = Vec::new();
                 for arg in args {
@@ -451,6 +552,10 @@ fn evalute_expr(
             } else {
                 Err("Collection must be a list".to_string())
             }
+        }
+        ast::Expr::ModuleAccess(module_name, function_name, args) => {
+            // !TODO Implement module access
+            Err("Module access not implemented".to_string())
         }
     }
 }

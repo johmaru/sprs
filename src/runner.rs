@@ -60,7 +60,9 @@ pub fn parse_run(input: &str) -> Result<(), String> {
 
     println!("Entry function: {}", entry.name);
 
-    match executer::execute(&items, entry.ix) {
+    let mut ctx = executer::RuntimeContext::new();
+
+    match executer::execute(&mut ctx, &items, entry.ix) {
         Ok(_) => println!("Execution completed successfully."),
         Err(e) => {
             eprintln!("Error during execution: {}", e);
@@ -69,4 +71,15 @@ pub fn parse_run(input: &str) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+pub fn parse_only(input: &str) -> Result<Vec<crate::ast::Item>, String> {
+    let mut lex = lexer::Lexer::new(input);
+    match grammar::StartParser::new().parse(&mut lex) {
+        Ok(items) => Ok(items),
+        Err(e) => {
+            eprintln!("Error parsing input: {:?}", e);
+            Err(format!("Error parsing input: {:?}", e))
+        }
+    }
 }

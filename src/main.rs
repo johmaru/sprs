@@ -1,8 +1,10 @@
 use crate::runner::debug_run;
 use crate::runner::parse_run;
+use inkwell::context::Context;
 
 mod ast;
 mod builtin;
+mod compiler;
 mod executer;
 mod grammar;
 mod lexer;
@@ -11,6 +13,18 @@ mod sema_builder;
 mod type_helper;
 
 fn main() {
+    let context = Context::create();
+    let builder = context.create_builder();
+
+    if let Err(e) = compiler.load_and_compile_module("main") {
+        eprintln!("Compile Error: {}", e);
+        return;
+    }
+
+    if let Some(module) = compiler.modules.get("main") {
+        module.print_to_file("output.ll").unwrap();
+        println!("LLVM IR written to output.ll");
+    }
     // Example input
     let input = r#"
         #define Windows
@@ -19,7 +33,7 @@ fn main() {
             a = 5 - 1;
             b = 10;
             c = "hello" + " world";
-            print(c);
+            println(c);
 
             # test equality
             if a == 3 then {
@@ -41,19 +55,19 @@ fn main() {
            z = 20;
            alpha = "test";
            beta = true;
-           print(x);
+           println(x);
            vec_push!(y, z);
            vec_push!(y, alpha);
-           print(y[1]);
+           println(y[1]);
+           # println(x + alpha);
 
            # test calc
               result = (x + 10) * 2;
-              print(result);
-
+              println(result);
            # test while
               i = 0;
                 while i <= 5 {
-                    print(i);
+                    println(i);
                     i = i + 1;
                 }
         }

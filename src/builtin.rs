@@ -16,3 +16,11 @@ pub fn builtin_function_push(args: &[Value]) -> Result<Value, String> {
         _ => Err("First argument to push must be a list".to_string()),
     }
 }
+
+pub fn builtin_function_println(args: &[Value]) -> Result<Value, String> {
+    for (_, arg) in args.iter().enumerate() {
+        println!("{}", arg);
+    }
+    println!();
+    Ok(Value::Unit)
+}

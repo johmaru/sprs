@@ -35,6 +35,8 @@ pub enum Token {
     Function,
     Return,
     Preprocessor,
+    Package,
+    Import,
 }
 
 #[derive(Logos, Debug, Clone, PartialEq)]
@@ -114,6 +116,10 @@ enum RawTok {
     Return,
     #[token("#define")]
     Preprocessor,
+    #[token("pkg")]
+    Package,
+    #[token("import")]
+    Import,
 }
 
 pub struct Lexer<'input> {
@@ -181,6 +187,8 @@ impl<'input> Iterator for Lexer<'input> {
             RawTok::Function => Token::Function,
             RawTok::Return => Token::Return,
             RawTok::Preprocessor => Token::Preprocessor,
+            RawTok::Package => Token::Package,
+            RawTok::Import => Token::Import,
             RawTok::Comment => return self.next(),
         };
         Some(Ok((s, t, e)))

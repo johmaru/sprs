@@ -43,6 +43,8 @@ extern {
         Function => Token::Function,
         Return => Token::Return,
         Preprocessor => Token::Preprocessor,
+        Import => Token::Import,
+        Package => Token::Package,
     }
 }
 
@@ -53,12 +55,21 @@ ItemNode: Item = {
     FunctionDef,
     <v:VarDecl> => Item::VarItem(v),
     <p:PreprocessorDirective> => Item::Preprocessor(p),
+    <i:ImportDirective> => Item::Import(i),
+    <p:PackageDirective> => Item::Package(p),
 };
 
 PreprocessorDirective: String = {
     Preprocessor <id:Ident> => id,
-}
+};
 
+ImportDirective: String = {
+    Import <id:Ident> Semi => id,
+};
+
+PackageDirective: String = {
+    Package <id:Ident> Semi => id,
+};
 
 FnKw: () = <tok:Function> => ();
 

@@ -40,6 +40,8 @@ pub fn collect_signatures(items: &[ast::Item]) -> Vec<ItemSig> {
             }),
             ast::Item::VarItem(_) => None,
             ast::Item::Preprocessor(_) => None,
+            ast::Item::Import(_) => None,
+            ast::Item::Package(_) => None,
         })
         .collect();
 
@@ -216,5 +218,6 @@ fn infer_type_hint(expr: &ast::Expr, sigs: &[ItemSig]) -> Option<Type> {
         List(_) => Some(Type::Any), // Currently, we treat all lists as Any type
         Range(_, _) => Some(Type::Any),
         Index(_, _) => Some(Type::Any),
+        ModuleAccess(_, _, _) => Some(Type::Any), // !TODO Implement module access type inference
     }
 }
