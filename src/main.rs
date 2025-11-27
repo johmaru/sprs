@@ -1,6 +1,6 @@
-//! # Simple Rust-based compiler for a toy programming language "Sprs"
+//! # Rust-based compiler for 'Sprs': A language designed for embedded and system control.
 //! # Overview
-//! This project implements a super simple compiler for embadded and system control to optimize programming language called "Sprs" using Rust
+//! This project implements a super simple compiler for a custom programming language called 'Sprs' using Rust and LLVM via the Inkwell library. The compiler translates Sprs source code into LLVM IR, which is then compiled into machine code for execution.
 //! The compiler is dynamic type checking and easy to use and clear for the base of the language design.
 //! 
 //! # Super Thanks to

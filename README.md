@@ -2,15 +2,18 @@
 
 <!-- cargo-rdme start -->
 
-## Simple Rust-based compiler for a toy programming language "Sprs"
+## Rust-based compiler for 'Sprs': A language designed for embedded and system control.
 ## Overview
-This project implements a super simple compiler for embadded and system control to optimize programming language called "Sprs" using Rust
+This project implements a super simple compiler for a custom programming language called 'Sprs' using Rust and LLVM via the Inkwell library. The compiler translates Sprs source code into LLVM IR, which is then compiled into machine code for execution.
 The compiler is dynamic type checking and easy to use and clear for the base of the language design.
 
 ## Super Thanks to
 - [Inkwell](https://github.com/TheDan64/inkwell) - LLVM bindings for Rust
 - [logos](https://github.com/maciejhirsz/logos) - Lexer generator for Rust
 - [lalrpop](https://github.com/lalrpop/lalrpop) - LR(1) parser generator for Rust
+- [Rust](https://www.rust-lang.org/) - The programming language used to implement the compiler
+- [Clang/LLVM](https://clang.llvm.org/) - Used for linking and generating executables
+- [cargo-rdme](https://github.com/orium/cargo-rdme) - For generating README from doc comments
 
 ## sprs Language Specification
 
