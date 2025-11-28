@@ -32,13 +32,17 @@
            println(y[1]);
            # println(x + alpha);
 
-           # test calc
+            # test calc
               result = (x + 10) * 2;
               println(result);
-           # test while
+            # test while
               i = 0;
                 while i <= 5 {
                     println(i);
                     i = i + 1;
                 }
+
+            # test mod
+              m = 10 % 3;
+              println(m);
         }

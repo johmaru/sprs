@@ -12,6 +12,7 @@ pub enum Expr {
     Mul(Box<Expr>, Box<Expr>),               // Lhs, Rhs
     Minus(Box<Expr>, Box<Expr>),             // Lhs, Rhs
     Div(Box<Expr>, Box<Expr>),               // Lhs, Rhs
+    Mod(Box<Expr>, Box<Expr>),               // Lhs, Rhs
     Eq(Box<Expr>, Box<Expr>),                // Lhs, Rhs
     Neq(Box<Expr>, Box<Expr>),               // Lhs, Rhs
     Lt(Box<Expr>, Box<Expr>),                // Lhs, Rhs

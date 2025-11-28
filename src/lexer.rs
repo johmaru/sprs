@@ -14,6 +14,7 @@ pub enum Token {
     Minus,
     MinusMinus,
     Div,
+    Mod,
     Eq,
     EqEq,
     Neq,
@@ -65,6 +66,8 @@ enum RawTok {
     MinusMinus,
     #[token("/")]
     Div,
+    #[token("%")]
+    Mod,
     #[token("=")]
     Eq,
     #[token("==")]
@@ -164,6 +167,7 @@ impl<'input> Iterator for Lexer<'input> {
             RawTok::Minus => Token::Minus,
             RawTok::MinusMinus => Token::MinusMinus,
             RawTok::Div => Token::Div,
+            RawTok::Mod => Token::Mod,
             RawTok::Eq => Token::Eq,
             RawTok::EqEq => Token::EqEq,
             RawTok::Neq => Token::Neq,

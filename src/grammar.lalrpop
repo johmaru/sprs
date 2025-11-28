@@ -21,6 +21,7 @@ extern {
         Minus  => Token::Minus,
         MinusMinus => Token::MinusMinus,
         Div    => Token::Div,
+        Mod    => Token::Mod,
         Eq     => Token::Eq,
         EqEq   => Token::EqEq,
         Neq    => Token::Neq,
@@ -212,14 +213,15 @@ Equality: Expr = {
 }
 
 AddAndMinus: Expr = {
-    <l:AddAndMinus> Plus <r:MulAndDiv> => Expr::Add(Box::new(l), Box::new(r)),
-    <l:AddAndMinus> Minus <r:MulAndDiv> => Expr::Minus(Box::new(l), Box::new(r)),
-    <m:MulAndDiv>              => m,
+    <l:AddAndMinus> Plus <r:MulAndDivAndMod> => Expr::Add(Box::new(l), Box::new(r)),
+    <l:AddAndMinus> Minus <r:MulAndDivAndMod> => Expr::Minus(Box::new(l), Box::new(r)),
+    <m:MulAndDivAndMod>              => m,
 };
 
-MulAndDiv: Expr = {
-    <l:MulAndDiv> Star <r:Factor> => Expr::Mul(Box::new(l), Box::new(r)),
-    <l:MulAndDiv> Div <r:Factor> => Expr::Div(Box::new(l), Box::new(r)),
+MulAndDivAndMod: Expr = {
+    <l:MulAndDivAndMod> Star <r:Factor> => Expr::Mul(Box::new(l), Box::new(r)),
+    <l:MulAndDivAndMod> Div <r:Factor> => Expr::Div(Box::new(l), Box::new(r)),
+    <l:MulAndDivAndMod> Mod <r:Factor> => Expr::Mod(Box::new(l), Box::new(r)),
     <p:Postfix> => p,
 };
 

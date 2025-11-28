@@ -189,7 +189,7 @@ fn infer_type_hint(expr: &ast::Expr, sigs: &[ItemSig]) -> Option<Type> {
                 _ => None,
             }
         }
-        Minus(left, right) | Div(left, right) => {
+        Minus(left, right) | Div(left, right) | Mod(left, right) => {
             match (infer_type_hint(left, sigs), infer_type_hint(right, sigs)) {
                 (Some(Type::Int), Some(Type::Int)) => Some(Type::Int),
                 _ => None,

@@ -417,6 +417,14 @@ fn evalute_expr(
             let right = evalute_expr(rhs, functions, scope)?;
             Ok(left / right)
         }
+        ast::Expr::Mod(lhs, rhs) => {
+            let left = evalute_expr(lhs, functions, scope)?;
+            let right = evalute_expr(rhs, functions, scope)?;
+            match (left, right) {
+                (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a % b)),
+                _ => Err("Type error in modulus operation".to_string()),
+            }
+        }
         ast::Expr::Increment(expr) => {
             if let ast::Expr::Var(ident) = &**expr {
                 if let Some(val) = scope.get(ident) {

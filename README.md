@@ -86,7 +86,7 @@ while x < 10 {
 ```
 
 - Operators
-- Arithmetic: `+`, `-`, `*`, `/`
+- Arithmetic: `+`, `-`, `*`, `/`, `%`
 - Comparison: `==`, `!=`, `<`, `>`, `<=`, `>=`
 - Increment/Decrement: `++`, `--`(only for postfix)
 - Range creation: `..`(e.g., `1..10`)
