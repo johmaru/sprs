@@ -29,6 +29,7 @@ extern {
         Gt     => Token::Gt,
         Le     => Token::Le,
         Ge     => Token::Ge,
+        Dot    => Token::Dot,
         DotDot => Token::DotDot,
         Semi   => Token::Semi,
         StrLiteral => Token::StrLiteral(String),
@@ -236,6 +237,9 @@ Factor: Expr = {
     <n:Num> => Expr::Number(n),
     <s:StringLiteral> => Expr::Str(s),
     <b:BooleanLiteral> => Expr::Bool(b),
+    <mod_name:Ident> Dot <func_name:Ident> LParen <args:ArgList> RParen => {
+        Expr::ModuleAccess(mod_name, func_name, args)
+    },
     <id:Ident> LParen <args:ArgList> RParen => Expr::Call(id, args, None),
     <id:Ident> => Expr::Var(id),
     LParen <e:Expr> RParen => e,

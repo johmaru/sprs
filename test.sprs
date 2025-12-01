@@ -1,0 +1,21 @@
+pkg test;
+
+fn test() {
+            a = 5 - 1;
+            b = 10;
+            c = "hello" + " world";
+            println(c);
+
+            # test equality
+            if a == 3 then {
+                return a;
+            }
+
+            if a != 3 then {
+                return a++;
+            } else {
+                return a + 2;
+            }
+
+            return b;
+        }

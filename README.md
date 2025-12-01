@@ -8,12 +8,12 @@ This project implements a super simple compiler for a custom programming languag
 The compiler is dynamic type checking and easy to use and clear for the base of the language design.
 
 ## Super Thanks to
-- [Inkwell](https://github.com/TheDan64/inkwell) - LLVM bindings for Rust
-- [logos](https://github.com/maciejhirsz/logos) - Lexer generator for Rust
-- [lalrpop](https://github.com/lalrpop/lalrpop) - LR(1) parser generator for Rust
-- [Rust](https://www.rust-lang.org/) - The programming language used to implement the compiler
-- [Clang/LLVM](https://clang.llvm.org/) - Used for linking and generating executables
-- [cargo-rdme](https://github.com/orium/cargo-rdme) - For generating README from doc comments
+* [Inkwell](https://github.com/TheDan64/inkwell) - LLVM bindings for Rust
+* [logos](https://github.com/maciejhirsz/logos) - Lexer generator for Rust
+* [lalrpop](https://github.com/lalrpop/lalrpop) - LR(1) parser generator for Rust
+* [Rust](https://www.rust-lang.org/) - The programming language used to implement the compiler
+* [Clang/LLVM](https://clang.llvm.org/) - Used for linking and generating executables
+* [cargo-rdme](https://github.com/orium/cargo-rdme) - For generating README from doc comments
 
 ## sprs Language Specification
 
@@ -33,13 +33,13 @@ For this language development environment setup is WSL2(Ubuntu) + VSCode is reco
 
 
 ### Language Features
-- Basic data types:
- - Int
- - Bool
- - Str
- - List
- - Range
- - Unit
+[] Basic data types:
+ * Int
+ * Bool
+ * Str
+ * List
+ * Range
+ * Unit
 
 - Variables and assignments
 ```sprs
@@ -63,13 +63,16 @@ fn main() {
 ```
 
 - runtime functions
-- '__list_new' for creating a new list
-- '__list_get' for getting an element from a list by index
-- '__list_push' for pushing an element to the end of a list
-- '__range_new' for creating a new range
-- '__println' for printing values to the console
-- '__strlen' for getting the length of a string
-- '__malloc' for allocating memory
+
+  | Function Name   | Description                          |
+  |-----------------|--------------------------------------|
+- |__list_new| for creating a new list|
+- |__list_get| for getting an element from a list by index|
+- |__list_push| for pushing an element to the end of a list|
+- |__range_new| for creating a new range|
+- |__println| for printing values to the console|
+- |__strlen| for getting the length of a string|
+- |__malloc| for allocating memory|
 
 - Control flow
 ```sprs
@@ -85,27 +88,87 @@ while x < 10 {
 }
 ```
 
-- Operators
-- Arithmetic: `+`, `-`, `*`, `/`, `%`
-- Comparison: `==`, `!=`, `<`, `>`, `<=`, `>=`
-- Increment/Decrement: `++`, `--`(only for postfix)
-- Range creation: `..`(e.g., `1..10`)
-- indexing: `list[index]`
+[] Operators
+* Arithmetic: `+`, `-`, `*`, `/`, `%`
+* Comparison: `==`, `!=`, `<`, `>`, `<=`, `>=`
+* Increment/Decrement: `++`, `--`(only for postfix)
+* Range creation: `..`(e.g., `1..10`)
+* indexing: `list[index]`
 
-- Built-in functions
-- `println(value)`: Print value to the console
+[] Built-in functions
+* `println(value)`: Print value to the console
 examples:
 ```rust
 println(y[1]);
 ```
-- `list_push(list)`: Push value to the end of the list
+* `list_push(list)`: Push value to the end of the list
 
-- module and preprocessor
+[] module and preprocessor
 
-- `#define` for defining macros
+* `#define` for defining macros
 Currently this language has
-- `#define Windows` or `#define Linux` for OS detection
-- 'pkg' for module definition
-- 'import' for module importing
+* `#define Windows` or `#define Linux` for OS detection
+* 'pkg' for module definition
+* 'import' for module importing
+
+examples:
+```sprs
+#define Windows
+import test;
+
+import test;
+#define Windows
+
+       fn main() {
+          # access to module function
+          x = test.test();
+          y = [];
+          z = 20;
+          alpha = "test";
+          beta = true;
+          println(x);
+          list_push(y, z);
+          list_push(y, alpha);
+          println(y[1]);
+          # println(x + alpha);
+
+           # test calc
+             result = (x + 10) * 2;
+             println(result);
+           # test while
+             i = 0;
+               while i <= 5 {
+                   println(i);
+                   i = i + 1;
+               }
+
+           # test mod
+             m = 10 % 3;
+             println(m);
+       }
+
+```sprs
+
+pkg test;
+
+ fn test() {
+           a = 5 - 1;
+           b = 10;
+           c = "hello" + " world";
+           println(c);
+
+           # test equality
+           if a == 3 then {
+               return a;
+           }
+
+           if a != 3 then {
+               return a++;
+           } else {
+               return a + 2;
+           }
+
+           return b;
+      }
 
 <!-- cargo-rdme end -->

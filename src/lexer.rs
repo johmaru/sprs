@@ -22,6 +22,7 @@ pub enum Token {
     Gt,
     Le,
     Ge,
+    Dot,
     DotDot,
     Semi,
     Comma,
@@ -84,6 +85,8 @@ enum RawTok {
     Ge,
     #[token("..")]
     DotDot,
+    #[token(".")]
+    Dot,
     #[token(";")]
     Semi,
     #[token(",")]
@@ -175,6 +178,7 @@ impl<'input> Iterator for Lexer<'input> {
             RawTok::Gt => Token::Gt,
             RawTok::Le => Token::Le,
             RawTok::Ge => Token::Ge,
+            RawTok::Dot => Token::Dot,
             RawTok::DotDot => Token::DotDot,
             RawTok::Semi => Token::Semi,
             RawTok::Comma => Token::Comma,

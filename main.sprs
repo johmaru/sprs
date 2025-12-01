@@ -1,27 +1,8 @@
+import test;
 #define Windows
 
-        fn test() {
-            a = 5 - 1;
-            b = 10;
-            c = "hello" + " world";
-            println(c);
-
-            # test equality
-            if a == 3 then {
-                return a;
-            }
-
-            if a != 3 then {
-                return a++;
-            } else {
-                return a + 2;
-            }
-
-            return b;
-        }
-
         fn main() {
-           x = test();
+           x = test.test();
            y = [];
            z = 20;
            alpha = "test";

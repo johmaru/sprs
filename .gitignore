@@ -3,4 +3,4 @@ Cargo.lock
 libruntime.a
 main_exec
 output.ll
-output.o
+*.o

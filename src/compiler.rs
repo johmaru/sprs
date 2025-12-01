@@ -211,6 +211,25 @@ impl<'ctx> Compiler<'ctx> {
             }
         }
 
+        if llvm_module_name == "main" {
+            if let Some(sprs_main_fn) = module.get_function("_sprs_main") {
+                let i32_type = self.context.i32_type();
+                let main_type = i32_type.fn_type(&[], false);
+                let c_main = module.add_function("main", main_type, None);
+
+                let entry = self.context.append_basic_block(c_main, "entry");
+                self.builder.position_at_end(entry);
+
+                self.builder
+                    .build_call(sprs_main_fn, &[], "call_sprs_main")
+                    .unwrap();
+
+                self.builder
+                    .build_return(Some(&i32_type.const_int(0, false)))
+                    .unwrap();
+            }
+        }
+
         self.modules.insert(llvm_module_name, module);
         Ok(())
     }
@@ -282,7 +301,14 @@ impl<'ctx> Compiler<'ctx> {
             .collect();
 
         let fn_type = self.runtime_value_type.fn_type(&arg_types, false);
-        let fn_val = module.add_function(&func.ident, fn_type, None);
+
+        let func_name = if func.ident == "main" {
+            "_sprs_main"
+        } else {
+            &func.ident
+        };
+
+        let fn_val = module.add_function(func_name, fn_type, None);
 
         let entry = self.context.append_basic_block(fn_val, "entry");
         self.builder.position_at_end(entry);
@@ -1919,8 +1945,49 @@ impl<'ctx> Compiler<'ctx> {
                 Ok(res_ptr.into())
             }
             ast::Expr::ModuleAccess(module_name, function_name, args) => {
-                // !TODO Implement module access
-                Err("Module access not implemented".to_string())
+                let target_module = self
+                    .modules
+                    .get(module_name)
+                    .ok_or_else(|| format!("Module '{}' not found", module_name))?;
+
+                let target_func = target_module.get_function(&function_name).ok_or_else(|| {
+                    format!(
+                        "Function '{}' not found in module '{}'",
+                        function_name, module_name
+                    )
+                })?;
+
+                let func_in_current_module = if let Some(func) = module.get_function(&function_name)
+                {
+                    func
+                } else {
+                    module.add_function(&function_name, target_func.get_type(), None)
+                };
+
+                let mut compiled_args = Vec::with_capacity(args.len());
+                for arg_expr in args {
+                    let arg_val = self.compile_expr(arg_expr, module)?.into();
+                    compiled_args.push(arg_val);
+                }
+
+                let call_site = self
+                    .builder
+                    .build_call(func_in_current_module, &compiled_args, "module_func_call")
+                    .unwrap();
+
+                let result_val = match call_site.try_as_basic_value() {
+                    ValueKind::Basic(val) => val,
+                    ValueKind::Instruction(_) => {
+                        return Err("Expected basic value from module function call".to_string());
+                    }
+                };
+
+                let return_ptr = self
+                    .builder
+                    .build_alloca(self.runtime_value_type, "return_ptr")
+                    .unwrap();
+                self.builder.build_store(return_ptr, result_val).unwrap();
+                Ok(return_ptr.into())
             }
             _ => Err("Not implemented".to_string()),
         }
