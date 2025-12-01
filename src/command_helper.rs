@@ -1,11 +1,13 @@
+use std::fs::File;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Debug)]
-struct ProjectConfig {
-    name: String,
-    version: String,
-    src_dir: String,
-    out_dir: String,
+pub struct ProjectConfig {
+    pub name: String,
+    pub version: String,
+    pub src_dir: String,
+    pub out_dir: String,
 }
 
 pub fn get_all_arguments(args: Vec<String>) -> Vec<String> {
@@ -26,21 +28,64 @@ pub fn get_all_arguments(args: Vec<String>) -> Vec<String> {
     all_args
 }
 
-pub fn init_project(name: Option<&str>) {
-    if let Some(project_name) = name {
-        println!("Initializing project with name: {}", project_name);
+pub fn init_project(mut name: Option<&str>) {
+
+        if name.is_none() {
+            name = Some("sprs_project");
+        }
+    
+        println!("Initializing project with name: {}", name.unwrap());
 
         let config = ProjectConfig {
-            name: project_name.to_string(),
+            name: name.unwrap().to_string(),
             version: "0.1.0".to_string(),
             src_dir: "src".to_string(),
             out_dir: "out".to_string(),
         };
-    } else {
-        println!("Initializing project without a specific name.");
-        // Here you can add the logic to create a default project
-    }
+
+        match toml::to_string_pretty(&config) {
+            Ok(toml_str) => {
+                match File::create("sprs.toml") {
+                    Ok(mut file) => {
+                        if let Err(e) = std::io::Write::write_all(&mut file, toml_str.as_bytes()) {
+                            eprintln!("Failed to write to sprs.toml: {}", e);
+                        } else {
+                            println!("Project initialized successfully with sprs.toml");
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to create sprs.toml: {}", e);
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("Failed to serialize project config: {}", e);
+            }
+        }
+
+        if let Err(e) = std::fs::create_dir_all("src") {
+            eprintln!("Failed to create src directory: {}", e);
+            return;
+        }
+
+        match File::create("src/main.sprs") {
+            Ok(mut file) => {
+                let default_code =r#"fn main() {
+    println("Hello, Sprs!");
 }
+"#;
+                if let Err(e) = std::io::Write::write_all(&mut file, default_code.as_bytes()) {
+                    eprintln!("Failed to write to src/main.sprs: {}", e);
+                } else {
+                    println!("Created src/main.sprs with default code.");
+                }
+            }
+            Err(e) => {
+                eprintln!("Failed to create src/main.sprs: {}", e);
+            }
+        }
+
+    }
 
 pub enum HelpCommand {
     All,
@@ -55,6 +100,8 @@ pub fn help_print(help: HelpCommand) {
             println!("Options:");
             println!("---This Section is 'Command' Section---");
             println!("  init <?args>  Initialize the project");
+            println!("  build         Build the project");
+            println!("  run           Run the project");
             println!("  help          Show this help message");
             println!("  version       Show compiler version");
             println!("---This Section is 'Option' Section---");

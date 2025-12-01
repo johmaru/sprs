@@ -14,6 +14,8 @@ The compiler is dynamic type checking and easy to use and clear for the base of 
 * [Rust](https://www.rust-lang.org/) - The programming language used to implement the compiler
 * [Clang/LLVM](https://clang.llvm.org/) - Used for linking and generating executables
 * [cargo-rdme](https://github.com/orium/cargo-rdme) - For generating README from doc comments
+* [serde](https://serde.rs/) - Serialization framework for Rust
+* [toml](https://github.com/toml-rs/toml/tree/main/crates/toml) - TOML parsing library for Rust
 
 ## sprs Language Specification
 
@@ -33,7 +35,7 @@ For this language development environment setup is WSL2(Ubuntu) + VSCode is reco
 
 
 ### Language Features
-#### * Basic data types: *
+#### **Basic data types:**
  * Int
  * Bool
  * Str
@@ -88,14 +90,14 @@ while x < 10 {
 }
 ```
 
-####  * Operators *
+####  **Operators**
 * Arithmetic: `+`, `-`, `*`, `/`, `%`
 * Comparison: `==`, `!=`, `<`, `>`, `<=`, `>=`
 * Increment/Decrement: `++`, `--`(only for postfix)
 * Range creation: `..`(e.g., `1..10`)
 * indexing: `list[index]`
 
-####  * Built-in functions *
+####  **Built-in functions**
 * `println(value)`: Print value to the console
 examples:
 ```rust
@@ -103,7 +105,7 @@ println(y[1]);
 ```
 * `list_push(list)`: Push value to the end of the list
 
-####  * module and preprocessor *
+####  **module and preprocessor**
 
 * `#define` for defining macros
 Currently this language has
@@ -171,5 +173,23 @@ pkg test;
            return b;
       }
 ```
+
+### Compiler Usage
+To build and run a Sprs program, use the following commands:
+```bash
+# To build the project
+sprs build
+
+# To run the project
+sprs run
+```
+
+//! ## Project Initialization
+To initialize a new Sprs project, use the following command:
+```bash
+sprs init --name <project_name>
+```
+This command creates a new directory structure with a default `sprs.toml` configuration file and a sample `main.sprs` source file.
+
 
 <!-- cargo-rdme end -->

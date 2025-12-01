@@ -5,15 +5,44 @@ use inkwell::{
     targets::{InitializationConfig, Target, TargetMachine, TargetTriple},
 };
 
-use crate::compiler::{self, OS};
+use crate::{command_helper::{self, ProjectConfig}, compiler::{self, OS}};
 
-pub fn execute(full_path: String) {
+const RUNTIME_SOURCE: &str = include_str!("runtime.rs");
+
+#[derive(PartialEq)]
+pub enum ExecuteMode {
+    Build,
+    Run,
+}
+
+pub fn build_and_run(_full_path: String, mode: ExecuteMode) {
     let context = Context::create();
     let builder = context.create_builder();
 
     let mut compiler = compiler::Compiler::new(&context, builder);
 
-    let path = "main.sprs".to_string();
+    let setting_toml_content = std::fs::read_to_string("sprs.toml").unwrap_or_else(|_| "".to_string());
+
+    let config: Option<ProjectConfig> = if !setting_toml_content.is_empty() {
+        match toml::from_str(&setting_toml_content) {
+            Ok(cfg) => Some(cfg),
+            Err(e) => {
+                eprintln!("Failed to parse sprs.toml: {}", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    let src_path = config.as_ref().map(|c| c.src_dir.clone()).unwrap_or_else(|| "src".to_string());
+    let path = format!("{}/main.sprs", src_path);
+    let proj_name = config.as_ref().map(|c| c.name.clone()).unwrap_or_else(|| "sprs_project".to_string());
+    let out_dir = config.as_ref().map(|c| c.out_dir.clone()).unwrap_or_else(|| "build".to_string());
+
+    if !Path::new(&out_dir).exists() {
+        std::fs::create_dir_all(&out_dir).expect("Failed to create output directory");
+    }
 
     if let Err(e) = compiler.load_and_compile_module("main", Some(&path)) {
         eprintln!("Compile Error: {}", e);
@@ -62,13 +91,22 @@ pub fn execute(full_path: String) {
     }
 
     println!("Compile runtime...");
+
+    let runtime_src_path = format!("{}/runtime.rs", out_dir);
+    if let Err(e) = std::fs::write(&runtime_src_path, RUNTIME_SOURCE) {
+        eprintln!("Failed to write runtime source: {}", e);
+        return;
+    }
+
+    let runtime_lib_path = format!("{}/libruntime.a", out_dir);
+
     let status_runtime = Command::new("rustc")
         .args(&[
-            "src/runtime.rs",
+            &runtime_src_path,
             "--crate-type",
             "staticlib",
             "-o",
-            "libruntime.a",
+            &runtime_lib_path,
         ])
         .status()
         .expect("Failed to compile runtime");
@@ -99,15 +137,19 @@ pub fn execute(full_path: String) {
     }
 
     let exec_filename = match compiler.target_os {
-        compiler::OS::Windows => "main_exec.exe",
-        _ => "main_exec",
+        compiler::OS::Windows => {
+            format!("{}.exe", proj_name)
+        },
+        _ => {
+            proj_name.clone()
+        },
     };
 
     let mut args = object_files.clone();
     args.extend(vec![
-        "libruntime.a".to_string(),
+        runtime_lib_path,
         "-o".to_string(),
-        exec_filename.to_string(),
+        format!("{}/{}", out_dir, exec_filename),
         "-lm".to_string(),
         "-ldl".to_string(),
         "-lpthread".to_string(),
@@ -120,13 +162,15 @@ pub fn execute(full_path: String) {
 
     if status_link.success() {
         println!("Successfully created executable: ./{}", exec_filename);
-        println!("--- Running ---");
+        if (mode == ExecuteMode::Run) || (mode == ExecuteMode::Build && false) {
+            println!("--- Running ---");
         if compiler.target_os == OS::Linux
             || (compiler.target_os == OS::Unknown || cfg!(target_os = "linux"))
         {
-            let _ = Command::new(format!("./{}", exec_filename))
+            let _ = Command::new(format!("./{}/{}", out_dir, exec_filename))
                 .status()
                 .expect("Failed to run executable");
+        }
         }
     } else {
         println!("--- Skipped ---");

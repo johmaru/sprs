@@ -10,6 +10,8 @@
 //! * [Rust](https://www.rust-lang.org/) - The programming language used to implement the compiler
 //! * [Clang/LLVM](https://clang.llvm.org/) - Used for linking and generating executables
 //! * [cargo-rdme](https://github.com/orium/cargo-rdme) - For generating README from doc comments
+//! * [serde](https://serde.rs/) - Serialization framework for Rust
+//! * [toml](https://github.com/toml-rs/toml/tree/main/crates/toml) - TOML parsing library for Rust
 //!
 //! # sprs Language Specification
 //!
@@ -29,7 +31,7 @@
 //!
 //!
 //! ## Language Features
-//! ### * Basic data types: *
+//! ### **Basic data types:**
 //!  * Int
 //!  * Bool
 //!  * Str
@@ -84,14 +86,14 @@
 //! }
 //! ```
 //!
-//! ###  * Operators *
+//! ###  **Operators**
 //! * Arithmetic: `+`, `-`, `*`, `/`, `%`
 //! * Comparison: `==`, `!=`, `<`, `>`, `<=`, `>=`
 //! * Increment/Decrement: `++`, `--`(only for postfix)
 //! * Range creation: `..`(e.g., `1..10`)
 //! * indexing: `list[index]`
 //!
-//! ###  * Built-in functions *
+//! ###  **Built-in functions**
 //! * `println(value)`: Print value to the console
 //! examples:
 //! ```
@@ -99,7 +101,7 @@
 //! ```
 //! * `list_push(list)`: Push value to the end of the list
 //!
-//! ###  * module and preprocessor *
+//! ###  **module and preprocessor**
 //!
 //! * `#define` for defining macros
 //! Currently this language has
@@ -168,6 +170,24 @@
 //!       }
 //! ```
 //!
+//! ## Compiler Usage
+//! To build and run a Sprs program, use the following commands:
+//! ```bash
+//! # To build the project
+//! sprs build
+//!
+//! # To run the project
+//! sprs run
+//! ```
+//! 
+//! //! ## Project Initialization
+//! To initialize a new Sprs project, use the following command:
+//! ```bash
+//! sprs init --name <project_name>
+//! ```
+//! This command creates a new directory structure with a default `sprs.toml` configuration file and a sample `main.sprs` source file.
+//! 
+//! 
 use std::path::Path;
 use std::process::Command;
 use std::ptr::null;
@@ -211,23 +231,42 @@ fn main() {
 
         if command == "init" {
             if argc > 2 {
-                let args = get_all_arguments(argv.clone());
-                if args.is_empty() {
-                    eprintln!("Usage: sprs init <args>");
-                    return;
-                } else {
-                    for arg in args {
-                        if arg.starts_with("--name") {
-                            let proj_name = arg.split('=').nth(1).unwrap_or("default_project");
-                            println!("Initializing project with name: {}", proj_name);
+                    let args = &argv[2..];
+
+                    let mut iter = args.iter();
+                    while let Some(arg) = iter.next() {
+                        if arg == "--name" {
+                            if let Some(proj_name) = iter.next() {
+                                command_helper::init_project(Some(proj_name));
+                                return;
+                            }
                         } else {
-                            eprintln!("Unknown argument: {}", arg);
+                            eprintln!("Usage: sprs init --name <project_name>");
+                            return;
                         }
                     }
-                }
             } else {
                 println!("Initializing project without arguments.");
-                // Here you can add the logic to handle the initialization without args
+                command_helper::init_project(None);
+            }
+            eprintln!("Unknown error during project initialization.");
+            return;
+        }
+
+        if command == "build" {
+            if argc > 2 {
+                println!("not supported yet with arguments.");
+            } else {
+                llvm_executer::build_and_run(argv[0].clone(), llvm_executer::ExecuteMode::Build);
+            }
+            return;
+        }
+
+        if command == "run" {
+            if argc > 2 {
+                println!("not supported yet with arguments.");
+            } else {
+                llvm_executer::build_and_run(argv[0].clone(), llvm_executer::ExecuteMode::Run);
             }
             return;
         }
@@ -250,8 +289,6 @@ fn main() {
             return;
         }
     };
-
-    llvm_executer::execute(argv[0].clone());
 
     // interprinter
     /*
