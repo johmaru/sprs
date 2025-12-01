@@ -172,6 +172,9 @@ use std::path::Path;
 use std::process::Command;
 use std::ptr::null;
 
+use crate::command_helper::HelpCommand;
+use crate::command_helper::get_all_arguments;
+use crate::command_helper::help_print;
 use crate::runner::debug_run;
 use crate::runner::parse_run;
 use inkwell::context::Context;
@@ -181,102 +184,74 @@ use inkwell::targets::TargetMachine;
 
 mod ast;
 mod builtin;
+mod command_helper;
 mod compiler;
 mod executer;
 mod grammar;
 mod lexer;
+mod llvm_executer;
 mod runner;
 mod runtime;
 mod sema_builder;
 mod type_helper;
+
 fn main() {
-    let context = Context::create();
-    let builder = context.create_builder();
+    let argv: Vec<String> = std::env::args().collect();
 
-    let mut compiler = compiler::Compiler::new(&context, builder);
+    let argc = argv.len();
 
-    if let Err(e) = compiler.load_and_compile_module("main") {
-        eprintln!("Compile Error: {}", e);
+    if argc <= 1 {
+        eprintln!("Usage: sprs help --all");
         return;
+    }
+
+    if argc > 1 {
+        let _path = argv[0].clone();
+        let command = argv[1].clone();
+
+        if command == "init" {
+            if argc > 2 {
+                let args = get_all_arguments(argv.clone());
+                if args.is_empty() {
+                    eprintln!("Usage: sprs init <args>");
+                    return;
+                } else {
+                    for arg in args {
+                        if arg.starts_with("--name") {
+                            let proj_name = arg.split('=').nth(1).unwrap_or("default_project");
+                            println!("Initializing project with name: {}", proj_name);
+                        } else {
+                            eprintln!("Unknown argument: {}", arg);
+                        }
+                    }
+                }
+            } else {
+                println!("Initializing project without arguments.");
+                // Here you can add the logic to handle the initialization without args
+            }
+            return;
+        }
+
+        if command == "help" {
+            let args = get_all_arguments(argv.clone());
+
+            if args.is_empty() {
+                help_print(HelpCommand::NoArg);
+                return;
+            } else {
+                if args.contains(&"--all".to_string()) {
+                    help_print(HelpCommand::All);
+                    return;
+                }
+            }
+        }
+        if command == "version" {
+            println!("sprs version: {}", env!("CARGO_PKG_VERSION"));
+            return;
+        }
     };
 
-    Target::initialize_all(&InitializationConfig::default());
-
-    let target_triple = TargetMachine::get_default_triple();
-    let target = Target::from_triple(&target_triple)
-        .map_err(|e| format!("Target error: {}", e))
-        .unwrap();
-
-    let target_machine = target
-        .create_target_machine(
-            &target_triple,
-            "generic",
-            "",
-            inkwell::OptimizationLevel::Default,
-            inkwell::targets::RelocMode::PIC,
-            inkwell::targets::CodeModel::Default,
-        )
-        .unwrap();
-
-    let mut object_files = Vec::new();
-
-    for (name, module) in &compiler.modules {
-        module.set_data_layout(&target_machine.get_target_data().get_data_layout());
-        module.set_triple(&target_triple);
-
-        let filename = format!("{}.o", name);
-        let obj_path = Path::new(&filename);
-
-        target_machine
-            .write_to_file(module, inkwell::targets::FileType::Object, obj_path)
-            .map_err(|e| format!("Failed to write object file: {}", e))
-            .unwrap();
-        println!("Generated: {}", filename);
-        object_files.push(filename);
-    }
-
-    println!("Compile runtime...");
-    let status_runtime = Command::new("rustc")
-        .args(&[
-            "src/runtime.rs",
-            "--crate-type",
-            "staticlib",
-            "-o",
-            "libruntime.a",
-        ])
-        .status()
-        .expect("Failed to compile runtime");
-
-    if !status_runtime.success() {
-        eprintln!("Failed to compile runtime");
-        return;
-    }
-
-    println!("Linking...");
-    let mut args = object_files.clone();
-    args.extend(vec![
-        "libruntime.a".to_string(),
-        "-o".to_string(),
-        "main_exec".to_string(),
-        "-lm".to_string(),
-        "-ldl".to_string(),
-        "-lpthread".to_string(),
-    ]);
-
-    let status_link = Command::new("clang")
-        .args(&args)
-        .status()
-        .expect("Failed to link");
-
-    if status_link.success() {
-        println!("Successfully created executable: ./main_exec");
-
-        println!("--- Running ---");
-        let _ = Command::new("./main_exec").status();
-    } else {
-        eprintln!("Failed to link executable");
-        return;
-    }
+    llvm_executer::execute(argv[0].clone());
 
     // interprinter
     /*

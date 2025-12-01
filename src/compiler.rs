@@ -24,6 +24,7 @@ pub struct Compiler<'ctx> {
 
 #[derive(PartialEq, Eq, Hash, Clone, Copy)]
 pub enum OS {
+    Unknown, // default triple
     Windows,
     Linux,
 }
@@ -58,11 +59,7 @@ impl<'ctx> Compiler<'ctx> {
             variables: HashMap::new(),
             function_signatures: None,
             runtime_value_type,
-            target_os: if cfg!(target_os = "windows") {
-                OS::Windows
-            } else {
-                OS::Linux
-            },
+            target_os: OS::Unknown,
             string_constants: HashMap::new(),
             malloc_type,
         }
@@ -171,12 +168,23 @@ impl<'ctx> Compiler<'ctx> {
         module.add_function(name, fn_type, None)
     }
 
-    pub fn load_and_compile_module(&mut self, module_name: &str) -> Result<(), String> {
+    pub fn load_and_compile_module(
+        &mut self,
+        module_name: &str,
+        main_path: Option<&String>,
+    ) -> Result<(), String> {
         if self.modules.contains_key(module_name) {
             return Ok(());
         }
 
-        let path = format!("{}.sprs", module_name);
+        let mut path = format!("{}.sprs", module_name);
+
+        if let Some(main_path) = main_path {
+            if module_name == "main" {
+                path = main_path.clone();
+            }
+        }
+
         let source = std::fs::read_to_string(&path)
             .map_err(|e| format!("Failed to read module file {}: {}", path, e))?;
 
@@ -198,7 +206,7 @@ impl<'ctx> Compiler<'ctx> {
 
         for item in &items {
             if let ast::Item::Import(import_name) = item {
-                self.load_and_compile_module(import_name)?;
+                self.load_and_compile_module(import_name, None)?;
             }
         }
 
@@ -276,6 +284,7 @@ impl<'ctx> Compiler<'ctx> {
 
     fn inject_runtime_constants(&self, module: &Module<'ctx>) {
         let os_str = match self.target_os {
+            OS::Unknown => "Unknown",
             OS::Windows => WINDOWS_STR,
             OS::Linux => LINUX_STR,
         };

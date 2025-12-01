@@ -1,5 +1,4 @@
 import test;
-#define Windows
 
         fn main() {
            x = test.test();
