@@ -33,7 +33,7 @@ For this language development environment setup is WSL2(Ubuntu) + VSCode is reco
 
 
 ### Language Features
-[] Basic data types:
+#### * Basic data types: *
  * Int
  * Bool
  * Str
@@ -66,13 +66,13 @@ fn main() {
 
   | Function Name   | Description                          |
   |-----------------|--------------------------------------|
-- |__list_new| for creating a new list|
-- |__list_get| for getting an element from a list by index|
-- |__list_push| for pushing an element to the end of a list|
-- |__range_new| for creating a new range|
-- |__println| for printing values to the console|
-- |__strlen| for getting the length of a string|
-- |__malloc| for allocating memory|
+  | __list_new | for creating a new list|
+  | __list_get | for getting an element from a list by index|
+  | __list_push | for pushing an element to the end of a list|
+  | __range_new | for creating a new range|
+  | __println | for printing values to the console|
+  | __strlen | for getting the length of a string|
+  | __malloc | for allocating memory|
 
 - Control flow
 ```sprs
@@ -88,14 +88,14 @@ while x < 10 {
 }
 ```
 
-[] Operators
+####  * Operators *
 * Arithmetic: `+`, `-`, `*`, `/`, `%`
 * Comparison: `==`, `!=`, `<`, `>`, `<=`, `>=`
 * Increment/Decrement: `++`, `--`(only for postfix)
 * Range creation: `..`(e.g., `1..10`)
 * indexing: `list[index]`
 
-[] Built-in functions
+####  * Built-in functions *
 * `println(value)`: Print value to the console
 examples:
 ```rust
@@ -103,7 +103,7 @@ println(y[1]);
 ```
 * `list_push(list)`: Push value to the end of the list
 
-[] module and preprocessor
+####  * module and preprocessor *
 
 * `#define` for defining macros
 Currently this language has
@@ -113,8 +113,6 @@ Currently this language has
 
 examples:
 ```sprs
-#define Windows
-import test;
 
 import test;
 #define Windows
@@ -147,6 +145,8 @@ import test;
              println(m);
        }
 
+```
+
 ```sprs
 
 pkg test;
@@ -170,5 +170,6 @@ pkg test;
 
            return b;
       }
+```
 
 <!-- cargo-rdme end -->
