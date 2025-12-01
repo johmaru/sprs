@@ -1,5 +1,8 @@
-use crate::ast;
-use crate::type_helper::Type;
+// interpreter currently not support yet, for now this file set a allowed unused
+#![allow(unused)]
+
+use crate::front::ast;
+use crate::interpreter::type_helper::Type;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone)]

@@ -5,9 +5,9 @@ use inkwell::{
     targets::{InitializationConfig, Target, TargetMachine, TargetTriple},
 };
 
-use crate::{command_helper::{self, ProjectConfig}, compiler::{self, OS}};
+use crate::{command_helper::ProjectConfig, llvm::compiler::{self, OS}};
 
-const RUNTIME_SOURCE: &str = include_str!("runtime.rs");
+const RUNTIME_SOURCE: &str = include_str!("../runtime/runtime.rs");
 
 #[derive(PartialEq)]
 pub enum ExecuteMode {

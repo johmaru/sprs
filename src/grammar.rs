@@ -1,7 +1,7 @@
 // auto-generated: "lalrpop 0.22.2"
-// sha3: 848b650d84dc3e6c525d36ee7dbe2798dc3c4e47e53c18c76fac68513a63565f
-use crate::ast::{Item, VarDecl, Expr, Stmt, Function, FunctionParam};
-use crate::lexer::Token;
+// sha3: e398887b2e1d36a0925d8ea717a8dd597937140358827d7cc48dff7f00dde191
+use crate::front::ast::{Item, VarDecl, Expr, Stmt, Function, FunctionParam};
+use crate::front::lexer::Token;
 use lalrpop_util::ParseError;
 #[allow(unused_extern_crates)]
 extern crate lalrpop_util as __lalrpop_util;
@@ -14,8 +14,8 @@ extern crate alloc;
 #[allow(explicit_outlives_requirements, non_snake_case, non_camel_case_types, unused_mut, unused_variables, unused_imports, unused_parens, clippy::needless_lifetimes, clippy::type_complexity, clippy::needless_return, clippy::too_many_arguments, clippy::match_single_binding)]
 mod __parse__Start {
 
-    use crate::ast::{Item, VarDecl, Expr, Stmt, Function, FunctionParam};
-    use crate::lexer::Token;
+    use crate::front::ast::{Item, VarDecl, Expr, Stmt, Function, FunctionParam};
+    use crate::front::lexer::Token;
     use lalrpop_util::ParseError;
     #[allow(unused_extern_crates)]
     extern crate lalrpop_util as __lalrpop_util;

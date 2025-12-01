@@ -1,12 +1,11 @@
+// interpreter currently not support yet, for now this file set a allowed unused
+#![allow(unused)]
+
 use crate::{
-    ast::{self, Function},
-    runner::{parse_only, parse_run},
+    front::ast::{self},
+    interpreter::runner::parse_only,
 };
-use std::{
-    collections::{HashMap, hash_map},
-    fmt::format,
-    fs::read_to_string,
-};
+use std::collections::HashMap;
 
 type Scope = HashMap<String, Value>;
 
@@ -142,11 +141,11 @@ fn entry_builtin_functions() -> HashMap<&'static str, Callable<'static>> {
     let mut map = HashMap::new();
     map.insert(
         "println",
-        Callable::Builtin(crate::builtin::builtin_function_println),
+        Callable::Builtin(crate::runtime::builtin::builtin_function_println),
     );
     map.insert(
         "vec_push!",
-        Callable::Builtin(crate::builtin::builtin_function_push),
+        Callable::Builtin(crate::runtime::builtin::builtin_function_push),
     );
     map
 }
@@ -182,7 +181,7 @@ fn load_modules(ctx: &mut RuntimeContext, module_name: &str) -> Result<(), Strin
                 load_modules(ctx, ident)
                     .map_err(|e| format!("Error loading module {}: {}", ident, e))?;
             }
-            &ast::Item::Package(ref name) => {
+            ast::Item::Package(name) => {
                 // Package declaration, can be used for namespacing if needed
                 println!("Loading package: {}", name);
             }
@@ -200,7 +199,7 @@ fn load_modules(ctx: &mut RuntimeContext, module_name: &str) -> Result<(), Strin
 
 pub fn execute(
     ctx: &mut RuntimeContext,
-    items: &Vec<ast::Item>,
+    items: &[ast::Item],
     entry_idx: usize,
 ) -> Result<(), String> {
     let mut functions: HashMap<&str, Callable> = HashMap::new();

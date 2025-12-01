@@ -184,7 +184,7 @@ sprs build
 sprs run
 ```
 
-//! ## Project Initialization
+### Project Initialization
 To initialize a new Sprs project, use the following command:
 ```bash
 sprs init --name <project_name>

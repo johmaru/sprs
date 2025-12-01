@@ -1,7 +1,7 @@
 grammar;
 
-use crate::ast::{Item, VarDecl, Expr, Stmt, Function, FunctionParam};
-use crate::lexer::Token;
+use crate::front::ast::{Item, VarDecl, Expr, Stmt, Function, FunctionParam};
+use crate::front::lexer::Token;
 use lalrpop_util::ParseError;
 
 extern {

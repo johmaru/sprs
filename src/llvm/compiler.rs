@@ -1,5 +1,5 @@
-use crate::ast;
-use crate::runner::parse_only;
+use crate::front::ast;
+use crate::interpreter::runner::parse_only;
 use inkwell::AddressSpace;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
@@ -8,7 +8,6 @@ use inkwell::module::Module;
 use inkwell::types::{BasicMetadataTypeEnum, StructType};
 use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue, ValueKind};
 use std::collections::HashMap;
-use std::i8;
 
 pub struct Compiler<'ctx> {
     pub context: &'ctx Context,
@@ -239,34 +238,6 @@ impl<'ctx> Compiler<'ctx> {
         }
 
         self.modules.insert(llvm_module_name, module);
-        Ok(())
-    }
-
-    pub fn compile_module(&mut self, items: &Vec<ast::Item>, filename: &str) -> Result<(), String> {
-        let module_name = items
-            .iter()
-            .find_map(|item| match item {
-                ast::Item::Package(name) => Some(name.clone()),
-                _ => None,
-            })
-            .unwrap_or_else(|| filename.replace(".sprs", ""));
-
-        let module = self.context.create_module(&module_name);
-
-        self.process_preprocessors(&items);
-
-        self.inject_runtime_constants(&module);
-
-        for item in items {
-            match item {
-                ast::Item::FunctionItem(func) => {
-                    self.compile_fn(func, &module)?;
-                }
-                _ => {}
-            }
-        }
-
-        self.modules.insert(module_name, module);
         Ok(())
     }
 
@@ -1998,7 +1969,6 @@ impl<'ctx> Compiler<'ctx> {
                 self.builder.build_store(return_ptr, result_val).unwrap();
                 Ok(return_ptr.into())
             }
-            _ => Err("Not implemented".to_string()),
         }
     }
 }

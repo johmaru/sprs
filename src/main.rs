@@ -180,7 +180,7 @@
 //! sprs run
 //! ```
 //! 
-//! //! ## Project Initialization
+//! ## Project Initialization
 //! To initialize a new Sprs project, use the following command:
 //! ```bash
 //! sprs init --name <project_name>
@@ -188,32 +188,20 @@
 //! This command creates a new directory structure with a default `sprs.toml` configuration file and a sample `main.sprs` source file.
 //! 
 //! 
-use std::path::Path;
-use std::process::Command;
-use std::ptr::null;
 
 use crate::command_helper::HelpCommand;
 use crate::command_helper::get_all_arguments;
 use crate::command_helper::help_print;
-use crate::runner::debug_run;
-use crate::runner::parse_run;
-use inkwell::context::Context;
-use inkwell::targets::InitializationConfig;
-use inkwell::targets::Target;
-use inkwell::targets::TargetMachine;
+use crate::llvm::llvm_executer;
 
-mod ast;
-mod builtin;
+
+mod front;
 mod command_helper;
-mod compiler;
-mod executer;
+mod llvm;
 mod grammar;
-mod lexer;
-mod llvm_executer;
-mod runner;
+mod interpreter;
 mod runtime;
-mod sema_builder;
-mod type_helper;
+
 
 fn main() {
     let argv: Vec<String> = std::env::args().collect();
