@@ -19,6 +19,7 @@ pub struct Compiler<'ctx> {
     pub target_os: OS,
     pub string_constants: HashMap<String, inkwell::values::GlobalValue<'ctx>>,
     pub malloc_type: inkwell::types::FunctionType<'ctx>,
+    pub source_path: String,
 }
 
 #[derive(PartialEq, Eq, Hash, Clone, Copy)]
@@ -41,7 +42,7 @@ const WINDOWS_STR: &str = "Windows";
 const LINUX_STR: &str = "Linux";
 
 impl<'ctx> Compiler<'ctx> {
-    pub fn new(context: &'ctx Context, builder: Builder<'ctx>) -> Self {
+    pub fn new(context: &'ctx Context, builder: Builder<'ctx>, source_path: String) -> Self {
         let runtime_value_type = context.struct_type(
             &[context.i32_type().into(), context.i64_type().into()],
             false,
@@ -61,6 +62,7 @@ impl<'ctx> Compiler<'ctx> {
             target_os: OS::Unknown,
             string_constants: HashMap::new(),
             malloc_type,
+            source_path,
         }
     }
 
@@ -184,7 +186,7 @@ impl<'ctx> Compiler<'ctx> {
             return Ok(());
         }
 
-        let mut path = format!("{}.sprs", module_name);
+        let mut path = format!("{}/{}.sprs", self.source_path, module_name);
 
         if let Some(main_path) = main_path {
             if module_name == "main" {

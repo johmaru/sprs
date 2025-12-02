@@ -5,7 +5,10 @@ use inkwell::{
     targets::{InitializationConfig, Target, TargetMachine, TargetTriple},
 };
 
-use crate::{command_helper::ProjectConfig, llvm::compiler::{self, OS}};
+use crate::{
+    command_helper::ProjectConfig,
+    llvm::compiler::{self, OS},
+};
 
 const RUNTIME_SOURCE: &str = include_str!("../runtime/runtime.rs");
 
@@ -19,9 +22,8 @@ pub fn build_and_run(_full_path: String, mode: ExecuteMode) {
     let context = Context::create();
     let builder = context.create_builder();
 
-    let mut compiler = compiler::Compiler::new(&context, builder);
-
-    let setting_toml_content = std::fs::read_to_string("sprs.toml").unwrap_or_else(|_| "".to_string());
+    let setting_toml_content =
+        std::fs::read_to_string("sprs.toml").unwrap_or_else(|_| "".to_string());
 
     let config: Option<ProjectConfig> = if !setting_toml_content.is_empty() {
         match toml::from_str(&setting_toml_content) {
@@ -35,10 +37,22 @@ pub fn build_and_run(_full_path: String, mode: ExecuteMode) {
         None
     };
 
-    let src_path = config.as_ref().map(|c| c.src_dir.clone()).unwrap_or_else(|| "src".to_string());
+    let src_path = config
+        .as_ref()
+        .map(|c| c.src_dir.clone())
+        .unwrap_or_else(|| "src".to_string());
+
+    let mut compiler = compiler::Compiler::new(&context, builder, src_path.clone());
+
     let path = format!("{}/main.sprs", src_path);
-    let proj_name = config.as_ref().map(|c| c.name.clone()).unwrap_or_else(|| "sprs_project".to_string());
-    let out_dir = config.as_ref().map(|c| c.out_dir.clone()).unwrap_or_else(|| "build".to_string());
+    let proj_name = config
+        .as_ref()
+        .map(|c| c.name.clone())
+        .unwrap_or_else(|| "sprs_project".to_string());
+    let out_dir = config
+        .as_ref()
+        .map(|c| c.out_dir.clone())
+        .unwrap_or_else(|| "build".to_string());
 
     if !Path::new(&out_dir).exists() {
         std::fs::create_dir_all(&out_dir).expect("Failed to create output directory");
@@ -139,10 +153,8 @@ pub fn build_and_run(_full_path: String, mode: ExecuteMode) {
     let exec_filename = match compiler.target_os {
         compiler::OS::Windows => {
             format!("{}.exe", proj_name)
-        },
-        _ => {
-            proj_name.clone()
-        },
+        }
+        _ => proj_name.clone(),
     };
 
     let mut args = object_files.clone();
@@ -164,13 +176,13 @@ pub fn build_and_run(_full_path: String, mode: ExecuteMode) {
         println!("Successfully created executable: ./{}", exec_filename);
         if (mode == ExecuteMode::Run) || (mode == ExecuteMode::Build && false) {
             println!("--- Running ---");
-        if compiler.target_os == OS::Linux
-            || (compiler.target_os == OS::Unknown || cfg!(target_os = "linux"))
-        {
-            let _ = Command::new(format!("./{}/{}", out_dir, exec_filename))
-                .status()
-                .expect("Failed to run executable");
-        }
+            if compiler.target_os == OS::Linux
+                || (compiler.target_os == OS::Unknown || cfg!(target_os = "linux"))
+            {
+                let _ = Command::new(format!("./{}/{}", out_dir, exec_filename))
+                    .status()
+                    .expect("Failed to run executable");
+            }
         }
     } else {
         println!("--- Skipped ---");
