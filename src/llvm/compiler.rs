@@ -161,6 +161,14 @@ impl<'ctx> Compiler<'ctx> {
             "__println" => void_type.fn_type(&[i8_ptr_type.into()], false),
             "__strlen" => i64_type.fn_type(&[i8_ptr_type.into()], false),
             "__malloc" => i8_ptr_type.fn_type(&[i64_type.into()], false),
+            "__drop" => void_type.fn_type(&[i32_type.into(), i64_type.into()], false),
+            "__clone" => self.runtime_value_type.fn_type(
+                &[
+                    i32_type.into(), // value tag
+                    i64_type.into(), // value data
+                ],
+                false,
+            ),
             _ => panic!("Unknown runtime function: {}", name),
         };
 
@@ -206,6 +214,15 @@ impl<'ctx> Compiler<'ctx> {
         for item in &items {
             if let ast::Item::Import(import_name) = item {
                 self.load_and_compile_module(import_name, None)?;
+            }
+        }
+
+        for item in &items {
+            match item {
+                ast::Item::FunctionItem(func) => {
+                    self.declare_fn_prototype(func, &module);
+                }
+                _ => {}
             }
         }
 
@@ -271,6 +288,24 @@ impl<'ctx> Compiler<'ctx> {
         global.set_constant(true);
     }
 
+    fn declare_fn_prototype(&self, func: &ast::Function, module: &Module<'ctx>) {
+        let arg_types: Vec<BasicMetadataTypeEnum> = (0..func.params.len())
+            .map(|_| self.context.ptr_type(AddressSpace::default()).into())
+            .collect();
+
+        let fn_type = self.runtime_value_type.fn_type(&arg_types, false);
+
+        let func_name = if func.ident == "main" {
+            "_sprs_main"
+        } else {
+            &func.ident
+        };
+
+        if module.get_function(func_name).is_none() {
+            module.add_function(func_name, fn_type, None);
+        }
+    }
+
     pub fn compile_fn(
         &mut self,
         func: &ast::Function,
@@ -288,7 +323,11 @@ impl<'ctx> Compiler<'ctx> {
             &func.ident
         };
 
-        let fn_val = module.add_function(func_name, fn_type, None);
+        let fn_val = if let Some(f) = module.get_function(func_name) {
+            f
+        } else {
+            module.add_function(func_name, fn_type, None)
+        };
 
         let entry = self.context.append_basic_block(fn_val, "entry");
         self.builder.position_at_end(entry);
@@ -355,6 +394,8 @@ impl<'ctx> Compiler<'ctx> {
         stmts: &Vec<ast::Stmt>,
         module: &Module<'ctx>,
     ) -> Result<(), String> {
+        let mut local_vars: Vec<String> = Vec::new();
+
         for stmt in stmts {
             match stmt {
                 ast::Stmt::Var(var) => {
@@ -368,6 +409,106 @@ impl<'ctx> Compiler<'ctx> {
                             .build_load(self.runtime_value_type, init_val, "assign_load")
                             .unwrap();
                         let _ = self.builder.build_store(ptr, val);
+
+                        if let ast::Expr::Var(src_val_name) = &var.expr {
+                            if let Some(src_ptr_enum) = self.variables.get(src_val_name) {
+                                let src_ptr = src_ptr_enum.into_pointer_value();
+
+                                let tag_ptr = self
+                                    .builder
+                                    .build_struct_gep(
+                                        self.runtime_value_type,
+                                        src_ptr,
+                                        0,
+                                        "compile_blockexpr_var_src_tag_ptr",
+                                    )
+                                    .unwrap();
+
+                                let current_tag = self
+                                    .builder
+                                    .build_load(self.context.i32_type(), tag_ptr, "current_tag")
+                                    .unwrap()
+                                    .into_int_value();
+
+                                let tag_string =
+                                    self.context.i32_type().const_int(Tag::String as u64, false);
+                                let tag_list =
+                                    self.context.i32_type().const_int(Tag::List as u64, false);
+                                let tag_range =
+                                    self.context.i32_type().const_int(Tag::Range as u64, false);
+
+                                let is_string = self
+                                    .builder
+                                    .build_int_compare(
+                                        inkwell::IntPredicate::EQ,
+                                        current_tag,
+                                        tag_string,
+                                        "compile_blockexpr_var_is_string",
+                                    )
+                                    .unwrap();
+                                let is_list = self
+                                    .builder
+                                    .build_int_compare(
+                                        inkwell::IntPredicate::EQ,
+                                        current_tag,
+                                        tag_list,
+                                        "compile_blockexpr_var_is_list",
+                                    )
+                                    .unwrap();
+                                let is_range = self
+                                    .builder
+                                    .build_int_compare(
+                                        inkwell::IntPredicate::EQ,
+                                        current_tag,
+                                        tag_range,
+                                        "compile_blockexpr_var_is_range",
+                                    )
+                                    .unwrap();
+
+                                let is_heap_1 = self
+                                    .builder
+                                    .build_or(is_string, is_list, "compile_blockexpr_var_is_heap_1")
+                                    .unwrap();
+                                let should_move = self
+                                    .builder
+                                    .build_or(
+                                        is_heap_1,
+                                        is_range,
+                                        "compile_blockexpr_var_should_move",
+                                    )
+                                    .unwrap();
+
+                                let parent_bb = self
+                                    .builder
+                                    .get_insert_block()
+                                    .unwrap()
+                                    .get_parent()
+                                    .unwrap();
+                                let move_bb = self
+                                    .context
+                                    .append_basic_block(parent_bb, "compile_blockexpr_var_move_bb");
+                                let cont_bb = self
+                                    .context
+                                    .append_basic_block(parent_bb, "compile_blockexpr_var_cont_bb");
+
+                                let _ = self.builder.build_conditional_branch(
+                                    should_move,
+                                    move_bb,
+                                    cont_bb,
+                                );
+
+                                self.builder.position_at_end(move_bb);
+                                self.builder
+                                    .build_store(
+                                        tag_ptr,
+                                        self.context.i32_type().const_int(Tag::Unit as u64, false),
+                                    )
+                                    .unwrap();
+                                self.builder.build_unconditional_branch(cont_bb).unwrap();
+                                self.builder.position_at_end(cont_bb);
+                            }
+                        }
+                        local_vars.push(var.ident.clone());
                     } else {
                         let ptr = self
                             .builder
@@ -379,33 +520,207 @@ impl<'ctx> Compiler<'ctx> {
                             .build_load(self.runtime_value_type, init_val, "var_load")
                             .unwrap();
                         let _ = self.builder.build_store(ptr, val).unwrap();
+                        if let ast::Expr::Var(src_val_name) = &var.expr {
+                            if let Some(src_ptr_enum) = self.variables.get(src_val_name) {
+                                let src_ptr = src_ptr_enum.into_pointer_value();
 
+                                let tag_ptr = self
+                                    .builder
+                                    .build_struct_gep(
+                                        self.runtime_value_type,
+                                        src_ptr,
+                                        0,
+                                        "compile_blockexpr_var_src_tag_ptr",
+                                    )
+                                    .unwrap();
+
+                                let current_tag = self
+                                    .builder
+                                    .build_load(self.context.i32_type(), tag_ptr, "current_tag")
+                                    .unwrap()
+                                    .into_int_value();
+
+                                let tag_string =
+                                    self.context.i32_type().const_int(Tag::String as u64, false);
+                                let tag_list =
+                                    self.context.i32_type().const_int(Tag::List as u64, false);
+                                let tag_range =
+                                    self.context.i32_type().const_int(Tag::Range as u64, false);
+
+                                let is_string = self
+                                    .builder
+                                    .build_int_compare(
+                                        inkwell::IntPredicate::EQ,
+                                        current_tag,
+                                        tag_string,
+                                        "compile_blockexpr_var_is_string",
+                                    )
+                                    .unwrap();
+                                let is_list = self
+                                    .builder
+                                    .build_int_compare(
+                                        inkwell::IntPredicate::EQ,
+                                        current_tag,
+                                        tag_list,
+                                        "compile_blockexpr_var_is_list",
+                                    )
+                                    .unwrap();
+                                let is_range = self
+                                    .builder
+                                    .build_int_compare(
+                                        inkwell::IntPredicate::EQ,
+                                        current_tag,
+                                        tag_range,
+                                        "compile_blockexpr_var_is_range",
+                                    )
+                                    .unwrap();
+
+                                let is_heap_1 = self
+                                    .builder
+                                    .build_or(is_string, is_list, "compile_blockexpr_var_is_heap_1")
+                                    .unwrap();
+                                let should_move = self
+                                    .builder
+                                    .build_or(
+                                        is_heap_1,
+                                        is_range,
+                                        "compile_blockexpr_var_should_move",
+                                    )
+                                    .unwrap();
+
+                                let parent_bb = self
+                                    .builder
+                                    .get_insert_block()
+                                    .unwrap()
+                                    .get_parent()
+                                    .unwrap();
+                                let move_bb = self
+                                    .context
+                                    .append_basic_block(parent_bb, "compile_blockexpr_var_move_bb");
+                                let cont_bb = self
+                                    .context
+                                    .append_basic_block(parent_bb, "compile_blockexpr_var_cont_bb");
+
+                                let _ = self.builder.build_conditional_branch(
+                                    should_move,
+                                    move_bb,
+                                    cont_bb,
+                                );
+
+                                self.builder.position_at_end(move_bb);
+                                self.builder
+                                    .build_store(
+                                        tag_ptr,
+                                        self.context.i32_type().const_int(Tag::Unit as u64, false),
+                                    )
+                                    .unwrap();
+                                self.builder.build_unconditional_branch(cont_bb).unwrap();
+                                self.builder.position_at_end(cont_bb);
+                            }
+                        }
+                        local_vars.push(var.ident.clone());
                         self.variables.insert(var.ident.clone(), ptr.into());
                     }
                 }
                 ast::Stmt::Return(expr_opt) => {
-                    if let Some(expr) = expr_opt {
+                    let ret_val = if let Some(expr) = expr_opt {
                         let ptr = self.compile_expr(expr, module)?.into_pointer_value();
+
+                        if let ast::Expr::Var(name) = expr {
+                            if let Some(var_ptr_enum) = self.variables.get(name) {
+                                let var_ptr = var_ptr_enum.into_pointer_value();
+
+                                let tag_ptr = self
+                                    .builder
+                                    .build_struct_gep(
+                                        self.runtime_value_type,
+                                        var_ptr,
+                                        0,
+                                        "var_tag_ptr",
+                                    )
+                                    .unwrap();
+
+                                self.builder
+                                    .build_store(
+                                        tag_ptr,
+                                        self.context.i32_type().const_int(Tag::Unit as u64, false),
+                                    )
+                                    .unwrap();
+                            }
+                        }
 
                         let val = self
                             .builder
-                            .build_load(self.runtime_value_type, ptr, "return_val")
+                            .build_load(self.runtime_value_type, ptr, "return_load")
                             .unwrap();
-                        let _ = self.builder.build_return(Some(&val)).unwrap();
+                        Some(val)
                     } else {
-                        let dummy_alloca = self
-                            .builder
-                            .build_alloca(self.runtime_value_type, "dummy")
-                            .unwrap();
+                        None
+                    };
+                    let drop_fn = self.get_runtime_fn(module, "__drop");
 
+                    if self
+                        .builder
+                        .get_insert_block()
+                        .unwrap()
+                        .get_terminator()
+                        .is_none()
+                    {
+                        for var_name in local_vars.iter().rev() {
+                            if let Some(val_enum) = self.variables.get(var_name) {
+                                let ptr = val_enum.into_pointer_value();
+
+                                let tag_ptr = self
+                                    .builder
+                                    .build_struct_gep(
+                                        self.runtime_value_type,
+                                        ptr,
+                                        0,
+                                        "var_tag_ptr",
+                                    )
+                                    .unwrap();
+                                let tag = self
+                                    .builder
+                                    .build_load(self.context.i32_type(), tag_ptr, "var_tag")
+                                    .unwrap()
+                                    .into_int_value();
+
+                                let data_ptr = self
+                                    .builder
+                                    .build_struct_gep(
+                                        self.runtime_value_type,
+                                        ptr,
+                                        1,
+                                        "var_data_ptr",
+                                    )
+                                    .unwrap();
+                                let data = self
+                                    .builder
+                                    .build_load(self.context.i64_type(), data_ptr, "var_data")
+                                    .unwrap()
+                                    .into_int_value();
+
+                                self.builder
+                                    .build_call(
+                                        drop_fn,
+                                        &[tag.into(), data.into()],
+                                        "drop_var_call",
+                                    )
+                                    .unwrap();
+                            }
+                        }
+                    }
+
+                    if let Some(val) = ret_val {
+                        self.builder.build_return(Some(&val)).unwrap();
+                    } else {
+                        let dummy = self
+                            .builder
+                            .build_alloca(self.runtime_value_type, "ret_dummy")
+                            .unwrap();
                         let tag_ptr = self
                             .builder
-                            .build_struct_gep(
-                                self.runtime_value_type,
-                                dummy_alloca,
-                                0,
-                                "dummy_tag_ptr",
-                            )
+                            .build_struct_gep(self.runtime_value_type, dummy, 0, "ret_dummy_tag")
                             .unwrap();
                         self.builder
                             .build_store(
@@ -415,12 +730,7 @@ impl<'ctx> Compiler<'ctx> {
                             .unwrap();
                         let data_ptr = self
                             .builder
-                            .build_struct_gep(
-                                self.runtime_value_type,
-                                dummy_alloca,
-                                1,
-                                "dummy_data_ptr",
-                            )
+                            .build_struct_gep(self.runtime_value_type, dummy, 1, "ret_dummy_data")
                             .unwrap();
                         self.builder
                             .build_store(data_ptr, self.context.i64_type().const_int(0, false))
@@ -428,7 +738,7 @@ impl<'ctx> Compiler<'ctx> {
 
                         let val = self
                             .builder
-                            .build_load(self.runtime_value_type, dummy_alloca, "dummy_val")
+                            .build_load(self.runtime_value_type, dummy, "ret_dummy_val")
                             .unwrap();
                         self.builder.build_return(Some(&val)).unwrap();
                     }
@@ -566,6 +876,45 @@ impl<'ctx> Compiler<'ctx> {
                 }
             }
         }
+        let drop_fn = self.get_runtime_fn(module, "__drop");
+        if self
+            .builder
+            .get_insert_block()
+            .unwrap()
+            .get_terminator()
+            .is_none()
+        {
+            for var_name in local_vars.iter().rev() {
+                if let Some(val_enum) = self.variables.get(var_name) {
+                    let ptr = val_enum.into_pointer_value();
+
+                    let tag_ptr = self
+                        .builder
+                        .build_struct_gep(self.runtime_value_type, ptr, 0, "var_tag_ptr")
+                        .unwrap();
+                    let tag = self
+                        .builder
+                        .build_load(self.context.i32_type(), tag_ptr, "var_tag")
+                        .unwrap()
+                        .into_int_value();
+
+                    let data_ptr = self
+                        .builder
+                        .build_struct_gep(self.runtime_value_type, ptr, 1, "var_data_ptr")
+                        .unwrap();
+                    let data = self
+                        .builder
+                        .build_load(self.context.i64_type(), data_ptr, "var_data")
+                        .unwrap()
+                        .into_int_value();
+
+                    self.builder
+                        .build_call(drop_fn, &[tag.into(), data.into()], "drop_var_call")
+                        .unwrap();
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -688,7 +1037,7 @@ impl<'ctx> Compiler<'ctx> {
                 }
             }
             ast::Expr::Call(ident, args, _) => {
-                if ident == "println" {
+                if ident == "println!" {
                     let print_fn = self.get_runtime_fn(module, "__println");
 
                     let list_ptr = self.build_list_from_exprs(args, module)?;
@@ -715,7 +1064,7 @@ impl<'ctx> Compiler<'ctx> {
                     return Ok(res_ptr.into());
                 }
 
-                if ident == "list_push" {
+                if ident == "list_push!" {
                     if args.len() != 2 {
                         return Err("list_push expects 2 arguments".to_string());
                     }
@@ -788,6 +1137,55 @@ impl<'ctx> Compiler<'ctx> {
                     return Ok(res_ptr.into());
                 }
 
+                if ident == "clone!" {
+                    if args.len() != 1 {
+                        return Err("clone! expects 1 argument".to_string());
+                    }
+                    let arg_ptr = self.compile_expr(&args[0], module)?.into_pointer_value();
+
+                    let tag_ptr = self
+                        .builder
+                        .build_struct_gep(self.runtime_value_type, arg_ptr, 0, "clone_arg_tag_ptr")
+                        .unwrap();
+                    let tag = self
+                        .builder
+                        .build_load(self.context.i32_type(), tag_ptr, "clone_arg_tag")
+                        .unwrap()
+                        .into_int_value();
+
+                    let data_ptr = self
+                        .builder
+                        .build_struct_gep(self.runtime_value_type, arg_ptr, 1, "clone_arg_data_ptr")
+                        .unwrap();
+                    let data = self
+                        .builder
+                        .build_load(self.context.i64_type(), data_ptr, "clone_arg_data")
+                        .unwrap()
+                        .into_int_value();
+
+                    let clone_fn = self.get_runtime_fn(module, "__clone");
+
+                    let call_site = self
+                        .builder
+                        .build_call(clone_fn, &[tag.into(), data.into()], "clone_call")
+                        .unwrap();
+                    let result_val = match call_site.try_as_basic_value() {
+                        ValueKind::Basic(val) => Ok(val),
+                        ValueKind::Instruction(_) => {
+                            Err("Expected basic value from clone function".to_string())
+                        }
+                    };
+
+                    let result_ptr = self
+                        .builder
+                        .build_alloca(self.runtime_value_type, "clone_res_alloc")
+                        .unwrap();
+
+                    self.builder.build_store(result_ptr, result_val?).unwrap();
+
+                    return Ok(result_ptr.into());
+                }
+
                 let func = module
                     .get_function(ident)
                     .or_else(|| self.modules.values().find_map(|m| m.get_function(ident)))
@@ -795,11 +1193,145 @@ impl<'ctx> Compiler<'ctx> {
 
                 let mut compiled_args = Vec::with_capacity(args.len());
                 for arg in args {
-                    compiled_args.push(self.compile_expr(arg, module)?.into());
+                    let arg_val = self.compile_expr(arg, module)?;
+                    let arg_ptr = arg_val.into_pointer_value();
+
+                    let temp_arg_ptr = self
+                        .builder
+                        .build_alloca(self.runtime_value_type, "arg_tmp_alloc")
+                        .unwrap();
+                    let val_tag_ptr = self
+                        .builder
+                        .build_struct_gep(self.runtime_value_type, arg_ptr, 0, "val_tag_ptr")
+                        .unwrap();
+                    let val_data_ptr = self
+                        .builder
+                        .build_struct_gep(self.runtime_value_type, arg_ptr, 1, "val_data_ptr")
+                        .unwrap();
+                    let val_tag = self
+                        .builder
+                        .build_load(self.context.i32_type(), val_tag_ptr, "val_tag")
+                        .unwrap();
+                    let val_data = self
+                        .builder
+                        .build_load(self.context.i64_type(), val_data_ptr, "val_data")
+                        .unwrap();
+
+                    let temp_tag_ptr = self
+                        .builder
+                        .build_struct_gep(self.runtime_value_type, temp_arg_ptr, 0, "temp_tag_ptr")
+                        .unwrap();
+                    let temp_data_ptr = self
+                        .builder
+                        .build_struct_gep(self.runtime_value_type, temp_arg_ptr, 1, "temp_data_ptr")
+                        .unwrap();
+                    self.builder.build_store(temp_tag_ptr, val_tag).unwrap();
+                    self.builder.build_store(temp_data_ptr, val_data).unwrap();
+                    compiled_args.push(temp_arg_ptr.into());
+
+                    if let ast::Expr::Var(name) = arg {
+                        if let Some(var_ptr_enum) = self.variables.get(name) {
+                            let var_ptr = var_ptr_enum.into_pointer_value();
+
+                            let current_tag = val_tag.into_int_value();
+
+                            let tag_string =
+                                self.context.i32_type().const_int(Tag::String as u64, false);
+                            let tag_list =
+                                self.context.i32_type().const_int(Tag::List as u64, false);
+                            let tag_range =
+                                self.context.i32_type().const_int(Tag::Range as u64, false);
+
+                            let is_string = self
+                                .builder
+                                .build_int_compare(
+                                    inkwell::IntPredicate::EQ,
+                                    current_tag,
+                                    tag_string,
+                                    "compile_expr_is_string",
+                                )
+                                .unwrap();
+                            let is_list = self
+                                .builder
+                                .build_int_compare(
+                                    inkwell::IntPredicate::EQ,
+                                    current_tag,
+                                    tag_list,
+                                    "compile_expr_is_list",
+                                )
+                                .unwrap();
+                            let is_range = self
+                                .builder
+                                .build_int_compare(
+                                    inkwell::IntPredicate::EQ,
+                                    current_tag,
+                                    tag_range,
+                                    "compile_expr_is_range",
+                                )
+                                .unwrap();
+
+                            let is_heap_1 = self
+                                .builder
+                                .build_or(is_string, is_list, "compile_expr_is_heap_1")
+                                .unwrap();
+                            let should_move = self
+                                .builder
+                                .build_or(
+                                    is_heap_1,
+                                    self.builder
+                                        .build_int_compare(
+                                            inkwell::IntPredicate::EQ,
+                                            is_heap_1,
+                                            is_range,
+                                            "is_heap_2",
+                                        )
+                                        .unwrap(),
+                                    "should_move",
+                                )
+                                .unwrap();
+
+                            let parent_bb = self
+                                .builder
+                                .get_insert_block()
+                                .unwrap()
+                                .get_parent()
+                                .unwrap();
+                            let move_bb = self
+                                .context
+                                .append_basic_block(parent_bb, "compile_expr_arg_move_bb");
+                            let cont_bb = self
+                                .context
+                                .append_basic_block(parent_bb, "compile_expr_arg_cont_bb");
+
+                            self.builder
+                                .build_conditional_branch(should_move, move_bb, cont_bb)
+                                .unwrap();
+
+                            self.builder.position_at_end(move_bb);
+                            let var_tag_ptr = self
+                                .builder
+                                .build_struct_gep(
+                                    self.runtime_value_type,
+                                    var_ptr,
+                                    0,
+                                    "compile_expr_var_tag_ptr",
+                                )
+                                .unwrap();
+                            self.builder
+                                .build_store(
+                                    var_tag_ptr,
+                                    self.context.i32_type().const_int(Tag::Unit as u64, false),
+                                )
+                                .unwrap();
+                            self.builder.build_unconditional_branch(cont_bb).unwrap();
+
+                            self.builder.position_at_end(cont_bb);
+                        }
+                    }
                 }
                 let call_site = self
                     .builder
-                    .build_call(func, &compiled_args, "call_tmp")
+                    .build_call(func, &compiled_args, "compile_expr_call_tmp")
                     .unwrap();
 
                 let result_val = match call_site.try_as_basic_value() {
@@ -810,7 +1342,7 @@ impl<'ctx> Compiler<'ctx> {
                 };
                 let result_ptr = self
                     .builder
-                    .build_alloca(self.runtime_value_type, "call_res_alloc")
+                    .build_alloca(self.runtime_value_type, "compile_expr_call_res_alloc")
                     .unwrap();
                 self.builder.build_store(result_ptr, result_val?).unwrap();
                 Ok(result_ptr.into())

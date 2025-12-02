@@ -47,6 +47,7 @@ extern {
         Preprocessor => Token::Preprocessor,
         Import => Token::Import,
         Package => Token::Package,
+        Var => Token::Var,
     }
 }
 
@@ -129,6 +130,7 @@ Block: Vec<Stmt> =
 Stmts: Vec<Stmt> = Stmt*;
 
 Stmt: Stmt = {
+    <v:VarDecl> => Stmt::Var(v),
     <e:Expr> <tail:StmtTail> =>? {
         match tail {
             None => Ok(Stmt::Expr(e)),
@@ -173,7 +175,7 @@ VarDecls: Vec<VarDecl> = {
 };
 
 VarDecl: VarDecl =
-    <id:Ident> Eq <e:Expr> Semi => VarDecl { ident: id, expr: e };
+ Var <id:Ident> Eq <e:Expr> Semi => VarDecl { ident: id, expr: e };
 
 Ident: String = <tok:IDENT> => {
     match tok { Token::Ident(s) => s, _ => unreachable!() }

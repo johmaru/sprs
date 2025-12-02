@@ -1,10 +1,10 @@
 pkg test;
 
 fn test() {
-            a = 5 - 1;
-            b = 10;
-            c = "hello" + " world";
-            println(c);
+            var a = 5 - 1;
+            var b = 10;
+            var c = "hello" + " world";
+            println!(c);
 
             # test equality
             if a == 3 then {

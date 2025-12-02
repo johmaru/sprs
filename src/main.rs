@@ -42,10 +42,10 @@
 //! - Variables and assignments
 //! ```sprs
 //! # Comments start with a hash symbol
-//! x = 10;
-//! name = "sprs";
-//! is_valid = true;
-//! numbers = [1, 2, 3];
+//! var x = 10;
+//! var name = "sprs";
+//! var is_valid = true;
+//! var numbers = [1, 2, 3];
 //! ```
 //!
 //! - Functions
@@ -56,7 +56,7 @@
 //!
 //! fn main() {
 //!  result = add(5, 10);
-//!  println(result);
+//!  println!(result);
 //! }
 //! ```
 //!
@@ -71,13 +71,15 @@
 //!   | __println | for printing values to the console|
 //!   | __strlen | for getting the length of a string|
 //!   | __malloc | for allocating memory|
+//!   | __drop | for dropping a value|
+//!   | __clone | for cloning a value|
 //!
 //! - Control flow
 //! ```sprs
 //! if x > 5 then {
-//!   println("x is greater than 5");
+//!   println!("x is greater than 5");
 //! } else {
-//!  println("x is 5 or less");
+//!  println!("x is 5 or less");
 //! }
 //!
 //! while x < 10 {
@@ -93,13 +95,25 @@
 //! * Range creation: `..`(e.g., `1..10`)
 //! * indexing: `list[index]`
 //!
-//! ###  **Built-in functions**
-//! * `println(value)`: Print value to the console
+//! ###  **Built-in macros**
+//! * `println!(value)`: Print value to the console
 //! examples:
 //! ```
-//! println(y[1]);
+//! println!(y[1]);
 //! ```
-//! * `list_push(list)`: Push value to the end of the list
+//! * `list_push!(list, value)`: Push value to the end of the list
+//! examples:
+//! ```
+//! list_push!(y, z);
+//! ```
+//!
+//! * `clone!(value)`: Clone the value
+//! examples:
+//! ```
+//! var a = "hello";
+//! println!(clone!(a));
+//!
+//! ```
 //!
 //! ###  **module and preprocessor**
 //!
@@ -117,30 +131,30 @@
 //!
 //!        fn main() {
 //!           # access to module function
-//!           x = test.test();
-//!           y = [];
-//!           z = 20;
-//!           alpha = "test";
-//!           beta = true;
-//!           println(x);
-//!           list_push(y, z);
-//!           list_push(y, alpha);
-//!           println(y[1]);
+//!           var x = test.test();
+//!           var y = [];
+//!           var z = 20;
+//!           var alpha = "test";
+//!           var beta = true;
+//!           println!(x);
+//!           list_push!(y, z);
+//!           list_push!(y, alpha);
+//!           println!(y[1]);
 //!           # println(x + alpha);
 //!
 //!            # test calc
-//!              result = (x + 10) * 2;
-//!              println(result);
+//!              var result = (x + 10) * 2;
+//!              println!(result);
 //!            # test while
-//!              i = 0;
+//!              var i = 0;
 //!                while i <= 5 {
-//!                    println(i);
+//!                    println!(i);
 //!                    i = i + 1;
 //!                }
 //!
 //!            # test mod
-//!              m = 10 % 3;
-//!              println(m);
+//!              var m = 10 % 3;
+//!              println!(m);
 //!        }
 //!
 //! ```
@@ -150,10 +164,10 @@
 //! pkg test;
 //!
 //!  fn test() {
-//!            a = 5 - 1;
-//!            b = 10;
-//!            c = "hello" + " world";
-//!            println(c);
+//!            var a = 5 - 1;
+//!            var b = 10;
+//!            var c = "hello" + " world";
+//!            println!(c);
 //!
 //!            # test equality
 //!            if a == 3 then {
@@ -179,29 +193,45 @@
 //! # To run the project
 //! sprs run
 //! ```
-//! 
+//!
 //! ## Project Initialization
 //! To initialize a new Sprs project, use the following command:
 //! ```bash
 //! sprs init --name <project_name>
 //! ```
 //! This command creates a new directory structure with a default `sprs.toml` configuration file and a sample `main.sprs` source file.
-//! 
-//! 
+//!
+//! ## Memory Management
+//!
+//! The Sprs has a simple runtime move system.
+//!
+//! **Example:**
+//! ```sprs
+//! fn main() {
+//!    test();
+//!}
+//!
+//!fn test() {
+//!   var test = "Hello, Sprs!"; # set a string to variable
+//!   var a = test; # move the value from test to a, test is now invalid
+//!   return println!(a); # function call with a, a is now invalid after this line
+//!   # if you don't want to move a 'a' variable, use clone! macro
+//!   println!(clone!(a)); # a is still valid after this line
+//!}
+//!
+//! ```
 
 use crate::command_helper::HelpCommand;
 use crate::command_helper::get_all_arguments;
 use crate::command_helper::help_print;
 use crate::llvm::llvm_executer;
 
-
-mod front;
 mod command_helper;
-mod llvm;
+mod front;
 mod grammar;
 mod interpreter;
+mod llvm;
 mod runtime;
-
 
 fn main() {
     let argv: Vec<String> = std::env::args().collect();
@@ -219,20 +249,20 @@ fn main() {
 
         if command == "init" {
             if argc > 2 {
-                    let args = &argv[2..];
+                let args = &argv[2..];
 
-                    let mut iter = args.iter();
-                    while let Some(arg) = iter.next() {
-                        if arg == "--name" {
-                            if let Some(proj_name) = iter.next() {
-                                command_helper::init_project(Some(proj_name));
-                                return;
-                            }
-                        } else {
-                            eprintln!("Usage: sprs init --name <project_name>");
+                let mut iter = args.iter();
+                while let Some(arg) = iter.next() {
+                    if arg == "--name" {
+                        if let Some(proj_name) = iter.next() {
+                            command_helper::init_project(Some(proj_name));
                             return;
                         }
+                    } else {
+                        eprintln!("Usage: sprs init --name <project_name>");
+                        return;
                     }
+                }
             } else {
                 println!("Initializing project without arguments.");
                 command_helper::init_project(None);
