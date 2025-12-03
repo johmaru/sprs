@@ -93,6 +93,12 @@ pub fn build_and_run(_full_path: String, mode: ExecuteMode) {
         module.set_data_layout(&target_machine.get_target_data().get_data_layout());
         module.set_triple(&target_triple);
 
+        let ll_filename = format!("{}.ll", name);
+        if let Err(e) = module.print_to_file(Path::new(&ll_filename)) {
+            eprintln!("Failed to write LLVM IR to {}: {}", ll_filename, e);
+        }
+        println!("Generated: {}", ll_filename);
+
         let filename = format!("{}.o", name);
         let obj_path = Path::new(&filename);
 
