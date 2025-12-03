@@ -4,6 +4,22 @@ pub struct SprsValue {
     pub data: u64,
 }
 
+pub enum Tag {
+    // Dynamic value tags
+    Integer = 0, // i64
+    String = 1,
+    Boolean = 2,
+    List = 3,
+    Range = 4,
+    Unit = 5,
+
+    // System types
+    Int8 = 100,
+    Uint8 = 101,
+    Int16 = 102,
+    Uint16 = 103,
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn __list_new(capacity: i64) -> *mut Vec<SprsValue> {
     let vec = Vec::with_capacity(capacity as usize);
@@ -43,32 +59,48 @@ pub extern "C" fn __println(list_ptr: *mut Vec<SprsValue>) {
 
     for (i, val) in list.iter().enumerate() {
         match val.tag {
-            0 => {
+            t if t == Tag::Integer as i32 => {
                 // integer
                 println!("{}", val.data as i64);
             }
-            1 => {
+            t if t == Tag::String as i32 => {
                 // string
                 let c_str = unsafe { std::ffi::CStr::from_ptr(val.data as *const i8) };
                 println!("{}", c_str.to_string_lossy());
             }
-            2 => {
+            t if t == Tag::Boolean as i32 => {
                 // boolean
                 let bool_str = if val.data != 0 { "true" } else { "false" };
                 println!("{}", bool_str);
             }
-            3 => {
+            t if t == Tag::List as i32    => {
                 // list
                 println!(
                     "Value[{}]: <list at {:p}>",
                     i, val.data as *mut Vec<SprsValue>
                 );
             }
-            4 => {
+            t if t == Tag::Range as i32 => {
                 // range
                 let range_ptr = val.data as *mut SprsRange;
                 let range = unsafe { &*range_ptr };
                 println!("Value[{}]: <range {}..{}>", i, range.start, range.end);
+            },
+            t if t == Tag::Int8 as i32 => {
+                // i8
+                println!("{}", val.data as i8);
+            }
+            t if t == Tag::Uint8 as i32 => {
+                // u8
+                println!("{}", val.data as u8);
+            }
+            t if t == Tag::Int16 as i32 => {
+                // i16
+                println!("{}", val.data as i16);
+            }
+            t if t == Tag::Uint16 as i32 => {
+                // u16
+                println!("{}", val.data as u16);
             }
             _ => {
                 println!("Value[{}]: <unknown type>", i);
@@ -154,4 +186,12 @@ pub extern "C" fn __clone(tag: i32, data: u64) -> SprsValue {
         }
         _ => SprsValue { tag, data },
     }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __panic(message_ptr: *const i8) {
+    let c_str = unsafe { std::ffi::CStr::from_ptr(message_ptr) };
+    let message = c_str.to_string_lossy();
+    eprintln!("Panic: {}", message);
+    std::process::exit(1);
 }

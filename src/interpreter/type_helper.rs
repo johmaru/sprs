@@ -8,4 +8,10 @@ pub enum Type {
     Bool,
     Str,
     Unit,
+
+    // System types
+    TypeI8,
+    TypeU8,
+    TypeI16,
+    TypeU16,
 }

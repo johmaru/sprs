@@ -36,12 +36,16 @@ For this language development environment setup is WSL2(Ubuntu) + VSCode is reco
 
 ### Language Features
 #### **Basic data types:**
- * Int
+ * Int (i64)
  * Bool
  * Str
  * List
  * Range
  * Unit
+ * i8 (only for cast! macro)
+ * u8 (only for cast! macro)
+* i16 (only for cast! macro)
+* u16 (only for cast! macro)
 
 - Variables and assignments
 ```sprs
@@ -88,6 +92,7 @@ fn main() {
   | __malloc | for allocating memory|
   | __drop | for dropping a value|
   | __clone | for cloning a value|
+  | __panic | for handling panic situations|
 
 - Control flow
 ```sprs
@@ -130,6 +135,33 @@ println!(clone!(a));
 
 ```
 
+* `cast!(value, type)`: Cast the value to the specified type
+examples:
+```rust
+var a = 100; # default is i64
+var b = cast!(a, TypeI8); # cast to i8
+println!(b); # prints 100 as i8
+```
+
+** Note:** cast! macro is more faster then normal int type, because it use i8 and u8 llvm type directly.
+examples:
+```rust
+var i = 0; # default is i64
+while i < 5 {
+  println!(i); ## this is too slow for embedded system, because it use dynamic type checking.
+ i = i + 1;
+}
+```
+
+ but with cast! macro
+```rust
+var i = cast!(0, i8); # i is i8 type
+while i < cast!(5, i8) {
+ println!(i); ## this is faster for embedded system, because it use i8 llvm type directly.
+i = i + cast!(1, i8);
+}
+```
+
 ####  **module and preprocessor**
 
 * `#define` for defining macros
@@ -161,7 +193,7 @@ import test;
              var result = (x + 10) * 2;
              println!(result);
            # test while
-             var i = 0;
+             var i = cast!(0, i8);
                while i <= 5 {
                    println!(i);
                    i = i + 1;

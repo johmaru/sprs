@@ -40,6 +40,12 @@ pub enum Token {
     Package,
     Import,
     Var,
+
+    // System types
+    TypeI8,
+    TypeU8,
+    TypeI16,
+    TypeU16,
 }
 
 #[derive(Logos, Debug, Clone, PartialEq)]
@@ -129,6 +135,16 @@ enum RawTok {
     Import,
     #[token("var")]
     Var,
+
+    // System types
+    #[token("i8")]
+    TypeI8,
+    #[token("u8")]
+    TypeU8,
+    #[token("i16")]
+    TypeI16,
+    #[token("u16")]
+    TypeU16,
 }
 
 pub struct Lexer<'input> {
@@ -202,6 +218,12 @@ impl<'input> Iterator for Lexer<'input> {
             RawTok::Import => Token::Import,
             RawTok::Var => Token::Var,
             RawTok::Comment => return self.next(),
+
+            // System types
+            RawTok::TypeI8 => Token::TypeI8,
+            RawTok::TypeU8 => Token::TypeU8,
+            RawTok::TypeI16 => Token::TypeI16,
+            RawTok::TypeU16 => Token::TypeU16,
         };
         Some(Ok((s, t, e)))
     }

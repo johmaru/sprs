@@ -18,6 +18,12 @@ pub enum Value {
     Return(Box<Value>),
     List(std::rc::Rc<std::cell::RefCell<Vec<Value>>>),
     Range(i64, i64),
+
+    // System types
+    TypeI8,
+    TypeU8,
+    TypeI16,
+    TypeU16,
 }
 
 pub struct Module {
@@ -64,6 +70,10 @@ impl std::fmt::Display for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Value::Int(n) => write!(f, "{}", n),
+            Value::TypeI8 => write!(f, "i8"),
+            Value::TypeU8 => write!(f, "u8"),
+            Value::TypeI16 => write!(f, "i16"),
+            Value::TypeU16 => write!(f, "u16"),
             Value::Bool(b) => write!(f, "{}", b),
             Value::Str(s) => write!(f, "{}", s),
             Value::Unit => write!(f, "()"),
@@ -398,6 +408,10 @@ fn evalute_expr(
 ) -> Result<Value, String> {
     match expr {
         ast::Expr::Number(n) => Ok(Value::Int(*n)),
+        ast::Expr::TypeI8 => Ok(Value::TypeI8),
+        ast::Expr::TypeU8 => Ok(Value::TypeU8),
+        ast::Expr::TypeI16 => Ok(Value::TypeI16),
+        ast::Expr::TypeU16 => Ok(Value::TypeU16),
         ast::Expr::Str(s) => Ok(Value::Str(s.clone())),
         ast::Expr::Bool(b) => Ok(Value::Bool(*b)),
         ast::Expr::Add(lhs, rhs) => {

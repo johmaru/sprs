@@ -27,6 +27,12 @@ pub enum Expr {
     Index(Box<Expr>, Box<Expr>),             // Collection, Index
     ModuleAccess(String, String, Vec<Expr>), // Module, functionName, args e.g. module.ident
     Unit(),
+
+    // System types
+    TypeI8,
+    TypeU8,
+    TypeI16,
+    TypeU16,
 }
 
 #[derive(Debug, PartialEq)]

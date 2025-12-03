@@ -36,12 +36,19 @@ pub enum OS {
 }
 
 pub enum Tag {
-    Integer = 0,
+    // Dynamic value tags
+    Integer = 0, // i64
     String = 1,
     Boolean = 2,
     List = 3,
     Range = 4,
     Unit = 5,
+
+    // System types
+    Int8 = 100,
+    Uint8 = 101,
+    Int16 = 102,
+    Uint16 = 103,
 }
 
 const WINDOWS_STR: &str = "Windows";
@@ -126,6 +133,7 @@ impl<'ctx> Compiler<'ctx> {
                 ],
                 false,
             ),
+            "__panic" => void_type.fn_type(&[i8_ptr_type.into()], false),
             _ => panic!("Unknown runtime function: {}", name),
         };
 
@@ -260,6 +268,23 @@ impl<'ctx> Compiler<'ctx> {
 
         if module.get_function(func_name).is_none() {
             module.add_function(func_name, fn_type, None);
+        }
+    }
+
+    pub fn get_known_type_from_expr(
+        &self,
+        expr: &ast::Expr,
+    ) -> Result<String, String> {
+        match expr {
+            ast::Expr::TypeI8 => Ok("i8".to_string()),
+            ast::Expr::TypeU8 => Ok("u8".to_string()),
+            ast::Expr::TypeI16 => Ok("i16".to_string()),
+            ast::Expr::TypeU16 => Ok("u16".to_string()),
+            ast::Expr::Number(_) => Ok("default(i64)".to_string()),
+            _ => Err(format!(
+                "Unknown type expression for known type: {:?}",
+                expr
+            )),
         }
     }
 
@@ -439,6 +464,22 @@ impl<'ctx> Compiler<'ctx> {
                 let result = builder_helper::create_integer(self, n);
                 result
             }
+            ast::Expr::TypeI8 => {
+                let result = builder_helper::create_int8(self);
+                result
+            }
+            ast::Expr::TypeU8 => {
+                let result = builder_helper::create_uint8(self);
+                result
+            }
+            ast::Expr::TypeI16 => {
+                let result = builder_helper::create_int16(self);
+                result
+            }
+            ast::Expr::TypeU16 => {
+                let result = builder_helper::create_uint16(self);
+                result
+            }
             ast::Expr::Str(str) => {
                 let result = builder_helper::create_string(self, str, module);
                 result
@@ -467,6 +508,11 @@ impl<'ctx> Compiler<'ctx> {
 
                 if ident == "clone!" {
                     let result = builder_helper::call_builtin_macro_clone(self, args, module);
+                    return result;
+                }
+
+                if ident == "cast!" {
+                    let result = builder_helper::call_builtin_macro_cast(self, args, module);
                     return result;
                 }
 

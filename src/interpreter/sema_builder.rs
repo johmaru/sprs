@@ -183,6 +183,10 @@ fn infer_type_hint(expr: &ast::Expr, sigs: &[ItemSig]) -> Option<Type> {
     use ast::Expr::*;
     match expr {
         Number(_) => Some(Type::Int),
+        TypeI8 => Some(Type::TypeI8),
+        TypeU8 => Some(Type::TypeU8),
+        TypeI16 => Some(Type::TypeI16),
+        TypeU16 => Some(Type::TypeU16),
         Bool(_) => Some(Type::Bool),
         Str(_) => Some(Type::Str),
         Var(_) => Some(Type::Any),

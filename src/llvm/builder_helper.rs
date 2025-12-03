@@ -1,6 +1,49 @@
+use core::error;
+
 use inkwell::{AddressSpace, builder::Builder, module::Linkage, values::{BasicValueEnum, FunctionValue, PointerValue, ValueKind}};
 
 use crate::{front::ast, llvm::compiler::{Compiler, Tag}};
+
+// !support functions
+pub struct PanicErrorSettings {
+    pub is_const: bool, 
+    pub is_global: bool
+}
+pub fn create_panic_err<'ctx>(self_compiler: &mut Compiler<'ctx>, message: &str, module: &inkwell::module::Module<'ctx>, settings: PanicErrorSettings) -> Result<(), String> {
+    let global = if let Some(existing) = self_compiler.string_constants.get(message) {
+                    *existing
+                } else {
+                    let str_val = self_compiler.context.const_string(message.as_bytes(), true);
+                    let global = module.add_global(
+                        str_val.get_type(),
+                        Some(AddressSpace::default()),
+                        &format!("panic_err_{}", self_compiler.string_constants.len()),
+                    );
+                    global.set_initializer(&str_val);
+                    if settings.is_const {
+                        global.set_constant(true);
+                    }
+                    if settings.is_global {
+                        global.set_linkage(Linkage::External);
+                    } else {
+                        global.set_linkage(Linkage::Internal);
+                    }
+                    self_compiler.string_constants.insert(message.to_string(), global);
+                    global
+                };
+
+                let str_ptr = global.as_pointer_value();
+                let str_ptr_i8 = self_compiler
+                    .builder
+                    .build_bit_cast(str_ptr, self_compiler.context.ptr_type(AddressSpace::default()), "panic_err_str_ptr_i8");
+
+                let panic_fn = self_compiler.get_runtime_fn(module, "__panic");
+                self_compiler.builder.build_call(panic_fn, &[str_ptr_i8.unwrap().into()], "panic_call").unwrap();
+                Ok(())
+
+}
+
+// !normal functions
 
 pub fn create_list_from_expr<'ctx>(self_compiler: &mut Compiler<'ctx>, elements: &[ast::Expr], module: &inkwell::module::Module<'ctx>) -> Result<PointerValue<'ctx>, String> {
     let len = elements.len();
@@ -503,6 +546,126 @@ pub fn create_bool<'ctx>(self_compiler: &mut Compiler<'ctx>, boolean: &bool) -> 
                 Ok(ptr.into())
 }
 
+pub fn create_int8<'ctx>(self_compiler: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, String> {
+    let ptr = self_compiler
+                    .builder
+                    .build_alloca(self_compiler.runtime_value_type, "int8_alloc")
+                    .unwrap();
+
+                let tag_ptr = self_compiler
+                    .builder
+                    .build_struct_gep(self_compiler.runtime_value_type, ptr, 0, "int8_tag_ptr")
+                    .unwrap();
+                self_compiler.builder
+                    .build_store(
+                        tag_ptr,
+                        self_compiler.context
+                            .i32_type()
+                            .const_int(Tag::Int8 as u64, false),
+                    )
+                    .unwrap();
+
+                let data_ptr = self_compiler
+                    .builder
+                    .build_struct_gep(self_compiler.runtime_value_type, ptr, 1, "int8_data_ptr")
+                    .unwrap();
+                self_compiler.builder
+                    .build_store(data_ptr, self_compiler.context.i64_type().const_int(0, false))
+                    .unwrap();
+
+                Ok(ptr.into())
+}
+
+pub fn create_uint8<'ctx>(self_compiler: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, String> {
+    let ptr = self_compiler
+                    .builder
+                    .build_alloca(self_compiler.runtime_value_type, "uint8_alloc")
+                    .unwrap();
+
+                let tag_ptr = self_compiler
+                    .builder
+                    .build_struct_gep(self_compiler.runtime_value_type, ptr, 0, "uint8_tag_ptr")
+                    .unwrap();
+                self_compiler.builder
+                    .build_store(
+                        tag_ptr,
+                        self_compiler.context
+                            .i32_type()
+                            .const_int(Tag::Uint8 as u64, false),
+                    )
+                    .unwrap();
+
+                let data_ptr = self_compiler
+                    .builder
+                    .build_struct_gep(self_compiler.runtime_value_type, ptr, 1, "uint8_data_ptr")
+                    .unwrap();
+                self_compiler.builder
+                    .build_store(data_ptr, self_compiler.context.i64_type().const_int(0, false))
+                    .unwrap();
+
+                Ok(ptr.into())
+}
+
+pub fn create_int16<'ctx>(self_compiler: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, String> {
+    let ptr = self_compiler
+                    .builder
+                    .build_alloca(self_compiler.runtime_value_type, "int16_alloc")
+                    .unwrap();
+
+                let tag_ptr = self_compiler
+                    .builder
+                    .build_struct_gep(self_compiler.runtime_value_type, ptr, 0, "int16_tag_ptr")
+                    .unwrap();
+                self_compiler.builder
+                    .build_store(
+                        tag_ptr,
+                        self_compiler.context
+                            .i32_type()
+                            .const_int(Tag::Int16 as u64, false),
+                    )
+                    .unwrap();
+
+                let data_ptr = self_compiler
+                    .builder
+                    .build_struct_gep(self_compiler.runtime_value_type, ptr, 1, "int16_data_ptr")
+                    .unwrap();
+                self_compiler.builder
+                    .build_store(data_ptr, self_compiler.context.i64_type().const_int(0, false))
+                    .unwrap();
+
+                Ok(ptr.into())
+}
+
+pub fn create_uint16<'ctx>(self_compiler: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, String> {
+    let ptr = self_compiler
+                    .builder
+                    .build_alloca(self_compiler.runtime_value_type, "uint16_alloc")
+                    .unwrap();
+
+                let tag_ptr = self_compiler
+                    .builder
+                    .build_struct_gep(self_compiler.runtime_value_type, ptr, 0, "uint16_tag_ptr")
+                    .unwrap();
+                self_compiler.builder
+                    .build_store(
+                        tag_ptr,
+                        self_compiler.context
+                            .i32_type()
+                            .const_int(Tag::Uint16 as u64, false),
+                    )
+                    .unwrap();
+
+                let data_ptr = self_compiler
+                    .builder
+                    .build_struct_gep(self_compiler.runtime_value_type, ptr, 1, "uint16_data_ptr")
+                    .unwrap();
+                self_compiler.builder
+                    .build_store(data_ptr, self_compiler.context.i64_type().const_int(0, false))
+                    .unwrap();
+
+                Ok(ptr.into())
+}
+
 pub fn create_call_expr<'ctx>(self_compiler: &mut Compiler<'ctx>, ident: &str, args: &Vec<ast::Expr>, module: &inkwell::module::Module<'ctx>) -> Result<BasicValueEnum<'ctx>, String> {
     let func = module
                     .get_function(ident)
@@ -665,7 +828,25 @@ pub fn create_call_expr<'ctx>(self_compiler: &mut Compiler<'ctx>, ident: &str, a
 }
 
 pub fn create_add_expr<'ctx>(self_compiler: &mut Compiler<'ctx>, lhs: &ast::Expr, rhs: &ast::Expr, module: &inkwell::module::Module<'ctx>) -> Result<BasicValueEnum<'ctx>, String> {
-    let l_ptr = self_compiler.compile_expr(lhs, module)?.into_pointer_value();
+    
+    if self_compiler.get_known_type_from_expr(lhs).unwrap_err() == "i8" && self_compiler.get_known_type_from_expr(rhs).unwrap_err() == "i8" {
+        return create_int8_add_logic(self_compiler, lhs, rhs, module);
+    }
+
+    if self_compiler.get_known_type_from_expr(lhs).unwrap_err() == "u8" && self_compiler.get_known_type_from_expr(rhs).unwrap_err() == "u8" {
+        return create_uint8_add_logic(self_compiler, lhs, rhs, module);
+    }
+
+    if self_compiler.get_known_type_from_expr(lhs).unwrap_err() == "i16" && self_compiler.get_known_type_from_expr(rhs).unwrap_err() == "i16" {
+        return create_int16_add_logic(self_compiler, lhs, rhs, module);
+    }
+
+    if self_compiler.get_known_type_from_expr(lhs).unwrap_err() == "u16" && self_compiler.get_known_type_from_expr(rhs).unwrap_err() == "u16" {
+        return create_uint16_add_logic(self_compiler, lhs, rhs, module);
+    }
+
+    
+                let l_ptr = self_compiler.compile_expr(lhs, module)?.into_pointer_value();
                 let r_ptr = self_compiler.compile_expr(rhs, module)?.into_pointer_value();
 
                 let l_tag_ptr = self_compiler
@@ -693,18 +874,74 @@ pub fn create_add_expr<'ctx>(self_compiler: &mut Compiler<'ctx>, lhs: &ast::Expr
                     .context
                     .i32_type()
                     .const_int(Tag::Integer as u64, false);
+                let int8_tag = self_compiler
+                    .context
+                    .i32_type()
+                    .const_int(Tag::Int8 as u64, false);
+                let uint8_tag = self_compiler
+                    .context
+                    .i32_type()
+                    .const_int(Tag::Uint8 as u64, false);
+                let int16_tag = self_compiler
+                    .context
+                    .i32_type()
+                    .const_int(Tag::Int16 as u64, false);
+                let uint16_tag = self_compiler
+                    .context
+                    .i32_type()
+                    .const_int(Tag::Uint16 as u64, false);
+                let tags_equal = self_compiler
+                    .builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::EQ,
+                        l_tag,
+                        r_tag,
+                        "tags_equal",
+                    )
+                    .unwrap();
+
                 let is_l_int = self_compiler
                     .builder
                     .build_int_compare(inkwell::IntPredicate::EQ, l_tag, int_tag, "is_l_int")
                     .unwrap();
-                let is_r_int = self_compiler
+                let is_l_int8 = self_compiler
                     .builder
-                    .build_int_compare(inkwell::IntPredicate::EQ, r_tag, int_tag, "is_r_int")
+                    .build_int_compare(inkwell::IntPredicate::EQ, l_tag, int8_tag, "is_l_int8")
                     .unwrap();
-                let both_int = self_compiler
+                let is_l_uint8 = self_compiler
                     .builder
-                    .build_and(is_l_int, is_r_int, "both_int")
+                    .build_int_compare(inkwell::IntPredicate::EQ, l_tag, uint8_tag, "is_l_uint8")
                     .unwrap();
+                let is_l_int16 = self_compiler
+                    .builder
+                    .build_int_compare(inkwell::IntPredicate::EQ, l_tag, int16_tag, "is_l_int16")
+                    .unwrap();
+                let is_l_uint16 = self_compiler
+                    .builder
+                    .build_int_compare(inkwell::IntPredicate::EQ, l_tag, uint16_tag, "is_l_uint16")
+                    .unwrap();
+                let is_l_numeric = self_compiler
+                    .builder
+                    .build_or(is_l_int, is_l_int8, "is_l_numeric")
+                    .unwrap();
+                let is_l_numeric_1 = self_compiler
+                    .builder
+                    .build_or(is_l_uint8, is_l_numeric, "is_l_numeric_1")
+                    .unwrap();
+                let is_l_numeric_2 = self_compiler
+                    .builder
+                    .build_or(is_l_int16, is_l_numeric_1, "is_l_numeric_2")
+                    .unwrap();
+                let is_l_numeric_final = self_compiler
+                    .builder
+                    .build_or(is_l_uint16, is_l_numeric_2, "is_l_numeric_final")
+                    .unwrap();
+
+                let can_add = self_compiler
+                    .builder
+                    .build_and(tags_equal, is_l_numeric_final, "can_add")
+                    .unwrap();
+
 
                 // check if both are strings
                 let string_tag = self_compiler.context.i32_type().const_int(Tag::String as u64, false);
@@ -718,7 +955,7 @@ pub fn create_add_expr<'ctx>(self_compiler: &mut Compiler<'ctx>, lhs: &ast::Expr
                     .unwrap();
 
                 // currently only handling int + int and string + string, for now didn't use a both_string variable
-                let _both_string = self_compiler
+                let both_string = self_compiler
                     .builder
                     .build_and(is_l_string, is_r_string, "both_string")
                     .unwrap();
@@ -731,12 +968,39 @@ pub fn create_add_expr<'ctx>(self_compiler: &mut Compiler<'ctx>, lhs: &ast::Expr
                     .get_parent()
                     .unwrap();
                 let int_bb = self_compiler.context.append_basic_block(parent_fn, "add_int_bb");
+
+                let check_string_bb = self_compiler.context.append_basic_block(parent_fn, "add_check_string_bb");
                 let string_bb = self_compiler.context.append_basic_block(parent_fn, "add_string_bb");
+                let error_bb = self_compiler.context.append_basic_block(parent_fn, "add_error_bb");
+
                 let merge_bb = self_compiler.context.append_basic_block(parent_fn, "add_merge_bb");
 
                 let _ = self_compiler
                     .builder
-                    .build_conditional_branch(both_int, int_bb, string_bb);
+                    .build_conditional_branch(can_add, int_bb, check_string_bb);
+
+                self_compiler.builder.position_at_end(check_string_bb);
+                let _ = self_compiler
+                    .builder
+                    .build_conditional_branch(both_string, string_bb, error_bb);
+
+                self_compiler.builder.position_at_end(error_bb);
+
+                let error_message = format!(
+                    "TypeError: type miss match : '{:?}' and '{:?}'",
+                    self_compiler.get_known_type_from_expr(lhs),
+                    self_compiler.get_known_type_from_expr(rhs)
+                );
+
+                let settings = PanicErrorSettings {
+                    is_const: true,
+                    is_global: true,
+                };
+                
+                let _ = create_panic_err(self_compiler, &error_message, module, settings)?;
+
+                let _ = self_compiler.builder.build_unreachable();
+
 
                 self_compiler.builder.position_at_end(int_bb);
                 let l_int_data_ptr = self_compiler
@@ -772,7 +1036,9 @@ pub fn create_add_expr<'ctx>(self_compiler: &mut Compiler<'ctx>, lhs: &ast::Expr
                     .builder
                     .build_struct_gep(self_compiler.runtime_value_type, int_res_ptr, 0, "int_res_tag_ptr")
                     .unwrap();
-                self_compiler.builder.build_store(int_res_tag_ptr, int_tag).unwrap();
+
+                self_compiler.builder.build_store(int_res_tag_ptr, l_tag).unwrap();
+
                 let int_res_data_ptr = self_compiler
                     .builder
                     .build_struct_gep(self_compiler.runtime_value_type, int_res_ptr, 1, "int_res_data_ptr")
@@ -919,6 +1185,250 @@ pub fn create_add_expr<'ctx>(self_compiler: &mut Compiler<'ctx>, lhs: &ast::Expr
                 phi.add_incoming(&[(&int_res_ptr, int_bb), (&str_res_ptr, string_bb)]);
 
                 Ok(phi.as_basic_value())
+}
+
+fn create_int8_add_logic<'ctx>(self_compiler: &mut Compiler<'ctx>, lhs: &ast::Expr, rhs: &ast::Expr, module: &inkwell::module::Module<'ctx>) -> Result<BasicValueEnum<'ctx>, String> {
+    let l_ptr = self_compiler.compile_expr(lhs, module)?.into_pointer_value();
+    let r_ptr = self_compiler.compile_expr(rhs, module)?.into_pointer_value();
+
+    let l_data_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, l_ptr, 1, "l_data_ptr")
+        .unwrap();
+    let l_val_i64 = self_compiler
+        .builder
+        .build_load(self_compiler.context.i64_type(), l_data_ptr, "l_val_i64")
+        .unwrap()
+        .into_int_value();
+
+    let r_data_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, r_ptr, 1, "r_data_ptr")
+        .unwrap();
+    let r_val_i64 = self_compiler
+        .builder
+        .build_load(self_compiler.context.i64_type(), r_data_ptr, "r_val_i64")
+        .unwrap()
+        .into_int_value();
+
+    let l_i8 = self_compiler.builder.build_int_truncate(l_val_i64, self_compiler.context.i8_type(), "l_trunc_i8").unwrap();
+    let r_i8 = self_compiler.builder.build_int_truncate(r_val_i64, self_compiler.context.i8_type(), "r_trunc_i8").unwrap();
+
+    let res_i8 = self_compiler.builder.build_int_add(l_i8, r_i8, "i8_sum").unwrap();
+    let res_i64 = self_compiler.builder.build_int_s_extend(res_i8, self_compiler.context.i64_type(), "i8_sum_ext").unwrap();
+    let res_ptr = self_compiler
+        .builder
+        .build_alloca(self_compiler.runtime_value_type, "res_alloc")
+        .unwrap();
+
+    let res_tag_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, res_ptr, 0, "res_tag_ptr")
+        .unwrap();
+    self_compiler.builder
+        .build_store(
+            res_tag_ptr,
+            self_compiler.context
+                .i32_type()
+                .const_int(Tag::Int8 as u64, false),
+        )
+        .unwrap();
+
+    let res_data_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, res_ptr, 1, "res_data_ptr")
+        .unwrap();
+    self_compiler.builder
+        .build_store(
+            res_data_ptr,
+            res_i64,
+        )
+        .unwrap();
+
+    Ok(res_ptr.into())
+}
+
+fn create_uint8_add_logic<'ctx>(self_compiler: &mut Compiler<'ctx>, lhs: &ast::Expr, rhs: &ast::Expr, module: &inkwell::module::Module<'ctx>) -> Result<BasicValueEnum<'ctx>, String> {
+    let l_ptr = self_compiler.compile_expr(lhs, module)?.into_pointer_value();
+    let r_ptr = self_compiler.compile_expr(rhs, module)?.into_pointer_value();
+
+    let l_data_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, l_ptr, 1, "l_data_ptr")
+        .unwrap();
+    let l_val_i64 = self_compiler
+        .builder
+        .build_load(self_compiler.context.i64_type(), l_data_ptr, "l_val_i64")
+        .unwrap()
+        .into_int_value();
+
+    let r_data_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, r_ptr, 1, "r_data_ptr")
+        .unwrap();
+    let r_val_i64 = self_compiler
+        .builder
+        .build_load(self_compiler.context.i64_type(), r_data_ptr, "r_val_i64")
+        .unwrap()
+        .into_int_value();
+
+    let l_u8 = self_compiler.builder.build_int_truncate(l_val_i64, self_compiler.context.i8_type(), "l_trunc_u8").unwrap();
+    let r_u8 = self_compiler.builder.build_int_truncate(r_val_i64, self_compiler.context.i8_type(), "r_trunc_u8").unwrap();
+
+    let res_u8 = self_compiler.builder.build_int_add(l_u8, r_u8, "u8_sum").unwrap();
+    let res_i64 = self_compiler.builder.build_int_z_extend(res_u8, self_compiler.context.i64_type(), "u8_sum_ext").unwrap();
+    let res_ptr = self_compiler
+        .builder
+        .build_alloca(self_compiler.runtime_value_type, "res_alloc")
+        .unwrap();
+
+    let res_tag_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, res_ptr, 0, "res_tag_ptr")
+        .unwrap();
+    self_compiler.builder
+        .build_store(
+            res_tag_ptr,
+            self_compiler.context
+                .i32_type()
+                .const_int(Tag::Uint8 as u64, false),
+        )
+        .unwrap();
+
+    let res_data_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, res_ptr, 1, "res_data_ptr")
+        .unwrap();
+    self_compiler.builder
+        .build_store(
+            res_data_ptr,
+            res_i64,
+        )
+        .unwrap();
+
+    Ok(res_ptr.into())
+}
+
+fn create_int16_add_logic<'ctx>(_self_compiler: &mut Compiler<'ctx>, _lhs: &ast::Expr, _rhs: &ast::Expr, _module: &inkwell::module::Module<'ctx>) -> Result<BasicValueEnum<'ctx>, String> {
+    let l_ptr = _self_compiler.compile_expr(_lhs, _module)?.into_pointer_value();
+    let r_ptr = _self_compiler.compile_expr(_rhs, _module)?.into_pointer_value();
+
+    let l_data_ptr = _self_compiler
+        .builder
+        .build_struct_gep(_self_compiler.runtime_value_type, l_ptr, 1, "l_data_ptr")
+        .unwrap();
+    let l_val_i64 = _self_compiler
+        .builder
+        .build_load(_self_compiler.context.i64_type(), l_data_ptr, "l_val_i64")
+        .unwrap()
+        .into_int_value();
+
+
+    let r_data_ptr = _self_compiler
+        .builder
+        .build_struct_gep(_self_compiler.runtime_value_type, r_ptr, 1, "r_data_ptr")
+        .unwrap();
+    let r_val_i64 = _self_compiler
+        .builder
+        .build_load(_self_compiler.context.i64_type(), r_data_ptr, "r_val_i64")
+        .unwrap()
+        .into_int_value();
+
+    let l_i16 = _self_compiler.builder.build_int_truncate(l_val_i64, _self_compiler.context.i16_type(), "l_trunc_i16").unwrap();
+    let r_i16 = _self_compiler.builder.build_int_truncate(r_val_i64, _self_compiler.context.i16_type(), "r_trunc_i16").unwrap();
+
+    let res_i16 = _self_compiler.builder.build_int_add(l_i16, r_i16, "i16_sum").unwrap();
+    let res_i64 = _self_compiler.builder.build_int_s_extend(res_i16, _self_compiler.context.i64_type(), "i16_sum_ext").unwrap();
+    let res_ptr = _self_compiler
+        .builder
+        .build_alloca(_self_compiler.runtime_value_type, "res_alloc")
+        .unwrap();
+    let res_tag_ptr = _self_compiler
+        .builder
+        .build_struct_gep(_self_compiler.runtime_value_type, res_ptr, 0, "res_tag_ptr")
+        .unwrap();
+    _self_compiler.builder
+        .build_store(
+            res_tag_ptr,
+            _self_compiler.context
+                .i32_type()
+                .const_int(Tag::Integer as u64, false),
+        )
+        .unwrap();
+
+    let res_data_ptr = _self_compiler
+        .builder
+        .build_struct_gep(_self_compiler.runtime_value_type, res_ptr, 1, "res_data_ptr")
+        .unwrap();
+    _self_compiler.builder
+        .build_store(
+            res_data_ptr,
+            res_i64,
+        )
+        .unwrap();
+
+    Ok(res_ptr.into())
+}
+
+fn create_uint16_add_logic<'ctx>(_self_compiler: &mut Compiler<'ctx>, _lhs: &ast::Expr, _rhs: &ast::Expr, _module: &inkwell::module::Module<'ctx>) -> Result<BasicValueEnum<'ctx>, String> {
+    let l_ptr = _self_compiler.compile_expr(_lhs, _module)?.into_pointer_value();
+    let r_ptr = _self_compiler.compile_expr(_rhs, _module)?.into_pointer_value();
+
+    let l_data_ptr = _self_compiler
+        .builder
+        .build_struct_gep(_self_compiler.runtime_value_type, l_ptr, 1, "l_data_ptr")
+        .unwrap();
+    let l_val_i64 = _self_compiler
+        .builder
+        .build_load(_self_compiler.context.i64_type(), l_data_ptr, "l_val_i64")
+        .unwrap()
+        .into_int_value();
+
+    let r_data_ptr = _self_compiler
+        .builder
+        .build_struct_gep(_self_compiler.runtime_value_type, r_ptr, 1, "r_data_ptr")
+        .unwrap();
+    let r_val_i64 = _self_compiler
+        .builder
+        .build_load(_self_compiler.context.i64_type(), r_data_ptr, "r_val_i64")
+        .unwrap()
+        .into_int_value();
+
+    
+    let l_u16 = _self_compiler.builder.build_int_truncate(l_val_i64, _self_compiler.context.i16_type(), "l_trunc_u16").unwrap();
+    let r_u16 = _self_compiler.builder.build_int_truncate(r_val_i64, _self_compiler.context.i16_type(), "r_trunc_u16").unwrap();
+
+    let res_u16 = _self_compiler.builder.build_int_add(l_u16, r_u16, "u16_sum").unwrap();
+    let res_i64 = _self_compiler.builder.build_int_z_extend(res_u16, _self_compiler.context.i64_type(), "u16_sum_ext").unwrap();
+    let res_ptr = _self_compiler
+        .builder
+        .build_alloca(_self_compiler.runtime_value_type, "res_alloc")
+        .unwrap();
+    let res_tag_ptr = _self_compiler
+        .builder
+        .build_struct_gep(_self_compiler.runtime_value_type, res_ptr, 0, "res_tag_ptr")
+        .unwrap();
+    _self_compiler.builder
+        .build_store(
+            res_tag_ptr,
+            _self_compiler.context
+                .i32_type()
+                .const_int(Tag::Integer as u64, false),
+        )
+        .unwrap();
+
+    let res_data_ptr = _self_compiler
+        .builder
+        .build_struct_gep(_self_compiler.runtime_value_type, res_ptr, 1, "res_data_ptr")
+        .unwrap();
+    _self_compiler.builder
+        .build_store(
+            res_data_ptr,
+            res_i64,
+        )
+        .unwrap();
+
+    Ok(res_ptr.into())
 }
 
 pub fn create_mul_expr<'ctx>(self_compiler: &mut Compiler<'ctx>, lhs: &ast::Expr, rhs: &ast::Expr, module: &inkwell::module::Module<'ctx>) -> Result<BasicValueEnum<'ctx>, String> {
@@ -1652,4 +2162,94 @@ pub fn call_builtin_macro_clone<'ctx>(self_compiler: &mut Compiler<'ctx>, args: 
                     self_compiler.builder.build_store(result_ptr, result_val?).unwrap();
 
                     return Ok(result_ptr.into());
+}
+
+pub fn call_builtin_macro_cast<'ctx>(self_compiler: &mut Compiler<'ctx>, args: &Vec<ast::Expr>, module: &inkwell::module::Module<'ctx>) -> Result<BasicValueEnum<'ctx>, String> {
+    if args.len() != 2 {
+        return Err("cast! expects 2 arguments".to_string());
+    }
+
+    let value_ptr = self_compiler.compile_expr(&args[0], module)?.into_pointer_value();
+    let target_type_expr = &args[1];
+
+    let target_type = match target_type_expr {
+        ast::Expr::Var(ident) => ident.as_str(),
+        ast::Expr::TypeI8 => "i8",
+        ast::Expr::TypeU8 => "u8",
+        ast::Expr::TypeI16 => "i16",
+        ast::Expr::TypeU16 => "u16",
+        _ => return Err(format!("cast! second argument must be a type identifier : {:?}", target_type_expr)),
+    };
+
+    let tag_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, value_ptr, 0, "cast_arg_tag_ptr")
+        .unwrap();
+
+    // Load the current tag (not used here but could be useful for type checking)
+    let _tag = self_compiler
+        .builder
+        .build_load(self_compiler.context.i32_type(), tag_ptr, "cast_arg_tag")
+        .unwrap()
+        .into_int_value();
+    
+    let data_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, value_ptr, 1, "cast_arg_data_ptr")
+        .unwrap();
+    let data = self_compiler
+        .builder
+        .build_load(self_compiler.context.i64_type(), data_ptr, "cast_arg_data")
+        .unwrap()
+        .into_int_value();  
+
+    let (new_tag, new_data) = match target_type {
+        "i8" => {
+            let new_tag = self_compiler.context.i32_type().const_int(Tag::Int8 as u64, false);
+
+            let new_data = self_compiler.builder.build_int_truncate(data, self_compiler.context.i8_type(), "cast_to_int8").unwrap();
+            let new_data_ext = self_compiler.builder.build_int_s_extend(new_data, self_compiler.context.i64_type(), "cast_to_int8_ext").unwrap();
+            (new_tag, new_data_ext)
+        }
+        "u8" => {
+            let new_tag = self_compiler.context.i32_type().const_int(Tag::Uint8 as u64, false);
+
+            let new_data = self_compiler.builder.build_int_truncate(data, self_compiler.context.i8_type(), "cast_to_uint8").unwrap();
+            let new_data_ext = self_compiler.builder.build_int_z_extend(new_data, self_compiler.context.i64_type(), "cast_to_uint8_ext").unwrap();
+            (new_tag, new_data_ext)
+        }
+        "i16" => {
+            let new_tag = self_compiler.context.i32_type().const_int(Tag::Int16 as u64, false);
+
+            let new_data = self_compiler.builder.build_int_truncate(data, self_compiler.context.i16_type(), "cast_to_int16").unwrap();
+            let new_data_ext = self_compiler.builder.build_int_s_extend(new_data, self_compiler.context.i64_type(), "cast_to_int16_ext").unwrap();
+            (new_tag, new_data_ext)
+        }
+        "u16" => {
+            let new_tag = self_compiler.context.i32_type().const_int(Tag::Uint16 as u64, false);
+
+            let new_data = self_compiler.builder.build_int_truncate(data, self_compiler.context.i16_type(), "cast_to_uint16").unwrap();
+            let new_data_ext = self_compiler.builder.build_int_z_extend(new_data, self_compiler.context.i64_type(), "cast_to_uint16_ext").unwrap();
+            (new_tag, new_data_ext)
+        }
+        _ => {
+            return Err(format!("Unsupported target type for cast!: {:?}", target_type));
+        }
+    };
+
+    let result_ptr = self_compiler
+        .builder
+        .build_alloca(self_compiler.runtime_value_type, "cast_res_alloc")
+        .unwrap();
+    let res_tag_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, result_ptr, 0, "res_tag_ptr")
+        .unwrap();
+    self_compiler.builder.build_store(res_tag_ptr, new_tag).unwrap();
+    let res_data_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, result_ptr, 1, "res_data_ptr")
+        .unwrap();
+    self_compiler.builder.build_store(res_data_ptr, new_data).unwrap();
+    return Ok(result_ptr.into());
 }

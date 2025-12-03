@@ -48,6 +48,12 @@ extern {
         Import => Token::Import,
         Package => Token::Package,
         Var => Token::Var,
+
+        // System types
+        TypeI8 => Token::TypeI8,
+        TypeU8 => Token::TypeU8,
+        TypeI16 => Token::TypeI16,
+        TypeU16 => Token::TypeU16,
     }
 }
 
@@ -200,6 +206,41 @@ BooleanLiteral: bool = {
     FALSE => false,
 };
 
+I8Literal: i8 = {
+    <tok:TypeI8> => {
+        match tok {
+            Token::TypeI8 => 0, // Placeholder value
+            _ => unreachable!(),
+        }
+    }
+};
+
+U8Literal: u8 = {
+    <tok:TypeU8> => {
+        match tok {
+            Token::TypeU8 => 0, // Placeholder value
+            _ => unreachable!(),
+        }
+    }
+};
+
+I16Literal: i16 = {
+    <tok:TypeI16> => {
+        match tok {
+            Token::TypeI16 => 0, // Placeholder value
+            _ => unreachable!(),
+        }
+    }
+};
+U16Literal: u16 = {
+    <tok:TypeU16> => {
+        match tok {
+            Token::TypeU16 => 0, // Placeholder value
+            _ => unreachable!(),
+        }
+    }
+};
+
 Expr: Expr = RangeExpr;
 
 RangeExpr: Expr = {
@@ -241,6 +282,10 @@ Factor: Expr = {
     <n:Num> => Expr::Number(n),
     <s:StringLiteral> => Expr::Str(s),
     <b:BooleanLiteral> => Expr::Bool(b),
+    <i:TypeI8> => Expr::TypeI8,
+    <u:TypeU8> => Expr::TypeU8,
+    <i:TypeI16> => Expr::TypeI16,
+    <u:TypeU16> => Expr::TypeU16,
     <mod_name:Ident> Dot <func_name:Ident> LParen <args:ArgList> RParen => {
         Expr::ModuleAccess(mod_name, func_name, args)
     },
