@@ -50,6 +50,17 @@ var x = 10;
 var name = "sprs";
 var is_valid = true;
 var numbers = [1, 2, 3];
+
+
+# Not initialized variable
+var y;  # y is initialized to Unit type
+
+# Re-assignment
+
+var y;
+y = 20;
+y = "now a string"; # y is now a string
+
 ```
 
 - Functions
@@ -60,7 +71,7 @@ fn add(a, b) {
 
 fn main() {
  result = add(5, 10);
- println(result);
+ println!(result);
 }
 ```
 
@@ -81,9 +92,9 @@ fn main() {
 - Control flow
 ```sprs
 if x > 5 then {
-  println("x is greater than 5");
+  println!("x is greater than 5");
 } else {
- println("x is 5 or less");
+ println!("x is 5 or less");
 }
 
 while x < 10 {
@@ -140,25 +151,25 @@ import test;
           var z = 20;
           var alpha = "test";
           var beta = true;
-          println(x);
-          list_push(y, z);
-          list_push(y, alpha);
-          println(y[1]);
+          println!(x);
+          list_push!(y, z);
+          list_push!(y, alpha);
+          println!(y[1]);
           # println(x + alpha);
 
            # test calc
              var result = (x + 10) * 2;
-             println(result);
+             println!(result);
            # test while
              var i = 0;
                while i <= 5 {
-                   println(i);
+                   println!(i);
                    i = i + 1;
                }
 
            # test mod
              var m = 10 % 3;
-             println(m);
+             println!(m);
        }
 
 ```
@@ -171,7 +182,7 @@ pkg test;
            var a = 5 - 1;
            var b = 10;
            var c = "hello" + " world";
-           println(c);
+           println!(c);
 
            # test equality
            if a == 3 then {

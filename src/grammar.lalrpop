@@ -136,7 +136,7 @@ Stmt: Stmt = {
             None => Ok(Stmt::Expr(e)),
             Some(val) => {
                 if let Expr::Var(id) = e {
-                    Ok(Stmt::Var(VarDecl { ident: id, expr: val }))
+                    Ok(Stmt::Var(VarDecl { ident: id, expr: Some(val) }))
                 } else {
                     Err(ParseError::User { error: "Invalid assignment target".to_string() })
                 }
@@ -174,8 +174,10 @@ VarDecls: Vec<VarDecl> = {
     <v:VarDecl> <mut rest:VarDecls> => { rest.insert(0, v); rest }
 };
 
-VarDecl: VarDecl =
- Var <id:Ident> Eq <e:Expr> Semi => VarDecl { ident: id, expr: e };
+VarDecl: VarDecl = {
+ Var <id:Ident> Eq <e:Expr> Semi => VarDecl { ident: id, expr: Some(e) },
+ Var <id:Ident> Semi => VarDecl { ident: id, expr: None },
+};
 
 Ident: String = <tok:IDENT> => {
     match tok { Token::Ident(s) => s, _ => unreachable!() }
@@ -244,6 +246,7 @@ Factor: Expr = {
     },
     <id:Ident> LParen <args:ArgList> RParen => Expr::Call(id, args, None),
     <id:Ident> => Expr::Var(id),
+    LParen RParen => Expr::Unit(),
     LParen <e:Expr> RParen => e,
     LBracket <args:ArgList> RBracket => Expr::List(args),
 };

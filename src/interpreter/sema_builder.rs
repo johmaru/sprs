@@ -132,7 +132,7 @@ fn collect_varinfo_in_block<'a>(stmts: &'a [ast::Stmt], table: &mut Vec<VarInfo<
         match stmt {
             ast::Stmt::Var(var) => table.push(VarInfo {
                 decl: var,
-                ty_hint: infer_type_hint(&var.expr, &[]).unwrap_or(Type::Any),
+                ty_hint: infer_type_hint(&var.expr.as_ref().unwrap_or(&ast::Expr::Number(0)), &[]).unwrap_or(Type::Any),
             }),
             ast::Stmt::Expr(_) => {}
             ast::Stmt::If {
@@ -222,5 +222,6 @@ fn infer_type_hint(expr: &ast::Expr, sigs: &[ItemSig]) -> Option<Type> {
         Range(_, _) => Some(Type::Any),
         Index(_, _) => Some(Type::Any),
         ModuleAccess(_, _, _) => Some(Type::Any), // !TODO Implement module access type inference
+        Unit() => Some(Type::Unit),
     }
 }

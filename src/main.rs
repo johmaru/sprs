@@ -46,6 +46,17 @@
 //! var name = "sprs";
 //! var is_valid = true;
 //! var numbers = [1, 2, 3];
+//! 
+//! 
+//! # Not initialized variable
+//! var y;  # y is initialized to Unit type
+//! 
+//! # Re-assignment
+//! 
+//! var y;
+//! y = 20;
+//! y = "now a string"; # y is now a string
+//! 
 //! ```
 //!
 //! - Functions

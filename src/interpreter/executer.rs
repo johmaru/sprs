@@ -292,7 +292,16 @@ fn execute_block(
     for stmt in stmts {
         match stmt {
             ast::Stmt::Var(var) => {
-                let val = evalute_expr(&var.expr, functions, scope)?;
+                let val = if let Some(expr) = &var.expr {
+                    println!("  Evaluating variable declaration: {} = {:?}", var.ident, expr);
+                    match evalute_expr(expr, functions, scope) {
+                        Ok(v) => v,
+                        Err(e) => return Err(format!("Error evaluating variable {}: {}", var.ident, e)),
+                    }
+                } else {
+                    println!("  Declaring variable {} with no initial value", var.ident);
+                    Value::Unit
+                };
                 scope.insert(var.ident.clone(), val.clone());
                 println!("  Declared variable {}: {}", val, var.ident);
             }
@@ -563,6 +572,9 @@ fn evalute_expr(
         ast::Expr::ModuleAccess(module_name, function_name, args) => {
             // !TODO Implement module access
             Err("Module access not implemented".to_string())
+        },
+        ast::Expr::Unit() => {
+            Ok(Value::Unit)
         }
     }
 }

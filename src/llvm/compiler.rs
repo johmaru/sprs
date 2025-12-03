@@ -328,14 +328,14 @@ impl<'ctx> Compiler<'ctx> {
         for stmt in stmts {
             match stmt {
                 ast::Stmt::Var(var) => {
-                    let init_val = self.compile_expr(&var.expr, module)?.into_pointer_value();
+                    let init_val = self.compile_expr(&var.expr.as_ref().unwrap_or(&ast::Expr::Unit()), module)?.into_pointer_value();
 
                     if let Some(&existing) = self.variables.get(&var.ident) {
                         let ptr = existing.into_pointer_value();
 
                         builder_helper::load_at_init_variable_with_existing(self, init_val, ptr, &var.ident);
 
-                        if let ast::Expr::Var(src_val_name) = &var.expr {
+                        if let Some(ast::Expr::Var(src_val_name)) = &var.expr {
                             if let Some(&src_ptr_enum) = self.variables.get(src_val_name) {
                                 builder_helper::move_variable(self, &src_ptr_enum, &var.ident);
                             }
@@ -343,7 +343,7 @@ impl<'ctx> Compiler<'ctx> {
                         local_vars.push(var.ident.clone());
                     } else {
                         let ptr = builder_helper::var_load_at_init_variable(self, init_val, &var.ident);
-                        if let ast::Expr::Var(src_val_name) = &var.expr {
+                        if let Some(ast::Expr::Var(src_val_name)) = &var.expr {
                             if let Some(&src_ptr_enum) = self.variables.get(src_val_name) {
                                 builder_helper::move_variable(self, &src_ptr_enum, &var.ident);
                             }
@@ -555,6 +555,10 @@ impl<'ctx> Compiler<'ctx> {
             }
             ast::Expr::ModuleAccess(module_name, function_name, args) => {
                 let result = builder_helper::create_module_access(self, module_name, function_name, args, module);
+                result
+            },
+            ast::Expr::Unit() => {
+                let result = builder_helper::create_unit(self);
                 result
             }
         }

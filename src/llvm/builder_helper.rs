@@ -1487,6 +1487,24 @@ pub fn create_module_access<'ctx>(self_compiler: &mut Compiler<'ctx>, module_nam
                 Ok(return_ptr.into())
 }
 
+pub fn create_unit<'ctx>(self_compiler: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, String> {
+    let res_ptr = self_compiler
+                    .builder
+                    .build_alloca(self_compiler.runtime_value_type, "unit_res")
+                    .unwrap();
+                let res_tag_ptr = self_compiler
+                    .builder
+                    .build_struct_gep(self_compiler.runtime_value_type, res_ptr, 0, "res_tag_ptr")
+                    .unwrap();
+                self_compiler.builder
+                    .build_store(
+                        res_tag_ptr,
+                        self_compiler.context.i32_type().const_int(Tag::Unit as u64, false),
+                    )
+                    .unwrap();
+                Ok(res_ptr.into())
+}
+
 // !Define builtin macro handlers
 
 pub fn call_builtin_macro_println<'ctx>(self_compiler: &mut Compiler<'ctx>, args: &Vec<ast::Expr>, module: &inkwell::module::Module<'ctx>) -> Result<BasicValueEnum<'ctx>, String> {

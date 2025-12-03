@@ -26,6 +26,7 @@ pub enum Expr {
     Range(Box<Expr>, Box<Expr>),             // Start, End
     Index(Box<Expr>, Box<Expr>),             // Collection, Index
     ModuleAccess(String, String, Vec<Expr>), // Module, functionName, args e.g. module.ident
+    Unit(),
 }
 
 #[derive(Debug, PartialEq)]
@@ -53,7 +54,7 @@ pub struct Function {
 #[derive(Debug, PartialEq)]
 pub struct VarDecl {
     pub ident: String,
-    pub expr: Expr,
+    pub expr: Option<Expr>,
 }
 
 #[derive(Debug, PartialEq)]
