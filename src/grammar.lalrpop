@@ -39,6 +39,7 @@ extern {
         While  => Token::While,
         IDENT  => Token::Ident(String),
         NUM    => Token::Num(i64),
+        FLOAT  => Token::Float(f64),
         TRUE  => Token::Bool(true),
         FALSE => Token::Bool(false),
         Comma  => Token::Comma,
@@ -196,6 +197,10 @@ Num: i64     = <tok:NUM>   => {
     match tok { Token::Num(n) => n, _ => unreachable!() }
 };
 
+Float: f64     = <tok:FLOAT>   => {
+    match tok { Token::Float(f) => f, _ => unreachable!() }
+};
+
 StringLiteral: String = {
     <s:StrLiteral> => {
         match s {
@@ -320,6 +325,7 @@ Postfix: Expr = {
 
 Factor: Expr = {
     <n:Num> => Expr::Number(n),
+    <f:Float> => Expr::Float(f),
     <s:StringLiteral> => Expr::Str(s),
     <b:BooleanLiteral> => Expr::Bool(b),
     <i:TypeI8> => Expr::TypeI8,

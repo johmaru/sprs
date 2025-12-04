@@ -34,6 +34,7 @@ pub enum Token {
     While,
     Ident(String),
     Num(i64),
+    Float(f64),
     Function,
     Return,
     Preprocessor,
@@ -117,6 +118,8 @@ enum RawTok {
     While,
     #[regex(r"[A-Za-z_][A-Za-z0-9_]*!?")]
     Ident,
+    #[regex(r"[0-9]+\.[0-9]+")]
+    Float,
     #[regex(r"[0-9]+")]
     Num,
     #[regex(r"[ \t\r\n\f]+", logos::skip)]
@@ -220,6 +223,7 @@ impl<'input> Iterator for Lexer<'input> {
             RawTok::While => Token::While,
             RawTok::Ident => Token::Ident(text.to_string()),
             RawTok::Num => Token::Num(text.parse().unwrap()),
+            RawTok::Float => Token::Float(text.parse().unwrap()),
             RawTok::True => Token::Bool(true),
             RawTok::False => Token::Bool(false),
             RawTok::WS => unreachable!(),

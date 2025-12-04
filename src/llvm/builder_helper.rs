@@ -4,7 +4,7 @@ use inkwell::{
     AddressSpace,
     builder::Builder,
     module::Linkage,
-    values::{BasicValueEnum, FunctionValue, PointerValue, ValueKind},
+    values::{BasicValueEnum, FunctionValue, IntValue, PointerValue, ValueKind},
 };
 
 use crate::{
@@ -580,6 +580,49 @@ pub fn create_integer<'ctx>(
     Ok(ptr.into())
 }
 
+pub fn create_float<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+    f: f64,
+) -> Result<BasicValueEnum<'ctx>, String> {
+    let ptr = self_compiler
+        .builder
+        .build_alloca(self_compiler.runtime_value_type, "float_alloc")
+        .unwrap();
+
+    let tag_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, ptr, 0, "tag_ptr")
+        .unwrap();
+    self_compiler
+        .builder
+        .build_store(
+            tag_ptr,
+            self_compiler
+                .context
+                .i32_type()
+                .const_int(Tag::Float as u64, false),
+        )
+        .unwrap();
+
+    let data_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, ptr, 1, "data_ptr")
+        .unwrap();
+    let float_bits = f.to_bits();
+    self_compiler
+        .builder
+        .build_store(
+            data_ptr,
+            self_compiler
+                .context
+                .i64_type()
+                .const_int(float_bits, false),
+        )
+        .unwrap();
+
+    Ok(ptr.into())
+}
+
 pub fn create_string<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
     str: &String,
@@ -614,7 +657,10 @@ pub fn create_string<'ctx>(
         .builder
         .build_store(
             tag_ptr,
-            self_compiler.context.i32_type().const_int(1, false),
+            self_compiler
+                .context
+                .i32_type()
+                .const_int(Tag::String as u64, false),
         )
         .unwrap();
 
@@ -1191,6 +1237,163 @@ pub fn create_add_expr<'ctx>(
     rhs: &ast::Expr,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
+    let _ = create_add_expr_type_check(self_compiler, lhs, rhs, module);
+
+    let l_ptr = self_compiler
+        .compile_expr(lhs, module)?
+        .into_pointer_value();
+    let r_ptr = self_compiler
+        .compile_expr(rhs, module)?
+        .into_pointer_value();
+
+    let l_tag_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, l_ptr, 0, "l_tag_ptr")
+        .unwrap();
+    let l_tag = self_compiler
+        .builder
+        .build_load(self_compiler.context.i32_type(), l_tag_ptr, "l_tag")
+        .unwrap()
+        .into_int_value();
+
+    let r_tag_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, r_ptr, 0, "r_tag_ptr")
+        .unwrap();
+    let r_tag = self_compiler
+        .builder
+        .build_load(self_compiler.context.i32_type(), r_tag_ptr, "r_tag")
+        .unwrap()
+        .into_int_value();
+
+    // check if both are integers
+
+    let can_add = create_add_expr_check_int(self_compiler, l_tag, r_tag)?;
+
+    // check if both are float(default(f64))
+    let both_float = create_add_expr_check_float(self_compiler, l_tag, r_tag)?;
+
+    // check if both are strings
+    let check_string = create_add_expr_check_string(self_compiler, l_tag, r_tag)?;
+
+    // create branches
+    let parent_fn = self_compiler
+        .builder
+        .get_insert_block()
+        .unwrap()
+        .get_parent()
+        .unwrap();
+    let int_bb = self_compiler
+        .context
+        .append_basic_block(parent_fn, "add_int_bb");
+    let check_float_bb = self_compiler
+        .context
+        .append_basic_block(parent_fn, "add_check_float_bb");
+    let float_bb = self_compiler
+        .context
+        .append_basic_block(parent_fn, "add_float_bb");
+    let check_string_bb = self_compiler
+        .context
+        .append_basic_block(parent_fn, "add_check_string_bb");
+    let string_bb = self_compiler
+        .context
+        .append_basic_block(parent_fn, "add_string_bb");
+    let error_bb = self_compiler
+        .context
+        .append_basic_block(parent_fn, "add_error_bb");
+
+    let merge_bb = self_compiler
+        .context
+        .append_basic_block(parent_fn, "add_merge_bb");
+
+    // first check if can add as integers
+    let _ = self_compiler
+        .builder
+        .build_conditional_branch(can_add, int_bb, check_float_bb);
+
+    // second check if can add as floats
+    self_compiler.builder.position_at_end(check_float_bb);
+    let _ = self_compiler
+        .builder
+        .build_conditional_branch(both_float, float_bb, check_string_bb);
+
+    // third check if can add as strings
+    self_compiler.builder.position_at_end(check_string_bb);
+    let _ = self_compiler
+        .builder
+        .build_conditional_branch(check_string, string_bb, error_bb);
+
+    // error branch
+    self_compiler.builder.position_at_end(error_bb);
+
+    let error_message = format!(
+        "TypeError: type miss match : '{:?}' and '{:?}'",
+        self_compiler.get_known_type_from_expr(lhs),
+        self_compiler.get_known_type_from_expr(rhs)
+    );
+
+    let settings = PanicErrorSettings {
+        is_const: true,
+        is_global: true,
+    };
+
+    let _ = create_panic_err(self_compiler, &error_message, module, settings)?;
+
+    let _ = self_compiler.builder.build_unreachable();
+
+    // integer addition branch
+
+    self_compiler.builder.position_at_end(int_bb);
+
+    let int_res_ptr = create_add_expr_build_int_branch(self_compiler, l_ptr, r_ptr, l_tag)?;
+    let _ = self_compiler.builder.build_unconditional_branch(merge_bb);
+
+    // float addition branch
+
+    self_compiler.builder.position_at_end(float_bb);
+
+    let float_tag_val = self_compiler
+        .context
+        .i32_type()
+        .const_int(Tag::Float as u64, false);
+
+    let float_res_ptr =
+        create_add_expr_build_float_branch(self_compiler, l_ptr, r_ptr, float_tag_val)?;
+    let _ = self_compiler.builder.build_unconditional_branch(merge_bb);
+    // string concatenation branch
+
+    self_compiler.builder.position_at_end(string_bb);
+
+    let str_res_ptr = create_add_expr_build_string_branch(self_compiler, l_ptr, r_ptr, module)?;
+
+    // final merge branch
+
+    let _ = self_compiler.builder.build_unconditional_branch(merge_bb);
+
+    self_compiler.builder.position_at_end(merge_bb);
+
+    let phi = self_compiler
+        .builder
+        .build_phi(
+            self_compiler.context.ptr_type(AddressSpace::default()),
+            "add_res_phi",
+        )
+        .unwrap();
+    phi.add_incoming(&[
+        (&int_res_ptr, int_bb),
+        (&float_res_ptr, float_bb),
+        (&str_res_ptr, string_bb),
+    ]);
+
+    Ok(phi.as_basic_value())
+}
+
+fn create_add_expr_type_check<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+    lhs: &ast::Expr,
+    rhs: &ast::Expr,
+    module: &inkwell::module::Module<'ctx>,
+) -> Result<BasicValueEnum<'ctx>, String> {
     let is_type = |expr: &ast::Expr, ty: &str| -> bool {
         match self_compiler.get_known_type_from_expr(expr) {
             Ok(t) => t == ty,
@@ -1230,34 +1433,14 @@ pub fn create_add_expr<'ctx>(
         return create_uint64_add_logic(self_compiler, lhs, rhs, module);
     }
 
-    let l_ptr = self_compiler
-        .compile_expr(lhs, module)?
-        .into_pointer_value();
-    let r_ptr = self_compiler
-        .compile_expr(rhs, module)?
-        .into_pointer_value();
+    Err("Unsupported types for addition".to_string())
+}
 
-    let l_tag_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, l_ptr, 0, "l_tag_ptr")
-        .unwrap();
-    let l_tag = self_compiler
-        .builder
-        .build_load(self_compiler.context.i32_type(), l_tag_ptr, "l_tag")
-        .unwrap()
-        .into_int_value();
-
-    let r_tag_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, r_ptr, 0, "r_tag_ptr")
-        .unwrap();
-    let r_tag = self_compiler
-        .builder
-        .build_load(self_compiler.context.i32_type(), r_tag_ptr, "r_tag")
-        .unwrap()
-        .into_int_value();
-
-    // check if both are integers
+fn create_add_expr_check_int<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+    l_tag: IntValue<'ctx>,
+    r_tag: IntValue<'ctx>,
+) -> Result<IntValue<'ctx>, String> {
     let int_tag = self_compiler
         .context
         .i32_type()
@@ -1373,7 +1556,16 @@ pub fn create_add_expr<'ctx>(
         .build_and(tags_equal, is_l_numeric_final, "can_add")
         .unwrap();
 
-    // check if both are strings
+    Ok(can_add)
+}
+
+// currently only handling int + int and string + string, for now didn't use a both_string variable
+// 0 isBothString , 1 tag
+fn create_add_expr_check_string<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+    l_tag: IntValue<'ctx>,
+    r_tag: IntValue<'ctx>,
+) -> Result<IntValue<'ctx>, String> {
     let string_tag = self_compiler
         .context
         .i32_type()
@@ -1387,64 +1579,45 @@ pub fn create_add_expr<'ctx>(
         .build_int_compare(inkwell::IntPredicate::EQ, r_tag, string_tag, "is_r_string")
         .unwrap();
 
-    // currently only handling int + int and string + string, for now didn't use a both_string variable
     let both_string = self_compiler
         .builder
         .build_and(is_l_string, is_r_string, "both_string")
         .unwrap();
 
-    // create branches
-    let parent_fn = self_compiler
+    Ok(both_string)
+}
+
+fn create_add_expr_check_float<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+    l_tag: IntValue<'ctx>,
+    r_tag: IntValue<'ctx>,
+) -> Result<IntValue<'ctx>, String> {
+    let float_tag = self_compiler
+        .context
+        .i32_type()
+        .const_int(Tag::Float as u64, false);
+    let is_l_float = self_compiler
         .builder
-        .get_insert_block()
-        .unwrap()
-        .get_parent()
+        .build_int_compare(inkwell::IntPredicate::EQ, l_tag, float_tag, "is_l_float")
         .unwrap();
-    let int_bb = self_compiler
-        .context
-        .append_basic_block(parent_fn, "add_int_bb");
-
-    let check_string_bb = self_compiler
-        .context
-        .append_basic_block(parent_fn, "add_check_string_bb");
-    let string_bb = self_compiler
-        .context
-        .append_basic_block(parent_fn, "add_string_bb");
-    let error_bb = self_compiler
-        .context
-        .append_basic_block(parent_fn, "add_error_bb");
-
-    let merge_bb = self_compiler
-        .context
-        .append_basic_block(parent_fn, "add_merge_bb");
-
-    let _ = self_compiler
+    let is_r_float = self_compiler
         .builder
-        .build_conditional_branch(can_add, int_bb, check_string_bb);
-
-    self_compiler.builder.position_at_end(check_string_bb);
-    let _ = self_compiler
+        .build_int_compare(inkwell::IntPredicate::EQ, r_tag, float_tag, "is_r_float")
+        .unwrap();
+    let both_float = self_compiler
         .builder
-        .build_conditional_branch(both_string, string_bb, error_bb);
+        .build_and(is_l_float, is_r_float, "both_float")
+        .unwrap();
 
-    self_compiler.builder.position_at_end(error_bb);
+    Ok(both_float)
+}
 
-    let error_message = format!(
-        "TypeError: type miss match : '{:?}' and '{:?}'",
-        self_compiler.get_known_type_from_expr(lhs),
-        self_compiler.get_known_type_from_expr(rhs)
-    );
-
-    let settings = PanicErrorSettings {
-        is_const: true,
-        is_global: true,
-    };
-
-    let _ = create_panic_err(self_compiler, &error_message, module, settings)?;
-
-    let _ = self_compiler.builder.build_unreachable();
-
-    self_compiler.builder.position_at_end(int_bb);
+fn create_add_expr_build_int_branch<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+    l_ptr: PointerValue<'ctx>,
+    r_ptr: PointerValue<'ctx>,
+    l_tag: IntValue<'ctx>,
+) -> Result<PointerValue<'ctx>, String> {
     let l_int_data_ptr = self_compiler
         .builder
         .build_struct_gep(self_compiler.runtime_value_type, l_ptr, 1, "l_int_data_ptr")
@@ -1510,10 +1683,126 @@ pub fn create_add_expr<'ctx>(
         .builder
         .build_store(int_res_data_ptr, int_sum)
         .unwrap();
-    let _ = self_compiler.builder.build_unconditional_branch(merge_bb);
 
-    self_compiler.builder.position_at_end(string_bb);
+    Ok(int_res_ptr)
+}
 
+fn create_add_expr_build_float_branch<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+    l_ptr: PointerValue<'ctx>,
+    r_ptr: PointerValue<'ctx>,
+    float_tag: IntValue<'ctx>,
+) -> Result<PointerValue<'ctx>, String> {
+    let l_float_data_ptr = self_compiler
+        .builder
+        .build_struct_gep(
+            self_compiler.runtime_value_type,
+            l_ptr,
+            1,
+            "l_float_data_ptr",
+        )
+        .unwrap();
+    let l_float_bits = self_compiler
+        .builder
+        .build_load(
+            self_compiler.context.i64_type(),
+            l_float_data_ptr,
+            "l_float_bits",
+        )
+        .unwrap()
+        .into_int_value();
+    let l_float_val = self_compiler
+        .builder
+        .build_bit_cast(
+            l_float_bits,
+            self_compiler.context.f64_type(),
+            "l_float_val",
+        )
+        .unwrap()
+        .into_float_value();
+
+    let r_float_data_ptr = self_compiler
+        .builder
+        .build_struct_gep(
+            self_compiler.runtime_value_type,
+            r_ptr,
+            1,
+            "r_float_data_ptr",
+        )
+        .unwrap();
+    let r_float_bits = self_compiler
+        .builder
+        .build_load(
+            self_compiler.context.i64_type(),
+            r_float_data_ptr,
+            "r_float_bits",
+        )
+        .unwrap()
+        .into_int_value();
+    let r_float_val = self_compiler
+        .builder
+        .build_bit_cast(
+            r_float_bits,
+            self_compiler.context.f64_type(),
+            "r_float_val",
+        )
+        .unwrap()
+        .into_float_value();
+
+    let float_sum = self_compiler
+        .builder
+        .build_float_add(l_float_val, r_float_val, "float_sum")
+        .unwrap();
+
+    let float_sum_bits = self_compiler
+        .builder
+        .build_bit_cast(
+            float_sum,
+            self_compiler.context.i64_type(),
+            "float_sum_bits",
+        )
+        .unwrap()
+        .into_int_value();
+
+    let float_res_ptr = self_compiler
+        .builder
+        .build_alloca(self_compiler.runtime_value_type, "float_res_alloc")
+        .unwrap();
+    let float_res_tag_ptr = self_compiler
+        .builder
+        .build_struct_gep(
+            self_compiler.runtime_value_type,
+            float_res_ptr,
+            0,
+            "float_res_tag_ptr",
+        )
+        .unwrap();
+    self_compiler
+        .builder
+        .build_store(float_res_tag_ptr, float_tag)
+        .unwrap();
+    let float_res_data_ptr = self_compiler
+        .builder
+        .build_struct_gep(
+            self_compiler.runtime_value_type,
+            float_res_ptr,
+            1,
+            "float_res_data_ptr",
+        )
+        .unwrap();
+    self_compiler
+        .builder
+        .build_store(float_res_data_ptr, float_sum_bits)
+        .unwrap();
+    Ok(float_res_ptr)
+}
+
+fn create_add_expr_build_string_branch<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+    l_ptr: PointerValue<'ctx>,
+    r_ptr: PointerValue<'ctx>,
+    module: &inkwell::module::Module<'ctx>,
+) -> Result<PointerValue<'ctx>, String> {
     let l_str_data_ptr = self_compiler
         .builder
         .build_struct_gep(self_compiler.runtime_value_type, l_ptr, 1, "l_str_data_ptr")
@@ -1651,9 +1940,15 @@ pub fn create_add_expr<'ctx>(
             "str_res_tag_ptr",
         )
         .unwrap();
+
+    let check_string = self_compiler
+        .context
+        .i32_type()
+        .const_int(Tag::String as u64, false);
+
     self_compiler
         .builder
-        .build_store(str_res_tag_ptr, string_tag)
+        .build_store(str_res_tag_ptr, check_string)
         .unwrap();
 
     let str_res_data_ptr = self_compiler
@@ -1678,18 +1973,7 @@ pub fn create_add_expr<'ctx>(
         .build_store(str_res_data_ptr, malloc_ptr_as_i64)
         .unwrap();
 
-    let _ = self_compiler.builder.build_unconditional_branch(merge_bb);
-    self_compiler.builder.position_at_end(merge_bb);
-    let phi = self_compiler
-        .builder
-        .build_phi(
-            self_compiler.context.ptr_type(AddressSpace::default()),
-            "add_res_phi",
-        )
-        .unwrap();
-    phi.add_incoming(&[(&int_res_ptr, int_bb), (&str_res_ptr, string_bb)]);
-
-    Ok(phi.as_basic_value())
+    Ok(str_res_ptr)
 }
 
 fn create_int8_add_logic<'ctx>(

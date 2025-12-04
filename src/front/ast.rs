@@ -3,6 +3,7 @@ use crate::interpreter::type_helper::Type;
 #[derive(Debug, PartialEq)]
 pub enum Expr {
     Number(i64),                             // Value
+    Float(f64),                              // Value
     Str(String),                             // Value
     Bool(bool),                              // Value
     Add(Box<Expr>, Box<Expr>),               // Lhs, Rhs

@@ -12,6 +12,7 @@ type Scope = HashMap<String, Value>;
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     Int(i64),
+    Float(f64),
     Bool(bool),
     Str(String),
     Unit,
@@ -74,6 +75,7 @@ impl std::fmt::Display for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Value::Int(n) => write!(f, "{}", n),
+            Value::Float(n) => write!(f, "{}", n),
             Value::TypeI8 => write!(f, "i8"),
             Value::TypeU8 => write!(f, "u8"),
             Value::TypeI16 => write!(f, "i16"),
@@ -421,6 +423,7 @@ fn evalute_expr(
 ) -> Result<Value, String> {
     match expr {
         ast::Expr::Number(n) => Ok(Value::Int(*n)),
+        ast::Expr::Float(f) => Ok(Value::Float(*f)),
         ast::Expr::TypeI8 => Ok(Value::TypeI8),
         ast::Expr::TypeU8 => Ok(Value::TypeU8),
         ast::Expr::TypeI16 => Ok(Value::TypeI16),

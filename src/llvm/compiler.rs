@@ -38,11 +38,12 @@ pub enum OS {
 pub enum Tag {
     // Dynamic value tags
     Integer = 0, // i64
-    String = 1,
-    Boolean = 2,
-    List = 3,
-    Range = 4,
-    Unit = 5,
+    Float = 1,   // f64
+    String = 2,
+    Boolean = 3,
+    List = 4,
+    Range = 5,
+    Unit = 6,
 
     // System types
     Int8 = 100,
@@ -286,6 +287,7 @@ impl<'ctx> Compiler<'ctx> {
             ast::Expr::TypeI64 => Ok("i64".to_string()),
             ast::Expr::TypeU64 => Ok("u64".to_string()),
             ast::Expr::Number(_) => Ok("default(i64)".to_string()),
+            ast::Expr::Float(_) => Ok("default(f64)".to_string()),
             _ => Err(format!(
                 "Unknown type expression for known type: {:?}",
                 expr
@@ -473,6 +475,10 @@ impl<'ctx> Compiler<'ctx> {
         match expr {
             ast::Expr::Number(n) => {
                 let result = builder_helper::create_integer(self, n);
+                result
+            }
+            ast::Expr::Float(fp) => {
+                let result = builder_helper::create_float(self, *fp);
                 result
             }
             ast::Expr::TypeI8 => {

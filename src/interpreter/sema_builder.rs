@@ -184,6 +184,7 @@ fn infer_type_hint(expr: &ast::Expr, sigs: &[ItemSig]) -> Option<Type> {
     use ast::Expr::*;
     match expr {
         Number(_) => Some(Type::Int),
+        Float(_) => Some(Type::Float),
         TypeI8 => Some(Type::TypeI8),
         TypeU8 => Some(Type::TypeU8),
         TypeI16 => Some(Type::TypeI16),

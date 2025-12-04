@@ -5,6 +5,7 @@
 pub enum Type {
     Any,
     Int,
+    Float,
     Bool,
     Str,
     Unit,

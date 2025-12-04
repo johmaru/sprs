@@ -7,11 +7,12 @@ pub struct SprsValue {
 pub enum Tag {
     // Dynamic value tags
     Integer = 0, // i64
-    String = 1,
-    Boolean = 2,
-    List = 3,
-    Range = 4,
-    Unit = 5,
+    Float = 1,   // f64
+    String = 2,
+    Boolean = 3,
+    List = 4,
+    Range = 5,
+    Unit = 6,
 
     // System types
     Int8 = 100,
@@ -66,6 +67,12 @@ pub extern "C" fn __println(list_ptr: *mut Vec<SprsValue>) {
             t if t == Tag::Integer as i32 => {
                 // integer
                 println!("{}", val.data as i64);
+            }
+            t if t == Tag::Float as i32 => {
+                // float
+                let float_bits = val.data;
+                let float_value = f64::from_bits(float_bits);
+                println!("{}", float_value);
             }
             t if t == Tag::String as i32 => {
                 // string
@@ -149,7 +156,7 @@ pub extern "C" fn __malloc(size: i64) -> *mut i8 {
 #[unsafe(no_mangle)]
 pub extern "C" fn __drop(val: SprsValue) {
     match val.tag {
-        3 => {
+        t if t == Tag::List as i32 => {
             let ptr = val.data as *mut Vec<SprsValue>;
             if !ptr.is_null() {
                 unsafe {
@@ -157,7 +164,7 @@ pub extern "C" fn __drop(val: SprsValue) {
                 }
             }
         }
-        4 => {
+        t if t == Tag::Range as i32 => {
             let ptr = val.data as *mut SprsRange;
             if !ptr.is_null() {
                 unsafe {
@@ -172,8 +179,10 @@ pub extern "C" fn __drop(val: SprsValue) {
 #[unsafe(no_mangle)]
 pub extern "C" fn __clone(tag: i32, data: u64) -> SprsValue {
     match tag {
-        0 | 2 => SprsValue { tag, data },
-        1 => {
+        t if t == Tag::Integer as i32 => SprsValue { tag, data },
+        t if t == Tag::Float as i32 => SprsValue { tag, data },
+        t if t == Tag::Boolean as i32 => SprsValue { tag, data },
+        t if t == Tag::String as i32 => {
             let c_str = unsafe { std::ffi::CStr::from_ptr(data as *const i8) };
             let bytes = c_str.to_bytes();
             let layout = std::alloc::Layout::from_size_align(bytes.len(), 1).unwrap();
@@ -186,7 +195,7 @@ pub extern "C" fn __clone(tag: i32, data: u64) -> SprsValue {
                 data: ptr as u64,
             }
         }
-        3 => {
+        t if t == Tag::List as i32 => {
             let src_vec = unsafe { &*(data as *mut Vec<SprsValue>) };
             let mut new_vec = Vec::with_capacity(src_vec.len());
             for val in src_vec {
@@ -197,7 +206,7 @@ pub extern "C" fn __clone(tag: i32, data: u64) -> SprsValue {
                 data: Box::into_raw(Box::new(new_vec)) as u64,
             }
         }
-        4 => {
+        t if t == Tag::Range as i32 => {
             let src_range = unsafe { &*(data as *mut SprsRange) };
             let new_range = Box::new(SprsRange {
                 start: src_range.start,

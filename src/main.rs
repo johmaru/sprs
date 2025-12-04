@@ -33,9 +33,10 @@
 //! ## Language Features
 //! ### **Basic data types:**
 //!  * Int (i64)
+//!  * Float (f64)
 //!  * Bool
 //!  * Str
-//!  * List
+//!  * List(128) (dynamic array)
 //!  * Range
 //!  * Unit
 //!  * i8 (only for cast! macro)
@@ -143,7 +144,7 @@
 //! println!(b); # prints 100 as i8
 //! ```
 //!
-//! ** Note:** cast! macro is more faster then normal int type, because it use i8 and u8 llvm type directly.
+//! **Note:** cast! macro is more faster then normal int type, because it use i8 and u8 llvm type directly.
 //! examples:
 //! ```
 //! var i = 0; # default is i64
