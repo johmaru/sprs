@@ -54,6 +54,10 @@ extern {
         TypeU8 => Token::TypeU8,
         TypeI16 => Token::TypeI16,
         TypeU16 => Token::TypeU16,
+        TypeI32 => Token::TypeI32,
+        TypeU32 => Token::TypeU32,
+        TypeI64 => Token::TypeI64,
+        TypeU64 => Token::TypeU64,
     }
 }
 
@@ -241,6 +245,42 @@ U16Literal: u16 = {
     }
 };
 
+I32Literal: i32 = {
+    <tok:TypeI32> => {
+        match tok {
+            Token::TypeI32 => 0, // Placeholder value
+            _ => unreachable!(),
+        }
+    }
+};
+
+U32Literal: u32 = {
+    <tok:TypeU32> => {
+        match tok {
+            Token::TypeU32 => 0, // Placeholder value
+            _ => unreachable!(),
+        }
+    }
+};
+
+I64Literal: i64 = {
+    <tok:TypeI64> => {
+        match tok {
+            Token::TypeI64 => 0, // Placeholder value
+            _ => unreachable!(),
+        }
+    }
+};
+
+U64Literal: u64 = {
+    <tok:TypeU64> => {
+        match tok {
+            Token::TypeU64 => 0, // Placeholder value
+            _ => unreachable!(),
+        }
+    }
+};
+
 Expr: Expr = RangeExpr;
 
 RangeExpr: Expr = {
@@ -286,6 +326,10 @@ Factor: Expr = {
     <u:TypeU8> => Expr::TypeU8,
     <i:TypeI16> => Expr::TypeI16,
     <u:TypeU16> => Expr::TypeU16,
+    <i:TypeI32> => Expr::TypeI32,
+    <u:TypeU32> => Expr::TypeU32,
+    <i:TypeI64> => Expr::TypeI64,
+    <u:TypeU64> => Expr::TypeU64,
     <mod_name:Ident> Dot <func_name:Ident> LParen <args:ArgList> RParen => {
         Expr::ModuleAccess(mod_name, func_name, args)
     },

@@ -40,8 +40,12 @@
 //!  * Unit
 //!  * i8 (only for cast! macro)
 //!  * u8 (only for cast! macro)
-//! * i16 (only for cast! macro)
-//! * u16 (only for cast! macro)
+//!  * i16 (only for cast! macro)
+//!  * u16 (only for cast! macro)
+//!  * i32 (only for cast! macro)
+//!  * u32 (only for cast! macro)
+//!  * i64 (only for cast! macro)
+//!  * u64 (only for cast! macro)
 //!
 //! - Variables and assignments
 //! ```sprs
@@ -50,17 +54,17 @@
 //! var name = "sprs";
 //! var is_valid = true;
 //! var numbers = [1, 2, 3];
-//! 
-//! 
+//!
+//!
 //! # Not initialized variable
 //! var y;  # y is initialized to Unit type
-//! 
+//!
 //! # Re-assignment
-//! 
+//!
 //! var y;
 //! y = 20;
 //! y = "now a string"; # y is now a string
-//! 
+//!
 //! ```
 //!
 //! - Functions
@@ -130,25 +134,25 @@
 //! println!(clone!(a));
 //!
 //! ```
-//! 
+//!
 //! * `cast!(value, type)`: Cast the value to the specified type
 //! examples:
 //! ```
 //! var a = 100; # default is i64
-//! var b = cast!(a, TypeI8); # cast to i8
+//! var b = cast!(a, i8); # cast to i8
 //! println!(b); # prints 100 as i8
 //! ```
-//! 
+//!
 //! ** Note:** cast! macro is more faster then normal int type, because it use i8 and u8 llvm type directly.
 //! examples:
 //! ```
 //! var i = 0; # default is i64
 //! while i < 5 {
-//!   println!(i); ## this is too slow for embedded system, because it use dynamic type checking.
+//!   println!(i); ## this is too slow for embedded and system programming environment, because it use dynamic type checking.
 //!  i = i + 1;
 //! }
 //! ```
-//! 
+//!
 //!  but with cast! macro
 //!```
 //! var i = cast!(0, i8); # i is i8 type

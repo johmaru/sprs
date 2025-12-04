@@ -49,6 +49,10 @@ pub enum Tag {
     Uint8 = 101,
     Int16 = 102,
     Uint16 = 103,
+    Int32 = 104,
+    Uint32 = 105,
+    Int64 = 106,
+    Uint64 = 107,
 }
 
 const WINDOWS_STR: &str = "Windows";
@@ -271,15 +275,16 @@ impl<'ctx> Compiler<'ctx> {
         }
     }
 
-    pub fn get_known_type_from_expr(
-        &self,
-        expr: &ast::Expr,
-    ) -> Result<String, String> {
+    pub fn get_known_type_from_expr(&self, expr: &ast::Expr) -> Result<String, String> {
         match expr {
             ast::Expr::TypeI8 => Ok("i8".to_string()),
             ast::Expr::TypeU8 => Ok("u8".to_string()),
             ast::Expr::TypeI16 => Ok("i16".to_string()),
             ast::Expr::TypeU16 => Ok("u16".to_string()),
+            ast::Expr::TypeI32 => Ok("i32".to_string()),
+            ast::Expr::TypeU32 => Ok("u32".to_string()),
+            ast::Expr::TypeI64 => Ok("i64".to_string()),
+            ast::Expr::TypeU64 => Ok("u64".to_string()),
             ast::Expr::Number(_) => Ok("default(i64)".to_string()),
             _ => Err(format!(
                 "Unknown type expression for known type: {:?}",
@@ -353,12 +358,16 @@ impl<'ctx> Compiler<'ctx> {
         for stmt in stmts {
             match stmt {
                 ast::Stmt::Var(var) => {
-                    let init_val = self.compile_expr(&var.expr.as_ref().unwrap_or(&ast::Expr::Unit()), module)?.into_pointer_value();
+                    let init_val = self
+                        .compile_expr(&var.expr.as_ref().unwrap_or(&ast::Expr::Unit()), module)?
+                        .into_pointer_value();
 
                     if let Some(&existing) = self.variables.get(&var.ident) {
                         let ptr = existing.into_pointer_value();
 
-                        builder_helper::load_at_init_variable_with_existing(self, init_val, ptr, &var.ident);
+                        builder_helper::load_at_init_variable_with_existing(
+                            self, init_val, ptr, &var.ident,
+                        );
 
                         if let Some(ast::Expr::Var(src_val_name)) = &var.expr {
                             if let Some(&src_ptr_enum) = self.variables.get(src_val_name) {
@@ -367,7 +376,8 @@ impl<'ctx> Compiler<'ctx> {
                         }
                         local_vars.push(var.ident.clone());
                     } else {
-                        let ptr = builder_helper::var_load_at_init_variable(self, init_val, &var.ident);
+                        let ptr =
+                            builder_helper::var_load_at_init_variable(self, init_val, &var.ident);
                         if let Some(ast::Expr::Var(src_val_name)) = &var.expr {
                             if let Some(&src_ptr_enum) = self.variables.get(src_val_name) {
                                 builder_helper::move_variable(self, &src_ptr_enum, &var.ident);
@@ -424,7 +434,8 @@ impl<'ctx> Compiler<'ctx> {
                     then_blk,
                     else_blk,
                 } => {
-                    let _ = builder_helper::create_if_condition(self, cond, then_blk, else_blk, module);
+                    let _ =
+                        builder_helper::create_if_condition(self, cond, then_blk, else_blk, module);
                 }
                 ast::Stmt::While { cond, body } => {
                     let _ = builder_helper::create_while_condition(self, cond, body, module);
@@ -478,6 +489,22 @@ impl<'ctx> Compiler<'ctx> {
             }
             ast::Expr::TypeU16 => {
                 let result = builder_helper::create_uint16(self);
+                result
+            }
+            ast::Expr::TypeI32 => {
+                let result = builder_helper::create_int32(self);
+                result
+            }
+            ast::Expr::TypeU32 => {
+                let result = builder_helper::create_uint32(self);
+                result
+            }
+            ast::Expr::TypeI64 => {
+                let result = builder_helper::create_int64(self);
+                result
+            }
+            ast::Expr::TypeU64 => {
+                let result = builder_helper::create_uint64(self);
                 result
             }
             ast::Expr::Str(str) => {
@@ -540,51 +567,108 @@ impl<'ctx> Compiler<'ctx> {
                 result
             }
             ast::Expr::Increment(expr) => {
-                let result = builder_helper::create_increment_or_decrement(self, expr, UpDown::Up, module);
+                let result =
+                    builder_helper::create_increment_or_decrement(self, expr, UpDown::Up, module);
                 result
             }
             ast::Expr::Decrement(expr) => {
-                let result = builder_helper::create_increment_or_decrement(self, expr, UpDown::Down, module);
+                let result =
+                    builder_helper::create_increment_or_decrement(self, expr, UpDown::Down, module);
                 result
             }
             ast::Expr::Eq(lhs, rhs) => {
-                let result = builder_helper::create_eq_or_neq(self, lhs, rhs, module, EqNeq::Eq,|builder, l_val, r_val, name| {
-                    Ok(builder.build_int_compare(inkwell::IntPredicate::EQ, l_val, r_val, name).unwrap())
-                });
+                let result = builder_helper::create_eq_or_neq(
+                    self,
+                    lhs,
+                    rhs,
+                    module,
+                    EqNeq::Eq,
+                    |builder, l_val, r_val, name| {
+                        Ok(builder
+                            .build_int_compare(inkwell::IntPredicate::EQ, l_val, r_val, name)
+                            .unwrap())
+                    },
+                );
                 result
             }
             ast::Expr::Neq(lhs, rhs) => {
-                let result = builder_helper::create_eq_or_neq(self, lhs, rhs, module, EqNeq::Neq,|builder, l_val, r_val, name| {
-                    Ok(builder.build_int_compare(inkwell::IntPredicate::NE, l_val, r_val, name).unwrap())
-                });
+                let result = builder_helper::create_eq_or_neq(
+                    self,
+                    lhs,
+                    rhs,
+                    module,
+                    EqNeq::Neq,
+                    |builder, l_val, r_val, name| {
+                        Ok(builder
+                            .build_int_compare(inkwell::IntPredicate::NE, l_val, r_val, name)
+                            .unwrap())
+                    },
+                );
                 result
             }
             ast::Expr::Gt(lhs, rhs) => {
-                let result = builder_helper::create_comparison(self, lhs, rhs, module, Comparison::Gt, |builder, l_val, r_val, name| {
-                    Ok(builder.build_int_compare(inkwell::IntPredicate::SGT, l_val, r_val, name).unwrap())
-                });
+                let result = builder_helper::create_comparison(
+                    self,
+                    lhs,
+                    rhs,
+                    module,
+                    Comparison::Gt,
+                    |builder, l_val, r_val, name| {
+                        Ok(builder
+                            .build_int_compare(inkwell::IntPredicate::SGT, l_val, r_val, name)
+                            .unwrap())
+                    },
+                );
                 result
             }
             ast::Expr::Lt(lhs, rhs) => {
-                let result = builder_helper::create_comparison(self, lhs, rhs, module, Comparison::Lt, |builder, l_val, r_val, name| {
-                    Ok(builder.build_int_compare(inkwell::IntPredicate::SLT, l_val, r_val, name).unwrap())
-                });
+                let result = builder_helper::create_comparison(
+                    self,
+                    lhs,
+                    rhs,
+                    module,
+                    Comparison::Lt,
+                    |builder, l_val, r_val, name| {
+                        Ok(builder
+                            .build_int_compare(inkwell::IntPredicate::SLT, l_val, r_val, name)
+                            .unwrap())
+                    },
+                );
                 result
             }
             ast::Expr::Ge(lhs, rhs) => {
-                let result = builder_helper::create_comparison(self, lhs, rhs, module, Comparison::Ge, |builder, l_val, r_val, name| {
-                    Ok(builder.build_int_compare(inkwell::IntPredicate::SGE, l_val, r_val, name).unwrap())
-                });
+                let result = builder_helper::create_comparison(
+                    self,
+                    lhs,
+                    rhs,
+                    module,
+                    Comparison::Ge,
+                    |builder, l_val, r_val, name| {
+                        Ok(builder
+                            .build_int_compare(inkwell::IntPredicate::SGE, l_val, r_val, name)
+                            .unwrap())
+                    },
+                );
                 result
             }
             ast::Expr::Le(lhs, rhs) => {
-               let result = builder_helper::create_comparison(self, lhs, rhs, module, Comparison::Le, |builder, l_val, r_val, name| {
-                    Ok(builder.build_int_compare(inkwell::IntPredicate::SLE, l_val, r_val, name).unwrap())
-                });
+                let result = builder_helper::create_comparison(
+                    self,
+                    lhs,
+                    rhs,
+                    module,
+                    Comparison::Le,
+                    |builder, l_val, r_val, name| {
+                        Ok(builder
+                            .build_int_compare(inkwell::IntPredicate::SLE, l_val, r_val, name)
+                            .unwrap())
+                    },
+                );
                 result
             }
             ast::Expr::If(cond, then_expr, else_expr) => {
-                let result = builder_helper::create_if_expr(self, cond, then_expr, else_expr, module);
+                let result =
+                    builder_helper::create_if_expr(self, cond, then_expr, else_expr, module);
                 result
             }
             ast::Expr::List(elements) => {
@@ -592,7 +676,8 @@ impl<'ctx> Compiler<'ctx> {
                 result
             }
             ast::Expr::Index(collection_expr, index_expr) => {
-                let result = builder_helper::create_index(self, collection_expr, index_expr, module);
+                let result =
+                    builder_helper::create_index(self, collection_expr, index_expr, module);
                 result
             }
             ast::Expr::Range(start_expr, end_expr) => {
@@ -600,9 +685,15 @@ impl<'ctx> Compiler<'ctx> {
                 result
             }
             ast::Expr::ModuleAccess(module_name, function_name, args) => {
-                let result = builder_helper::create_module_access(self, module_name, function_name, args, module);
+                let result = builder_helper::create_module_access(
+                    self,
+                    module_name,
+                    function_name,
+                    args,
+                    module,
+                );
                 result
-            },
+            }
             ast::Expr::Unit() => {
                 let result = builder_helper::create_unit(self);
                 result

@@ -1,4 +1,3 @@
-
 use crate::interpreter::type_helper::Type;
 
 #[derive(Debug, PartialEq)]
@@ -33,6 +32,10 @@ pub enum Expr {
     TypeU8,
     TypeI16,
     TypeU16,
+    TypeI32,
+    TypeU32,
+    TypeI64,
+    TypeU64,
 }
 
 #[derive(Debug, PartialEq)]

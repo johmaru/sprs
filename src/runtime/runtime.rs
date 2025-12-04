@@ -18,6 +18,10 @@ pub enum Tag {
     Uint8 = 101,
     Int16 = 102,
     Uint16 = 103,
+    Int32 = 104,
+    Uint32 = 105,
+    Int64 = 106,
+    Uint64 = 107,
 }
 
 #[unsafe(no_mangle)]
@@ -73,7 +77,7 @@ pub extern "C" fn __println(list_ptr: *mut Vec<SprsValue>) {
                 let bool_str = if val.data != 0 { "true" } else { "false" };
                 println!("{}", bool_str);
             }
-            t if t == Tag::List as i32    => {
+            t if t == Tag::List as i32 => {
                 // list
                 println!(
                     "Value[{}]: <list at {:p}>",
@@ -85,7 +89,7 @@ pub extern "C" fn __println(list_ptr: *mut Vec<SprsValue>) {
                 let range_ptr = val.data as *mut SprsRange;
                 let range = unsafe { &*range_ptr };
                 println!("Value[{}]: <range {}..{}>", i, range.start, range.end);
-            },
+            }
             t if t == Tag::Int8 as i32 => {
                 // i8
                 println!("{}", val.data as i8);
@@ -101,6 +105,26 @@ pub extern "C" fn __println(list_ptr: *mut Vec<SprsValue>) {
             t if t == Tag::Uint16 as i32 => {
                 // u16
                 println!("{}", val.data as u16);
+            }
+            t if t == Tag::Int32 as i32 => {
+                // i32
+                println!("{}", val.data as i32);
+            }
+            t if t == Tag::Uint32 as i32 => {
+                // u32
+                println!("{}", val.data as u32);
+            }
+            t if t == Tag::Int64 as i32 => {
+                // i64
+                println!("{}", val.data as i64);
+            }
+            t if t == Tag::Uint64 as i32 => {
+                // u64
+                println!("{}", val.data as u64);
+            }
+            t if t == Tag::Unit as i32 => {
+                // unit
+                println!("Value[{}]: ()", i);
             }
             _ => {
                 println!("Value[{}]: <unknown type>", i);

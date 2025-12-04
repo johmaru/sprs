@@ -24,6 +24,10 @@ pub enum Value {
     TypeU8,
     TypeI16,
     TypeU16,
+    TypeI32,
+    TypeU32,
+    TypeI64,
+    TypeU64,
 }
 
 pub struct Module {
@@ -74,6 +78,10 @@ impl std::fmt::Display for Value {
             Value::TypeU8 => write!(f, "u8"),
             Value::TypeI16 => write!(f, "i16"),
             Value::TypeU16 => write!(f, "u16"),
+            Value::TypeI32 => write!(f, "i32"),
+            Value::TypeU32 => write!(f, "u32"),
+            Value::TypeI64 => write!(f, "i64"),
+            Value::TypeU64 => write!(f, "u64"),
             Value::Bool(b) => write!(f, "{}", b),
             Value::Str(s) => write!(f, "{}", s),
             Value::Unit => write!(f, "()"),
@@ -303,10 +311,15 @@ fn execute_block(
         match stmt {
             ast::Stmt::Var(var) => {
                 let val = if let Some(expr) = &var.expr {
-                    println!("  Evaluating variable declaration: {} = {:?}", var.ident, expr);
+                    println!(
+                        "  Evaluating variable declaration: {} = {:?}",
+                        var.ident, expr
+                    );
                     match evalute_expr(expr, functions, scope) {
                         Ok(v) => v,
-                        Err(e) => return Err(format!("Error evaluating variable {}: {}", var.ident, e)),
+                        Err(e) => {
+                            return Err(format!("Error evaluating variable {}: {}", var.ident, e));
+                        }
                     }
                 } else {
                     println!("  Declaring variable {} with no initial value", var.ident);
@@ -412,6 +425,10 @@ fn evalute_expr(
         ast::Expr::TypeU8 => Ok(Value::TypeU8),
         ast::Expr::TypeI16 => Ok(Value::TypeI16),
         ast::Expr::TypeU16 => Ok(Value::TypeU16),
+        ast::Expr::TypeI32 => Ok(Value::TypeI32),
+        ast::Expr::TypeU32 => Ok(Value::TypeU32),
+        ast::Expr::TypeI64 => Ok(Value::TypeI64),
+        ast::Expr::TypeU64 => Ok(Value::TypeU64),
         ast::Expr::Str(s) => Ok(Value::Str(s.clone())),
         ast::Expr::Bool(b) => Ok(Value::Bool(*b)),
         ast::Expr::Add(lhs, rhs) => {
@@ -586,9 +603,7 @@ fn evalute_expr(
         ast::Expr::ModuleAccess(module_name, function_name, args) => {
             // !TODO Implement module access
             Err("Module access not implemented".to_string())
-        },
-        ast::Expr::Unit() => {
-            Ok(Value::Unit)
         }
+        ast::Expr::Unit() => Ok(Value::Unit),
     }
 }
