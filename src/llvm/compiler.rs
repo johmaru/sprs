@@ -54,6 +54,10 @@ pub enum Tag {
     Uint32 = 105,
     Int64 = 106,
     Uint64 = 107,
+
+    Float16 = 108,
+    Float32 = 109,
+    Float64 = 110,
 }
 
 const WINDOWS_STR: &str = "Windows";
@@ -286,6 +290,11 @@ impl<'ctx> Compiler<'ctx> {
             ast::Expr::TypeU32 => Ok("u32".to_string()),
             ast::Expr::TypeI64 => Ok("i64".to_string()),
             ast::Expr::TypeU64 => Ok("u64".to_string()),
+
+            ast::Expr::TypeF16 => Ok("fp16".to_string()),
+            ast::Expr::TypeF32 => Ok("fp32".to_string()),
+            ast::Expr::TypeF64 => Ok("fp64".to_string()),
+
             ast::Expr::Number(_) => Ok("default(i64)".to_string()),
             ast::Expr::Float(_) => Ok("default(f64)".to_string()),
             _ => Err(format!(
@@ -511,6 +520,18 @@ impl<'ctx> Compiler<'ctx> {
             }
             ast::Expr::TypeU64 => {
                 let result = builder_helper::create_uint64(self);
+                result
+            }
+            ast::Expr::TypeF16 => {
+                let result = builder_helper::create_float16(self);
+                result
+            }
+            ast::Expr::TypeF32 => {
+                let result = builder_helper::create_float32(self);
+                result
+            }
+            ast::Expr::TypeF64 => {
+                let result = builder_helper::create_float64(self);
                 result
             }
             ast::Expr::Str(str) => {

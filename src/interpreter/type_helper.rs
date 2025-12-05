@@ -19,4 +19,8 @@ pub enum Type {
     TypeU32,
     TypeI64,
     TypeU64,
+
+    TypeF16,
+    TypeF32,
+    TypeF64,
 }

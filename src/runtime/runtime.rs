@@ -23,6 +23,39 @@ pub enum Tag {
     Uint32 = 105,
     Int64 = 106,
     Uint64 = 107,
+
+    Float16 = 108,
+    Float32 = 109,
+    Float64 = 110,
+}
+
+fn f16_tof32(bit: u16) -> f32 {
+    let sign = (bit >> 15) as u32;
+    let exp = ((bit >> 10) & 0x1F) as u32;
+    let mant = (bit & 0x3FF) as u32;
+
+    if exp == 0 {
+        if mant == 0 {
+            f32::from_bits(sign << 31)
+        } else {
+            // Subnormal: (-1)^s * 0.mant * 2^-14
+            // = (-1)^s * mant * 2^-14
+            let val = mant as f32 / 16777216.0; // 2^24
+            if sign == 1 { -val } else { val }
+        }
+    } else if exp == 31 {
+        if mant == 0 {
+            // Infinity
+            f32::from_bits((sign << 31) | 0x7F800000) // Inf
+        } else {
+            // NaN
+            f32::from_bits((sign << 31) | 0x7F800000 | (mant << 13)) // NaN
+        }
+    } else {
+        // Normalized number
+        let new_exp = exp + 112;
+        f32::from_bits((sign << 31) | (new_exp << 23) | (mant << 13))
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -70,6 +103,24 @@ pub extern "C" fn __println(list_ptr: *mut Vec<SprsValue>) {
             }
             t if t == Tag::Float as i32 => {
                 // float
+                let float_bits = val.data;
+                let float_value = f64::from_bits(float_bits);
+                println!("{}", float_value);
+            }
+            t if t == Tag::Float16 as i32 => {
+                // f16
+                let float_bits = val.data as u16;
+                let float_value = f16_tof32(float_bits);
+                println!("{}", float_value);
+            }
+            t if t == Tag::Float32 as i32 => {
+                // f32
+                let float_bits = val.data as u32;
+                let float_value = f32::from_bits(float_bits);
+                println!("{}", float_value);
+            }
+            t if t == Tag::Float64 as i32 => {
+                // f64
                 let float_bits = val.data;
                 let float_value = f64::from_bits(float_bits);
                 println!("{}", float_value);
@@ -181,6 +232,9 @@ pub extern "C" fn __clone(tag: i32, data: u64) -> SprsValue {
     match tag {
         t if t == Tag::Integer as i32 => SprsValue { tag, data },
         t if t == Tag::Float as i32 => SprsValue { tag, data },
+        t if t == Tag::Float16 as i32 => SprsValue { tag, data },
+        t if t == Tag::Float32 as i32 => SprsValue { tag, data },
+        t if t == Tag::Float64 as i32 => SprsValue { tag, data },
         t if t == Tag::Boolean as i32 => SprsValue { tag, data },
         t if t == Tag::String as i32 => {
             let c_str = unsafe { std::ffi::CStr::from_ptr(data as *const i8) };

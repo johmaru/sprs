@@ -29,6 +29,10 @@ pub enum Value {
     TypeU32,
     TypeI64,
     TypeU64,
+
+    TypeF16,
+    TypeF32,
+    TypeF64,
 }
 
 pub struct Module {
@@ -84,6 +88,9 @@ impl std::fmt::Display for Value {
             Value::TypeU32 => write!(f, "u32"),
             Value::TypeI64 => write!(f, "i64"),
             Value::TypeU64 => write!(f, "u64"),
+            Value::TypeF16 => write!(f, "fp16"),
+            Value::TypeF32 => write!(f, "fp32"),
+            Value::TypeF64 => write!(f, "fp64"),
             Value::Bool(b) => write!(f, "{}", b),
             Value::Str(s) => write!(f, "{}", s),
             Value::Unit => write!(f, "()"),
@@ -432,6 +439,9 @@ fn evalute_expr(
         ast::Expr::TypeU32 => Ok(Value::TypeU32),
         ast::Expr::TypeI64 => Ok(Value::TypeI64),
         ast::Expr::TypeU64 => Ok(Value::TypeU64),
+        ast::Expr::TypeF16 => Ok(Value::TypeF16),
+        ast::Expr::TypeF32 => Ok(Value::TypeF32),
+        ast::Expr::TypeF64 => Ok(Value::TypeF64),
         ast::Expr::Str(s) => Ok(Value::Str(s.clone())),
         ast::Expr::Bool(b) => Ok(Value::Bool(*b)),
         ast::Expr::Add(lhs, rhs) => {

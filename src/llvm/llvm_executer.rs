@@ -2,6 +2,7 @@ use std::{path::Path, process::Command};
 
 use inkwell::{
     context::Context,
+    passes::PassBuilderOptions,
     targets::{InitializationConfig, Target, TargetMachine, TargetTriple},
 };
 
@@ -92,6 +93,10 @@ pub fn build_and_run(_full_path: String, mode: ExecuteMode) {
     for (name, module) in &compiler.modules {
         module.set_data_layout(&target_machine.get_target_data().get_data_layout());
         module.set_triple(&target_triple);
+
+        // mem2reg
+        let pass_options = PassBuilderOptions::create();
+        let _ = module.run_passes("mem2reg", &target_machine, pass_options);
 
         let ll_filename = format!("{}.ll", name);
         if let Err(e) = module.print_to_file(Path::new(&ll_filename)) {

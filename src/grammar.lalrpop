@@ -3,6 +3,7 @@ grammar;
 use crate::front::ast::{Item, VarDecl, Expr, Stmt, Function, FunctionParam};
 use crate::front::lexer::Token;
 use lalrpop_util::ParseError;
+use half::f16;
 
 extern {
     type Location = usize;
@@ -59,6 +60,10 @@ extern {
         TypeU32 => Token::TypeU32,
         TypeI64 => Token::TypeI64,
         TypeU64 => Token::TypeU64,
+
+        TypeF16 => Token::TypeF16,
+        TypeF32 => Token::TypeF32,
+        TypeF64 => Token::TypeF64,
     }
 }
 
@@ -286,6 +291,33 @@ U64Literal: u64 = {
     }
 };
 
+F16Literal: f16 = {
+    <tok:TypeF16> => {
+        match tok {
+            Token::TypeF16 => f16::from_f64(0.0), // Placeholder value
+            _ => unreachable!(),
+        }
+    }
+};
+
+F32Literal: f32 = {
+    <tok:TypeF32> => {
+        match tok {
+            Token::TypeF32 => 0.0, // Placeholder value
+            _ => unreachable!(),
+        }
+    }
+};
+
+F64Literal: f64 = {
+    <tok:TypeF64> => {
+        match tok {
+            Token::TypeF64 => 0.0, // Placeholder value
+            _ => unreachable!(),
+        }
+    }
+};
+
 Expr: Expr = RangeExpr;
 
 RangeExpr: Expr = {
@@ -336,6 +368,9 @@ Factor: Expr = {
     <u:TypeU32> => Expr::TypeU32,
     <i:TypeI64> => Expr::TypeI64,
     <u:TypeU64> => Expr::TypeU64,
+    <f:TypeF16> => Expr::TypeF16,
+    <f:TypeF32> => Expr::TypeF32,
+    <f:TypeF64> => Expr::TypeF64,
     <mod_name:Ident> Dot <func_name:Ident> LParen <args:ArgList> RParen => {
         Expr::ModuleAccess(mod_name, func_name, args)
     },

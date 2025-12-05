@@ -1025,6 +1025,120 @@ pub fn create_uint64<'ctx>(
     Ok(ptr.into())
 }
 
+pub fn create_float16<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+) -> Result<BasicValueEnum<'ctx>, String> {
+    let ptr = self_compiler
+        .builder
+        .build_alloca(self_compiler.runtime_value_type, "f16_alloc")
+        .unwrap();
+
+    let tag_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, ptr, 0, "f16_tag_ptr")
+        .unwrap();
+    self_compiler
+        .builder
+        .build_store(
+            tag_ptr,
+            self_compiler
+                .context
+                .i32_type()
+                .const_int(Tag::Float16 as u64, false),
+        )
+        .unwrap();
+
+    let data_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, ptr, 1, "f16_data_ptr")
+        .unwrap();
+    self_compiler
+        .builder
+        .build_store(
+            data_ptr,
+            self_compiler.context.i64_type().const_int(0, false),
+        )
+        .unwrap();
+
+    Ok(ptr.into())
+}
+
+pub fn create_float32<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+) -> Result<BasicValueEnum<'ctx>, String> {
+    let ptr = self_compiler
+        .builder
+        .build_alloca(self_compiler.runtime_value_type, "f32_alloc")
+        .unwrap();
+
+    let tag_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, ptr, 0, "f32_tag_ptr")
+        .unwrap();
+    self_compiler
+        .builder
+        .build_store(
+            tag_ptr,
+            self_compiler
+                .context
+                .i32_type()
+                .const_int(Tag::Float32 as u64, false),
+        )
+        .unwrap();
+
+    let data_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, ptr, 1, "f32_data_ptr")
+        .unwrap();
+    self_compiler
+        .builder
+        .build_store(
+            data_ptr,
+            self_compiler.context.i64_type().const_int(0, false),
+        )
+        .unwrap();
+
+    Ok(ptr.into())
+}
+
+pub fn create_float64<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+) -> Result<BasicValueEnum<'ctx>, String> {
+    let ptr = self_compiler
+        .builder
+        .build_alloca(self_compiler.runtime_value_type, "f64_alloc")
+        .unwrap();
+
+    let tag_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, ptr, 0, "f64_tag_ptr")
+        .unwrap();
+    self_compiler
+        .builder
+        .build_store(
+            tag_ptr,
+            self_compiler
+                .context
+                .i32_type()
+                .const_int(Tag::Float64 as u64, false),
+        )
+        .unwrap();
+
+    let data_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, ptr, 1, "f64_data_ptr")
+        .unwrap();
+    self_compiler
+        .builder
+        .build_store(
+            data_ptr,
+            self_compiler.context.i64_type().const_int(0, false),
+        )
+        .unwrap();
+
+    Ok(ptr.into())
+}
+
 pub fn create_call_expr<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
     ident: &str,
@@ -1352,13 +1466,8 @@ pub fn create_add_expr<'ctx>(
 
     self_compiler.builder.position_at_end(float_bb);
 
-    let float_tag_val = self_compiler
-        .context
-        .i32_type()
-        .const_int(Tag::Float as u64, false);
-
-    let float_res_ptr =
-        create_add_expr_build_float_branch(self_compiler, l_ptr, r_ptr, float_tag_val)?;
+    let float_res_ptr = create_add_expr_build_float_branch(self_compiler, l_ptr, r_ptr, l_tag)?;
+    let float_end_bb = self_compiler.builder.get_insert_block().unwrap();
     let _ = self_compiler.builder.build_unconditional_branch(merge_bb);
     // string concatenation branch
 
@@ -1381,7 +1490,7 @@ pub fn create_add_expr<'ctx>(
         .unwrap();
     phi.add_incoming(&[
         (&int_res_ptr, int_bb),
-        (&float_res_ptr, float_bb),
+        (&float_res_ptr, float_end_bb),
         (&str_res_ptr, string_bb),
     ]);
 
@@ -1431,6 +1540,18 @@ fn create_add_expr_type_check<'ctx>(
 
     if is_type(lhs, "u64") && is_type(rhs, "u64") {
         return create_uint64_add_logic(self_compiler, lhs, rhs, module);
+    }
+
+    if is_type(lhs, "f16") && is_type(rhs, "f16") {
+        return create_float16_add_logic(self_compiler, lhs, rhs, module);
+    }
+
+    if is_type(lhs, "f32") && is_type(rhs, "f32") {
+        return create_float32_add_logic(self_compiler, lhs, rhs, module);
+    }
+
+    if is_type(lhs, "f64") && is_type(rhs, "f64") {
+        return create_float64_add_logic(self_compiler, lhs, rhs, module);
     }
 
     Err("Unsupported types for addition".to_string())
@@ -1596,17 +1717,72 @@ fn create_add_expr_check_float<'ctx>(
         .context
         .i32_type()
         .const_int(Tag::Float as u64, false);
+    let float16_tag = self_compiler
+        .context
+        .i32_type()
+        .const_int(Tag::Float16 as u64, false);
+    let float32_tag = self_compiler
+        .context
+        .i32_type()
+        .const_int(Tag::Float32 as u64, false);
+    let float64_tag = self_compiler
+        .context
+        .i32_type()
+        .const_int(Tag::Float64 as u64, false);
+    let float_tags_equal = self_compiler
+        .builder
+        .build_int_compare(inkwell::IntPredicate::EQ, l_tag, r_tag, "float_tags_equal")
+        .unwrap();
+
     let is_l_float = self_compiler
         .builder
         .build_int_compare(inkwell::IntPredicate::EQ, l_tag, float_tag, "is_l_float")
         .unwrap();
-    let is_r_float = self_compiler
+
+    let is_float_1 = self_compiler
         .builder
-        .build_int_compare(inkwell::IntPredicate::EQ, r_tag, float_tag, "is_r_float")
+        .build_int_compare(
+            inkwell::IntPredicate::EQ,
+            l_tag,
+            float16_tag,
+            "is_l_float16",
+        )
         .unwrap();
+    let is_float_2 = self_compiler
+        .builder
+        .build_int_compare(
+            inkwell::IntPredicate::EQ,
+            l_tag,
+            float32_tag,
+            "is_l_float32",
+        )
+        .unwrap();
+    let is_float_3 = self_compiler
+        .builder
+        .build_int_compare(
+            inkwell::IntPredicate::EQ,
+            l_tag,
+            float64_tag,
+            "is_l_float64",
+        )
+        .unwrap();
+
+    let is_float_combined_1 = self_compiler
+        .builder
+        .build_or(is_l_float, is_float_1, "is_l_float_combined_1")
+        .unwrap();
+    let is_float_combined_2 = self_compiler
+        .builder
+        .build_or(is_float_2, is_float_combined_1, "is_l_float_combined_2")
+        .unwrap();
+    let is_l_float_final = self_compiler
+        .builder
+        .build_or(is_float_3, is_float_combined_2, "is_l_float_final")
+        .unwrap();
+
     let both_float = self_compiler
         .builder
-        .build_and(is_l_float, is_r_float, "both_float")
+        .build_and(float_tags_equal, is_l_float_final, "both_float")
         .unwrap();
 
     Ok(both_float)
@@ -1711,15 +1887,6 @@ fn create_add_expr_build_float_branch<'ctx>(
         )
         .unwrap()
         .into_int_value();
-    let l_float_val = self_compiler
-        .builder
-        .build_bit_cast(
-            l_float_bits,
-            self_compiler.context.f64_type(),
-            "l_float_val",
-        )
-        .unwrap()
-        .into_float_value();
 
     let r_float_data_ptr = self_compiler
         .builder
@@ -1739,7 +1906,132 @@ fn create_add_expr_build_float_branch<'ctx>(
         )
         .unwrap()
         .into_int_value();
-    let r_float_val = self_compiler
+
+    let parent = self_compiler
+        .builder
+        .get_insert_block()
+        .unwrap()
+        .get_parent()
+        .unwrap();
+    let bb_f16 = self_compiler
+        .context
+        .append_basic_block(parent, "add_f16_bb");
+    let bb_f32 = self_compiler
+        .context
+        .append_basic_block(parent, "add_f32_bb");
+    let bb_f64 = self_compiler
+        .context
+        .append_basic_block(parent, "add_f64_bb");
+    let marge = self_compiler
+        .context
+        .append_basic_block(parent, "add_merge_bb");
+
+    let f16_tag = self_compiler
+        .context
+        .i32_type()
+        .const_int(Tag::Float16 as u64, false);
+    let f32_tag = self_compiler
+        .context
+        .i32_type()
+        .const_int(Tag::Float32 as u64, false);
+
+    let cases = vec![(f16_tag, bb_f16), (f32_tag, bb_f32)];
+
+    self_compiler
+        .builder
+        .build_switch(float_tag, bb_f16, &cases)
+        .unwrap();
+
+    // Float16
+    self_compiler.builder.position_at_end(bb_f16);
+    let l_i16 = self_compiler
+        .builder
+        .build_int_truncate(l_float_bits, self_compiler.context.i16_type(), "f16_to_f64")
+        .unwrap();
+    let l_f16 = self_compiler
+        .builder
+        .build_bit_cast(l_i16, self_compiler.context.f16_type(), "f16_to_f64_cast")
+        .unwrap()
+        .into_float_value();
+
+    let r_i16 = self_compiler
+        .builder
+        .build_int_truncate(r_float_bits, self_compiler.context.i16_type(), "f16_to_f64")
+        .unwrap();
+    let r_f16 = self_compiler
+        .builder
+        .build_bit_cast(r_i16, self_compiler.context.f16_type(), "f16_to_f64_cast")
+        .unwrap()
+        .into_float_value();
+    let sum_f16 = self_compiler
+        .builder
+        .build_float_add(l_f16, r_f16, "f16_add")
+        .unwrap();
+    let sum_i16 = self_compiler
+        .builder
+        .build_bit_cast(sum_f16, self_compiler.context.i16_type(), "f16_to_i16_cast")
+        .unwrap()
+        .into_int_value();
+    let res_f16_bits = self_compiler
+        .builder
+        .build_int_s_extend(sum_i16, self_compiler.context.i64_type(), "f16_to_i64")
+        .unwrap();
+
+    self_compiler
+        .builder
+        .build_unconditional_branch(marge)
+        .unwrap();
+
+    // Float32
+    self_compiler.builder.position_at_end(bb_f32);
+    let l_i32 = self_compiler
+        .builder
+        .build_int_truncate(l_float_bits, self_compiler.context.i32_type(), "f32_to_f64")
+        .unwrap();
+    let l_f32 = self_compiler
+        .builder
+        .build_bit_cast(l_i32, self_compiler.context.f32_type(), "f32_to_f64_cast")
+        .unwrap()
+        .into_float_value();
+    let r_i32 = self_compiler
+        .builder
+        .build_int_truncate(r_float_bits, self_compiler.context.i32_type(), "f32_to_f64")
+        .unwrap();
+    let r_f32 = self_compiler
+        .builder
+        .build_bit_cast(r_i32, self_compiler.context.f32_type(), "f32_to_f64_cast")
+        .unwrap()
+        .into_float_value();
+    let sum_f32 = self_compiler
+        .builder
+        .build_float_add(l_f32, r_f32, "f32_add")
+        .unwrap();
+    let sum_i32 = self_compiler
+        .builder
+        .build_bit_cast(sum_f32, self_compiler.context.i32_type(), "f32_to_i32_cast")
+        .unwrap()
+        .into_int_value();
+    let res_f32_bits = self_compiler
+        .builder
+        .build_int_s_extend(sum_i32, self_compiler.context.i64_type(), "f32_to_i64")
+        .unwrap();
+    self_compiler
+        .builder
+        .build_unconditional_branch(marge)
+        .unwrap();
+
+    // Float64
+    self_compiler.builder.position_at_end(bb_f64);
+    let l_f64 = self_compiler
+        .builder
+        .build_bit_cast(
+            l_float_bits,
+            self_compiler.context.f64_type(),
+            "l_float_val",
+        )
+        .unwrap()
+        .into_float_value();
+    let r_f64 = self_compiler
         .builder
         .build_bit_cast(
             r_float_bits,
@@ -1748,21 +2040,34 @@ fn create_add_expr_build_float_branch<'ctx>(
         )
         .unwrap()
         .into_float_value();
-
-    let float_sum = self_compiler
+    let sum_f64 = self_compiler
         .builder
-        .build_float_add(l_float_val, r_float_val, "float_sum")
+        .build_float_add(l_f64, r_f64, "f64_add")
         .unwrap();
 
-    let float_sum_bits = self_compiler
+    let res_f64_bits = self_compiler
         .builder
-        .build_bit_cast(
-            float_sum,
-            self_compiler.context.i64_type(),
-            "float_sum_bits",
-        )
+        .build_bit_cast(sum_f64, self_compiler.context.i64_type(), "f64_to_i64_cast")
         .unwrap()
         .into_int_value();
+    self_compiler
+        .builder
+        .build_unconditional_branch(marge)
+        .unwrap();
+
+    // Marge
+
+    self_compiler.builder.position_at_end(marge);
+    let phi = self_compiler
+        .builder
+        .build_phi(self_compiler.context.i64_type(), "float_add_res_phi")
+        .unwrap();
+    phi.add_incoming(&[
+        (&res_f16_bits, bb_f16),
+        (&res_f32_bits, bb_f32),
+        (&res_f64_bits, bb_f64),
+    ]);
+    let res_data = phi.as_basic_value().into_int_value();
 
     let float_res_ptr = self_compiler
         .builder
@@ -1792,7 +2097,7 @@ fn create_add_expr_build_float_branch<'ctx>(
         .unwrap();
     self_compiler
         .builder
-        .build_store(float_res_data_ptr, float_sum_bits)
+        .build_store(float_res_data_ptr, res_data)
         .unwrap();
     Ok(float_res_ptr)
 }
@@ -2622,6 +2927,292 @@ fn create_uint64_add_logic<'ctx>(
 
     Ok(res_ptr.into())
 }
+
+fn create_float16_add_logic<'ctx>(
+    _self_compiler: &mut Compiler<'ctx>,
+    _lhs: &ast::Expr,
+    _rhs: &ast::Expr,
+    _module: &inkwell::module::Module<'ctx>,
+) -> Result<BasicValueEnum<'ctx>, String> {
+    let l_ptr = _self_compiler
+        .compile_expr(_lhs, _module)?
+        .into_pointer_value();
+    let r_ptr = _self_compiler
+        .compile_expr(_rhs, _module)?
+        .into_pointer_value();
+
+    let l_data_ptr = _self_compiler
+        .builder
+        .build_struct_gep(_self_compiler.runtime_value_type, l_ptr, 1, "l_data_ptr")
+        .unwrap();
+    let l_val_i64 = _self_compiler
+        .builder
+        .build_load(_self_compiler.context.i64_type(), l_data_ptr, "l_val_i64")
+        .unwrap()
+        .into_int_value();
+
+    let r_data_ptr = _self_compiler
+        .builder
+        .build_struct_gep(_self_compiler.runtime_value_type, r_ptr, 1, "r_data_ptr")
+        .unwrap();
+    let r_val_i64 = _self_compiler
+        .builder
+        .build_load(_self_compiler.context.i64_type(), r_data_ptr, "r_val_i64")
+        .unwrap()
+        .into_int_value();
+
+    let l_i16 = _self_compiler
+        .builder
+        .build_int_truncate(l_val_i64, _self_compiler.context.i16_type(), "l_trunc_i16")
+        .unwrap();
+    let l_f16 = _self_compiler
+        .builder
+        .build_bit_cast(l_i16, _self_compiler.context.f16_type(), "l_i64_to_f16")
+        .unwrap()
+        .into_float_value();
+
+    let r_i16 = _self_compiler
+        .builder
+        .build_int_truncate(r_val_i64, _self_compiler.context.i16_type(), "r_trunc_i16")
+        .unwrap();
+    let r_f16 = _self_compiler
+        .builder
+        .build_bit_cast(r_i16, _self_compiler.context.f16_type(), "r_i64_to_f16")
+        .unwrap()
+        .into_float_value();
+
+    let res_f16 = _self_compiler
+        .builder
+        .build_float_add(l_f16, r_f16, "f16_sum")
+        .unwrap();
+    let res_i16 = _self_compiler
+        .builder
+        .build_bit_cast(res_f16, _self_compiler.context.i16_type(), "f16_sum_to_i16")
+        .unwrap()
+        .into_int_value();
+    let res_i64 = _self_compiler
+        .builder
+        .build_int_s_extend(res_i16, _self_compiler.context.i64_type(), "f16_sum_to_i64")
+        .unwrap();
+    let res_ptr = _self_compiler
+        .builder
+        .build_alloca(_self_compiler.runtime_value_type, "res_alloc")
+        .unwrap();
+    let res_tag_ptr = _self_compiler
+        .builder
+        .build_struct_gep(_self_compiler.runtime_value_type, res_ptr, 0, "res_tag_ptr")
+        .unwrap();
+    _self_compiler
+        .builder
+        .build_store(
+            res_tag_ptr,
+            _self_compiler
+                .context
+                .i32_type()
+                .const_int(Tag::Float16 as u64, false),
+        )
+        .unwrap();
+    let res_data_ptr = _self_compiler
+        .builder
+        .build_struct_gep(
+            _self_compiler.runtime_value_type,
+            res_ptr,
+            1,
+            "res_data_ptr",
+        )
+        .unwrap();
+    _self_compiler
+        .builder
+        .build_store(res_data_ptr, res_i64)
+        .unwrap();
+
+    Ok(res_ptr.into())
+}
+
+fn create_float32_add_logic<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+    lhs: &ast::Expr,
+    rhs: &ast::Expr,
+    module: &inkwell::module::Module<'ctx>,
+) -> Result<BasicValueEnum<'ctx>, String> {
+    let l_ptr = self_compiler
+        .compile_expr(lhs, module)?
+        .into_pointer_value();
+    let r_ptr = self_compiler
+        .compile_expr(rhs, module)?
+        .into_pointer_value();
+
+    let l_data_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, l_ptr, 1, "l_data_ptr")
+        .unwrap();
+    let l_val_i64 = self_compiler
+        .builder
+        .build_load(self_compiler.context.i64_type(), l_data_ptr, "l_val_i64")
+        .unwrap()
+        .into_int_value();
+
+    let r_data_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, r_ptr, 1, "r_data_ptr")
+        .unwrap();
+    let r_val_i64 = self_compiler
+        .builder
+        .build_load(self_compiler.context.i64_type(), r_data_ptr, "r_val_i64")
+        .unwrap()
+        .into_int_value();
+
+    let l_i32 = self_compiler
+        .builder
+        .build_int_truncate(l_val_i64, self_compiler.context.i32_type(), "l_f32_to_i32")
+        .unwrap();
+
+    let l_f32 = self_compiler
+        .builder
+        .build_bit_cast(l_i32, self_compiler.context.f32_type(), "l_i64_to_f32")
+        .unwrap()
+        .into_float_value();
+
+    let r_i32 = self_compiler
+        .builder
+        .build_int_truncate(r_val_i64, self_compiler.context.i32_type(), "r_f32_to_i32")
+        .unwrap();
+
+    let r_f32 = self_compiler
+        .builder
+        .build_bit_cast(r_i32, self_compiler.context.f32_type(), "r_i64_to_f32")
+        .unwrap()
+        .into_float_value();
+
+    let res_f32 = self_compiler
+        .builder
+        .build_float_add(l_f32, r_f32, "f32_sum")
+        .unwrap();
+
+    let res_i32 = self_compiler
+        .builder
+        .build_bit_cast(res_f32, self_compiler.context.i32_type(), "f32_sum_to_i32")
+        .unwrap()
+        .into_int_value();
+    let res_i64 = self_compiler
+        .builder
+        .build_int_z_extend(res_i32, self_compiler.context.i64_type(), "f32_sum_to_i64")
+        .unwrap();
+    let res_ptr = self_compiler
+        .builder
+        .build_alloca(self_compiler.runtime_value_type, "res_alloc")
+        .unwrap();
+    let res_tag_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, res_ptr, 0, "res_tag_ptr")
+        .unwrap();
+    self_compiler
+        .builder
+        .build_store(
+            res_tag_ptr,
+            self_compiler
+                .context
+                .i32_type()
+                .const_int(Tag::Float32 as u64, false),
+        )
+        .unwrap();
+    let res_data_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, res_ptr, 1, "res_data_ptr")
+        .unwrap();
+    self_compiler
+        .builder
+        .build_store(res_data_ptr, res_i64)
+        .unwrap();
+
+    Ok(res_ptr.into())
+}
+
+fn create_float64_add_logic<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+    lhs: &ast::Expr,
+    rhs: &ast::Expr,
+    module: &inkwell::module::Module<'ctx>,
+) -> Result<BasicValueEnum<'ctx>, String> {
+    let l_ptr = self_compiler
+        .compile_expr(lhs, module)?
+        .into_pointer_value();
+    let r_ptr = self_compiler
+        .compile_expr(rhs, module)?
+        .into_pointer_value();
+
+    let l_data_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, l_ptr, 1, "l_data_ptr")
+        .unwrap();
+    let l_val_i64 = self_compiler
+        .builder
+        .build_load(self_compiler.context.i64_type(), l_data_ptr, "l_val_i64")
+        .unwrap()
+        .into_int_value();
+
+    let r_data_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, r_ptr, 1, "r_data_ptr")
+        .unwrap();
+    let r_val_i64 = self_compiler
+        .builder
+        .build_load(self_compiler.context.i64_type(), r_data_ptr, "r_val_i64")
+        .unwrap()
+        .into_int_value();
+
+    let l_f64 = self_compiler
+        .builder
+        .build_bit_cast(l_val_i64, self_compiler.context.f64_type(), "l_i64_to_f64")
+        .unwrap()
+        .into_float_value();
+    let r_f64 = self_compiler
+        .builder
+        .build_bit_cast(r_val_i64, self_compiler.context.f64_type(), "r_i64_to_f64")
+        .unwrap()
+        .into_float_value();
+
+    let res_f64 = self_compiler
+        .builder
+        .build_float_add(l_f64, r_f64, "f64_sum")
+        .unwrap();
+    let res_i64 = self_compiler
+        .builder
+        .build_bit_cast(res_f64, self_compiler.context.i64_type(), "f64_sum_to_i64")
+        .unwrap()
+        .into_int_value();
+
+    let res_ptr = self_compiler
+        .builder
+        .build_alloca(self_compiler.runtime_value_type, "res_alloc")
+        .unwrap();
+    let res_tag_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, res_ptr, 0, "res_tag_ptr")
+        .unwrap();
+
+    self_compiler
+        .builder
+        .build_store(
+            res_tag_ptr,
+            self_compiler
+                .context
+                .i32_type()
+                .const_int(Tag::Float64 as u64, false),
+        )
+        .unwrap();
+    let res_data_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, res_ptr, 1, "res_data_ptr")
+        .unwrap();
+    self_compiler
+        .builder
+        .build_store(res_data_ptr, res_i64)
+        .unwrap();
+
+    Ok(res_ptr.into())
+}
+
 pub fn create_mul_expr<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
     lhs: &ast::Expr,
@@ -3658,6 +4249,10 @@ pub fn call_builtin_macro_cast<'ctx>(
         ast::Expr::TypeU32 => "u32",
         ast::Expr::TypeI64 => "i64",
         ast::Expr::TypeU64 => "u64",
+
+        ast::Expr::TypeF16 => "fp16",
+        ast::Expr::TypeF32 => "fp32",
+        ast::Expr::TypeF64 => "fp64",
         _ => {
             return Err(format!(
                 "cast! second argument must be a type identifier : {:?}",
@@ -3677,7 +4272,7 @@ pub fn call_builtin_macro_cast<'ctx>(
         .unwrap();
 
     // Load the current tag (not used here but could be useful for type checking)
-    let _tag = self_compiler
+    let current_tag = self_compiler
         .builder
         .build_load(self_compiler.context.i32_type(), tag_ptr, "cast_arg_tag")
         .unwrap()
@@ -3697,6 +4292,145 @@ pub fn call_builtin_macro_cast<'ctx>(
         .build_load(self_compiler.context.i64_type(), data_ptr, "cast_arg_data")
         .unwrap()
         .into_int_value();
+
+    let parent = self_compiler
+        .builder
+        .get_insert_block()
+        .unwrap()
+        .get_parent()
+        .unwrap();
+
+    let bb_int = self_compiler
+        .context
+        .append_basic_block(parent, "cast_int_bb");
+    let bb_float = self_compiler
+        .context
+        .append_basic_block(parent, "cast_float_bb");
+    let bb_f16 = self_compiler
+        .context
+        .append_basic_block(parent, "cast_f16_bb");
+    let bb_f32 = self_compiler
+        .context
+        .append_basic_block(parent, "cast_f32_bb");
+    let bb_f64 = self_compiler
+        .context
+        .append_basic_block(parent, "cast_f64_bb");
+    let marge = self_compiler
+        .context
+        .append_basic_block(parent, "cast_merge_bb");
+
+    let i32_type = self_compiler.context.i32_type();
+    let cases = vec![
+        (i32_type.const_int(Tag::Integer as u64, false), bb_int),
+        (i32_type.const_int(Tag::Float as u64, false), bb_float),
+        (i32_type.const_int(Tag::Float16 as u64, false), bb_f16),
+        (i32_type.const_int(Tag::Float32 as u64, false), bb_f32),
+        (i32_type.const_int(Tag::Float64 as u64, false), bb_f64),
+    ];
+
+    self_compiler
+        .builder
+        .build_switch(current_tag, bb_f64, &cases)
+        .unwrap();
+
+    // Integer -> f64
+    self_compiler.builder.position_at_end(bb_int);
+    let int_to_f64 = self_compiler
+        .builder
+        .build_signed_int_to_float(data, self_compiler.context.f64_type(), "int_to_f64")
+        .unwrap();
+    self_compiler
+        .builder
+        .build_unconditional_branch(marge)
+        .unwrap();
+
+    // Float -> f64
+    self_compiler.builder.position_at_end(bb_float);
+    let float_to_f64 = self_compiler
+        .builder
+        .build_bit_cast(data, self_compiler.context.f64_type(), "float_to_f64")
+        .unwrap()
+        .into_float_value();
+    self_compiler
+        .builder
+        .build_unconditional_branch(marge)
+        .unwrap();
+
+    // Float16 -> f64
+    self_compiler.builder.position_at_end(bb_f16);
+    let f16_to_f64 = self_compiler
+        .builder
+        .build_int_truncate(data, self_compiler.context.i16_type(), "f16_to_f64")
+        .unwrap();
+    let val_f16 = self_compiler
+        .builder
+        .build_bit_cast(
+            f16_to_f64,
+            self_compiler.context.f16_type(),
+            "f16_to_f64_cast",
+        )
+        .unwrap()
+        .into_float_value();
+
+    let val_f16_ext = self_compiler
+        .builder
+        .build_float_ext(val_f16, self_compiler.context.f64_type(), "f16_to_f64_ext")
+        .unwrap();
+    self_compiler
+        .builder
+        .build_unconditional_branch(marge)
+        .unwrap();
+
+    // Float32 -> f64
+    self_compiler.builder.position_at_end(bb_f32);
+    let val_f32_i32 = self_compiler
+        .builder
+        .build_int_truncate(data, self_compiler.context.i32_type(), "f32_to_f64")
+        .unwrap();
+    let val_f32 = self_compiler
+        .builder
+        .build_bit_cast(
+            val_f32_i32,
+            self_compiler.context.f32_type(),
+            "f32_to_f64_cast",
+        )
+        .unwrap()
+        .into_float_value();
+    let val_f32_ext = self_compiler
+        .builder
+        .build_float_ext(val_f32, self_compiler.context.f64_type(), "f32_to_f64_ext")
+        .unwrap();
+    self_compiler
+        .builder
+        .build_unconditional_branch(marge)
+        .unwrap();
+
+    // Float64 -> f64
+    self_compiler.builder.position_at_end(bb_f64);
+    let val_f64 = self_compiler
+        .builder
+        .build_bit_cast(data, self_compiler.context.f64_type(), "f64_to_f64")
+        .unwrap()
+        .into_float_value();
+    self_compiler
+        .builder
+        .build_unconditional_branch(marge)
+        .unwrap();
+
+    // Merge block
+    self_compiler.builder.position_at_end(marge);
+    let phi = self_compiler
+        .builder
+        .build_phi(self_compiler.context.f64_type(), "cast_phi")
+        .unwrap();
+    phi.add_incoming(&[
+        (&int_to_f64, bb_int),
+        (&float_to_f64, bb_float),
+        (&val_f16_ext, bb_f16),
+        (&val_f32_ext, bb_f32),
+        (&val_f64, bb_f64),
+    ]);
+    let normalized_f64 = phi.as_basic_value().into_float_value();
 
     let (new_tag, new_data) = match target_type {
         "i8" => {
@@ -3832,6 +4566,92 @@ pub fn call_builtin_macro_cast<'ctx>(
                 .i32_type()
                 .const_int(Tag::Uint64 as u64, false);
             (new_tag, data)
+        }
+
+        "fp16" => {
+            let new_tag = self_compiler
+                .context
+                .i32_type()
+                .const_int(Tag::Float16 as u64, false);
+
+            // f64 -> f16
+
+            let new_data = self_compiler
+                .builder
+                .build_float_trunc(
+                    normalized_f64,
+                    self_compiler.context.f16_type(),
+                    "cast_to_fp16",
+                )
+                .unwrap();
+
+            let new_data_i16 = self_compiler
+                .builder
+                .build_bit_cast(new_data, self_compiler.context.i16_type(), "fp16_to_i16")
+                .unwrap()
+                .into_int_value();
+
+            let new_data_ext = self_compiler
+                .builder
+                .build_int_z_extend(
+                    new_data_i16,
+                    self_compiler.context.i64_type(),
+                    "cast_to_fp16_ext",
+                )
+                .unwrap();
+            (new_tag, new_data_ext)
+        }
+
+        "fp32" => {
+            let new_tag = self_compiler
+                .context
+                .i32_type()
+                .const_int(Tag::Float32 as u64, false);
+
+            // f64 -> f32
+
+            let new_data = self_compiler
+                .builder
+                .build_float_trunc(
+                    normalized_f64,
+                    self_compiler.context.f32_type(),
+                    "cast_to_fp32",
+                )
+                .unwrap();
+
+            let new_data_i32 = self_compiler
+                .builder
+                .build_bit_cast(new_data, self_compiler.context.i32_type(), "fp32_to_i32")
+                .unwrap()
+                .into_int_value();
+
+            let new_data_ext = self_compiler
+                .builder
+                .build_int_z_extend(
+                    new_data_i32,
+                    self_compiler.context.i64_type(),
+                    "cast_to_fp32_ext",
+                )
+                .unwrap();
+            (new_tag, new_data_ext)
+        }
+
+        "fp64" => {
+            let new_tag = self_compiler
+                .context
+                .i32_type()
+                .const_int(Tag::Float64 as u64, false);
+
+            let new_data = self_compiler
+                .builder
+                .build_bit_cast(
+                    normalized_f64,
+                    self_compiler.context.i64_type(),
+                    "cast_to_fp64_ext",
+                )
+                .unwrap()
+                .into_int_value();
+            (new_tag, new_data)
         }
         _ => {
             return Err(format!(

@@ -51,6 +51,10 @@ pub enum Token {
     TypeU32,
     TypeI64,
     TypeU64,
+
+    TypeF16,
+    TypeF32,
+    TypeF64,
 }
 
 #[derive(Logos, Debug, Clone, PartialEq)]
@@ -160,6 +164,13 @@ enum RawTok {
     TypeI64,
     #[token("u64")]
     TypeU64,
+
+    #[token("fp16")]
+    TypeF16,
+    #[token("fp32")]
+    TypeF32,
+    #[token("fp64")]
+    TypeF64,
 }
 
 pub struct Lexer<'input> {
@@ -244,6 +255,10 @@ impl<'input> Iterator for Lexer<'input> {
             RawTok::TypeU32 => Token::TypeU32,
             RawTok::TypeI64 => Token::TypeI64,
             RawTok::TypeU64 => Token::TypeU64,
+
+            RawTok::TypeF16 => Token::TypeF16,
+            RawTok::TypeF32 => Token::TypeF32,
+            RawTok::TypeF64 => Token::TypeF64,
         };
         Some(Ok((s, t, e)))
     }
