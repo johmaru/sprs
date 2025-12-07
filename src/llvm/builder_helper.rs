@@ -1351,7 +1351,9 @@ pub fn create_add_expr<'ctx>(
     rhs: &ast::Expr,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
-    let _ = create_add_expr_type_check(self_compiler, lhs, rhs, module);
+    if let Ok(val) = create_add_expr_type_check(self_compiler, lhs, rhs, module) {
+        return Ok(val);
+    }
 
     let l_ptr = self_compiler
         .compile_expr(lhs, module)?
@@ -1934,12 +1936,16 @@ fn create_add_expr_build_float_branch<'ctx>(
         .context
         .i32_type()
         .const_int(Tag::Float32 as u64, false);
+    let f64_tag = self_compiler
+        .context
+        .i32_type()
+        .const_int(Tag::Float64 as u64, false);
 
-    let cases = vec![(f16_tag, bb_f16), (f32_tag, bb_f32)];
+    let cases = vec![(f16_tag, bb_f16), (f32_tag, bb_f32), (f64_tag, bb_f64)];
 
     self_compiler
         .builder
-        .build_switch(float_tag, bb_f16, &cases)
+        .build_switch(float_tag, bb_f64, &cases)
         .unwrap();
 
     // Float16
