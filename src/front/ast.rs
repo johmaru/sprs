@@ -63,6 +63,7 @@ pub struct Function {
     pub params: Vec<FunctionParam>,
     // pub ret_ty: Option<Type>, currently all any
     pub blk: Vec<Stmt>,
+    pub is_public: bool,
 }
 
 #[derive(Debug, PartialEq)]

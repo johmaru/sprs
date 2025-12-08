@@ -275,8 +275,14 @@ impl<'ctx> Compiler<'ctx> {
             &func.ident
         };
 
-        if module.get_function(func_name).is_none() {
-            module.add_function(func_name, fn_type, None);
+        let fn_val = if let Some(f) = module.get_function(func_name) {
+            f
+        } else {
+            module.add_function(func_name, fn_type, None)
+        };
+
+        if !func.is_public {
+            fn_val.set_linkage(Linkage::Private);
         }
     }
 

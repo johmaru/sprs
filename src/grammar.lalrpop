@@ -50,6 +50,7 @@ extern {
         Import => Token::Import,
         Package => Token::Package,
         Var => Token::Var,
+        Public => Token::Public,
 
         // System types
         TypeI8 => Token::TypeI8,
@@ -92,12 +93,18 @@ PackageDirective: String = {
 
 FnKw: () = <tok:Function> => ();
 
+PublicKw: bool = {
+    Public => true,
+    => false,
+};
+
 FunctionDef: Item =
-    FnKw <name:Ident> LParen <params:ParamList> RParen <body:Block> => {
+   <is_pub:PublicKw> FnKw <name:Ident> LParen <params:ParamList> RParen <body:Block> => {
         Item::FunctionItem(Function {
             ident: name,
             params,
             blk: body,
+            is_public: is_pub,
         })
     };
 

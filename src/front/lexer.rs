@@ -41,6 +41,7 @@ pub enum Token {
     Package,
     Import,
     Var,
+    Public,
 
     // System types
     TypeI8,
@@ -146,6 +147,8 @@ enum RawTok {
     Import,
     #[token("var")]
     Var,
+    #[token("pub")]
+    Public,
 
     // System types
     #[token("i8")]
@@ -244,6 +247,7 @@ impl<'input> Iterator for Lexer<'input> {
             RawTok::Package => Token::Package,
             RawTok::Import => Token::Import,
             RawTok::Var => Token::Var,
+            RawTok::Public => Token::Public,
             RawTok::Comment => return self.next(),
 
             // System types
