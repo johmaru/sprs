@@ -87,6 +87,9 @@ fn main() {
 }
 ```
 
+if a function is not marked as 'pub', it is private function.
+the function can call in same module.
+
 - runtime functions
 
   | Function Name   | Description                          |
