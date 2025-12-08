@@ -188,8 +188,8 @@ fn load_modules(ctx: &mut RuntimeContext, module_name: &str) -> Result<(), Strin
         Ok(s) => s,
         Err(e) => return Err(format!("Error reading module {}: {}", module_name, e)),
     };
-    let ast =
-        parse_only(&source).map_err(|e| format!("Error parsing module {}: {}", module_name, e));
+    let ast = parse_only(&source, &path)
+        .map_err(|e| format!("Error parsing module {}: {}", module_name, e));
     let ast = match ast {
         Ok(a) => a,
         Err(e) => return Err(format!("Error parsing module {}: {}", module_name, e)),

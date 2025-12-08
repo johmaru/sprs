@@ -51,6 +51,9 @@ For this language development environment setup is WSL2(Ubuntu) + VSCode is reco
  * u32 (only for cast! macro)
  * i64 (only for cast! macro)
  * u64 (only for cast! macro)
+ * f16 (only for cast! macro)
+ * f32 (only for cast! macro)
+ * f64 (only for cast! macro)
 
 - Variables and assignments
 ```sprs

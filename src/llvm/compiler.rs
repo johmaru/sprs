@@ -169,7 +169,7 @@ impl<'ctx> Compiler<'ctx> {
         let source = std::fs::read_to_string(&path)
             .map_err(|e| format!("Failed to read module file {}: {}", path, e))?;
 
-        let items = parse_only(&source)?;
+        let items = parse_only(&source, &path)?;
 
         self.process_preprocessors(&items);
 
