@@ -1,6 +1,7 @@
 use crate::command_helper;
 use crate::front::ast;
 use crate::interpreter::runner::parse_only;
+use crate::interpreter::type_helper::Type;
 use crate::llvm::builder_helper;
 use crate::llvm::builder_helper::Comparison;
 use crate::llvm::builder_helper::EqNeq;
@@ -267,7 +268,31 @@ impl<'ctx> Compiler<'ctx> {
             .map(|_| self.context.ptr_type(AddressSpace::default()).into())
             .collect();
 
-        let fn_type = self.runtime_value_type.fn_type(&arg_types, false);
+        let fn_type = if let Some(ret_ty) = &func.ret_ty {
+            match ret_ty {
+                Type::Any => self.runtime_value_type.fn_type(&arg_types, false),
+                Type::Int => self.context.i64_type().fn_type(&arg_types, false),
+                Type::Str => self.context.ptr_type(AddressSpace::default()).fn_type(&arg_types, false),
+                Type::Float => self.context.f64_type().fn_type(&arg_types, false),
+                Type::Bool => self.context.bool_type().fn_type(&arg_types, false),
+                Type::Unit => self.context.void_type().fn_type(&arg_types, false),
+
+                Type::TypeI8 => self.context.i8_type().fn_type(&arg_types, false),
+                Type::TypeU8 => self.context.i8_type().fn_type(&arg_types, false),
+                Type::TypeI16 => self.context.i16_type().fn_type(&arg_types, false),
+                Type::TypeU16 => self.context.i16_type().fn_type(&arg_types, false),
+                Type::TypeI32 => self.context.i32_type().fn_type(&arg_types, false),
+                Type::TypeU32 => self.context.i32_type().fn_type(&arg_types, false),
+                Type::TypeI64 => self.context.i64_type().fn_type(&arg_types, false),
+                Type::TypeU64 => self.context.i64_type().fn_type(&arg_types, false),
+
+                Type::TypeF16 => self.context.f16_type().fn_type(&arg_types, false),
+                Type::TypeF32 => self.context.f32_type().fn_type(&arg_types, false),
+                Type::TypeF64 => self.context.f64_type().fn_type(&arg_types, false),
+            }
+        } else {
+            self.runtime_value_type.fn_type(&arg_types, false)
+        };
 
         let func_name = if func.ident == "main" {
             "_sprs_main"
@@ -319,19 +344,15 @@ impl<'ctx> Compiler<'ctx> {
             .map(|_| self.context.ptr_type(AddressSpace::default()).into())
             .collect();
 
-        let fn_type = self.runtime_value_type.fn_type(&arg_types, false);
-
         let func_name = if func.ident == "main" {
             "_sprs_main"
         } else {
             &func.ident
         };
 
-        let fn_val = if let Some(f) = module.get_function(func_name) {
-            f
-        } else {
-            module.add_function(func_name, fn_type, None)
-        };
+        let fn_val = module
+            .get_function(func_name)
+            .ok_or_else(|| format!("Function {} not declared", func_name))?;
 
         let entry = self.context.append_basic_block(fn_val, "entry");
         self.builder.position_at_end(entry);
@@ -414,11 +435,55 @@ impl<'ctx> Compiler<'ctx> {
                             }
                         }
 
-                        let val = self
-                            .builder
-                            .build_load(self.runtime_value_type, ptr, "return_load")
-                            .unwrap();
-                        Some(val)
+                        let current_fn = self.function_signatures.unwrap();
+                        let return_type = current_fn.get_type().get_return_type();
+
+                        if let Some(ret_ty) = return_type {
+                            if ret_ty == self.runtime_value_type.into() {
+                                let val = self
+                                    .builder
+                                    .build_load(self.runtime_value_type, ptr, "return_load")
+                                    .unwrap();
+                                Some(val)
+                            } else {
+                                let data_ptr = self
+                                .builder
+                                .build_struct_gep(self.runtime_value_type, ptr, 1, "data_ptr")
+                                .unwrap();
+                            let data_val = self
+                                .builder
+                                .build_load(self.context.i64_type(), data_ptr, "data_load")
+                                .unwrap()
+                                .into_int_value();
+
+                            let casted_val : BasicValueEnum = if ret_ty.is_int_type() {
+                                let int_type = ret_ty.into_int_type();
+                                if int_type.get_bit_width() < 64 {
+                                    self.builder.build_int_truncate(data_val, int_type, "truncated").unwrap().into()
+                                } else {
+                                    data_val.into()
+                                }
+                            } else if ret_ty.is_float_type() {
+                                let float_type = ret_ty.into_float_type();
+                                let f64_val = self.builder.build_bit_cast(data_val, self.context.f64_type(), "casted_float").unwrap().into_float_value();
+
+                                if float_type.get_bit_width() == 32 {
+                                    self.builder.build_float_trunc(f64_val, float_type, "truncated_float").unwrap().into()
+                                } else {
+                                    f64_val.into()
+                                }
+                            } else if ret_ty.is_pointer_type() {
+                                let ptr_type = ret_ty.into_pointer_type();
+                                let i8_ptr = self.builder.build_int_to_ptr(data_val, ptr_type, "int_to_ptr").unwrap().into();
+                                i8_ptr
+                            } else {
+                                return Err("Unsupported return type conversion".to_string());
+                            };
+                            Some(casted_val)
+                        }
+                    } else {
+                        None
+                    }
                     } else {
                         None
                     };

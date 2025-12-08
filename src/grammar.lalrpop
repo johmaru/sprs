@@ -2,6 +2,7 @@ grammar;
 
 use crate::front::ast::{Item, VarDecl, Expr, Stmt, Function, FunctionParam};
 use crate::front::lexer::Token;
+use crate::interpreter::type_helper::Type;
 use lalrpop_util::ParseError;
 use half::f16;
 
@@ -28,6 +29,7 @@ extern {
         Neq    => Token::Neq,
         Lt     => Token::Lt,
         Gt     => Token::Gt,
+        GtGt   => Token::GtGt,
         Le     => Token::Le,
         Ge     => Token::Ge,
         Dot    => Token::Dot,
@@ -53,6 +55,12 @@ extern {
         Public => Token::Public,
 
         // System types
+        TypeInt => Token::TypeInt,
+        TypeFloat => Token::TypeFloat,
+        TypeBool => Token::TypeBool,
+        TypeStr => Token::TypeStr,
+        TypeUnit => Token::TypeUnit,
+
         TypeI8 => Token::TypeI8,
         TypeU8 => Token::TypeU8,
         TypeI16 => Token::TypeI16,
@@ -99,10 +107,11 @@ PublicKw: bool = {
 };
 
 FunctionDef: Item =
-   <is_pub:PublicKw> FnKw <name:Ident> LParen <params:ParamList> RParen <body:Block> => {
+   <is_pub:PublicKw> FnKw <name:Ident> LParen <params:ParamList> RParen <ret:ReturnType> <body:Block> => {
         Item::FunctionItem(Function {
             ident: name,
             params,
+            ret_ty: ret,
             blk: body,
             is_public: is_pub,
         })
@@ -128,6 +137,34 @@ MoreParams: Vec<FunctionParam> = {
 
 FunctionParamNode: FunctionParam =
     <id:Ident> => FunctionParam { ident: id };
+
+
+Type: Type = {
+    TypeInt => Type::Int,
+    TypeFloat => Type::Float,
+    TypeBool => Type::Bool,
+    TypeStr => Type::Str,
+    TypeUnit => Type::Unit,
+
+    TypeI8 => Type::TypeI8,
+    TypeU8 => Type::TypeU8,
+    TypeI16 => Type::TypeI16,
+    TypeU16 => Type::TypeU16,
+    TypeI32 => Type::TypeI32,
+    TypeU32 => Type::TypeU32,
+    TypeI64 => Type::TypeI64,
+    TypeU64 => Type::TypeU64,
+
+    TypeF16 => Type::TypeF16,
+    TypeF32 => Type::TypeF32,
+    TypeF64 => Type::TypeF64,
+};
+
+
+ReturnType: Option<Type> = {
+    GtGt <t:Type> => Some(t),
+    => None,
+};
 
 ArgList: Vec<Expr> = {
     => vec![],

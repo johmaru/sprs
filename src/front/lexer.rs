@@ -20,6 +20,7 @@ pub enum Token {
     Neq,
     Lt,
     Gt,
+    GtGt,
     Le,
     Ge,
     Dot,
@@ -44,6 +45,13 @@ pub enum Token {
     Public,
 
     // System types
+
+    TypeInt,
+    TypeFloat,
+    TypeBool,
+    TypeStr,
+    TypeUnit,
+
     TypeI8,
     TypeU8,
     TypeI16,
@@ -137,6 +145,8 @@ enum RawTok {
     False,
     #[token("fn")]
     Function,
+    #[token(">>")]
+    GtGt,
     #[token("return")]
     Return,
     #[token("#define")]
@@ -151,6 +161,18 @@ enum RawTok {
     Public,
 
     // System types
+
+    #[token("int")]
+    TypeInt,
+    #[token("fp")]
+    TypeFloat,
+    #[token("bool")]
+    TypeBool,
+    #[token("str")]
+    TypeStr,
+    #[token("unit")]
+    TypeUnit,
+
     #[token("i8")]
     TypeI8,
     #[token("u8")]
@@ -224,6 +246,7 @@ impl<'input> Iterator for Lexer<'input> {
             RawTok::Neq => Token::Neq,
             RawTok::Lt => Token::Lt,
             RawTok::Gt => Token::Gt,
+            RawTok::GtGt => Token::GtGt,
             RawTok::Le => Token::Le,
             RawTok::Ge => Token::Ge,
             RawTok::Dot => Token::Dot,
@@ -251,6 +274,12 @@ impl<'input> Iterator for Lexer<'input> {
             RawTok::Comment => return self.next(),
 
             // System types
+            RawTok::TypeInt => Token::TypeInt,
+            RawTok::TypeFloat => Token::TypeFloat,
+            RawTok::TypeBool => Token::TypeBool,
+            RawTok::TypeStr => Token::TypeStr,
+            RawTok::TypeUnit => Token::TypeUnit,
+
             RawTok::TypeI8 => Token::TypeI8,
             RawTok::TypeU8 => Token::TypeU8,
             RawTok::TypeI16 => Token::TypeI16,

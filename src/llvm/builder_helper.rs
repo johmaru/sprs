@@ -1139,6 +1139,103 @@ pub fn create_float64<'ctx>(
     Ok(ptr.into())
 }
 
+fn box_return_value<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+    return_type: inkwell::types::BasicTypeEnum<'ctx>,
+    result_val: BasicValueEnum<'ctx>,
+) -> Result<BasicValueEnum<'ctx>, String> {
+    let result_ptr = self_compiler
+        .builder
+        .build_alloca(
+            self_compiler.runtime_value_type,
+            "compile_expr_call_res_alloc",
+        )
+        .unwrap();
+   
+    if return_type.is_int_type() {
+        let int_val = result_val.into_int_value();
+
+        let val_i64 = self_compiler.builder.build_int_s_extend(int_val, self_compiler.context.i64_type(), "int_to_i64").unwrap();
+
+        let tag_ptr = self_compiler
+            .builder
+            .build_struct_gep(self_compiler.runtime_value_type, result_ptr, 0, "res_tag_ptr")
+            .unwrap();
+        self_compiler
+            .builder
+            .build_store(
+                tag_ptr,
+                self_compiler
+                    .context
+                    .i32_type()
+                    .const_int(Tag::Integer as u64, false),
+            )
+            .unwrap();
+        
+        let data_ptr = self_compiler
+            .builder
+            .build_struct_gep(self_compiler.runtime_value_type, result_ptr, 1, "res_data_ptr")
+            .unwrap();
+        self_compiler
+            .builder
+            .build_store(data_ptr, val_i64)
+            .unwrap();
+        
+    } else if return_type.is_float_type() {
+        let float_val = result_val.into_float_value();
+
+        let val_f64 = self_compiler.builder.build_float_ext(float_val, self_compiler.context.f64_type(), "float_to_f64").unwrap();
+
+        let data = self_compiler.builder.build_bit_cast(val_f64, self_compiler.context.i64_type(), "f64_to_i64").unwrap().into_int_value();
+        
+        let tag_ptr = self_compiler
+            .builder
+            .build_struct_gep(self_compiler.runtime_value_type, result_ptr, 0, "res_tag_ptr")
+            .unwrap();
+        self_compiler
+            .builder
+            .build_store(
+                tag_ptr,
+                self_compiler
+                    .context
+                    .i32_type()
+                    .const_int(Tag::Float as u64, false),
+            )
+            .unwrap();
+
+        let data_ptr = self_compiler
+            .builder
+            .build_struct_gep(self_compiler.runtime_value_type, result_ptr, 1, "res_data_ptr")
+            .unwrap();
+        self_compiler
+            .builder
+            .build_store(data_ptr, data)
+            .unwrap();
+        
+    } else if return_type.is_struct_type() {
+        self_compiler
+            .builder
+            .build_store(result_ptr, result_val)
+            .unwrap();
+    } else {
+        let tag_ptr = self_compiler
+            .builder
+            .build_struct_gep(self_compiler.runtime_value_type, result_ptr, 0, "res_tag_ptr")
+            .unwrap();
+        self_compiler
+            .builder
+            .build_store(
+                tag_ptr,
+                self_compiler
+                    .context
+                    .i32_type()
+                    .const_int(Tag::Unit as u64, false),
+            )
+            .unwrap();
+    };
+    Ok(result_ptr.into())
+}
+
 pub fn create_call_expr<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
     ident: &str,
@@ -1327,22 +1424,18 @@ pub fn create_call_expr<'ctx>(
         .build_call(func, &compiled_args, "compile_expr_call_tmp")
         .unwrap();
 
+    let return_type_opt = func.get_type().get_return_type();
+    if return_type_opt.is_none() {
+        return create_unit(self_compiler);
+    }
+    let return_type = return_type_opt.unwrap();
     let result_val = match call_site.try_as_basic_value() {
-        ValueKind::Basic(val) => Ok(val),
-        ValueKind::Instruction(_) => Err("Expected basic value from function call".to_string()),
+        ValueKind::Basic(val) => val,
+        ValueKind::Instruction(_) => return Err("Expected basic value from function call".to_string()),
     };
-    let result_ptr = self_compiler
-        .builder
-        .build_alloca(
-            self_compiler.runtime_value_type,
-            "compile_expr_call_res_alloc",
-        )
-        .unwrap();
-    self_compiler
-        .builder
-        .build_store(result_ptr, result_val?)
-        .unwrap();
-    Ok(result_ptr.into())
+
+    box_return_value(self_compiler, return_type, result_val)
+    
 }
 
 pub fn create_add_expr<'ctx>(
@@ -3992,6 +4085,12 @@ pub fn create_module_access<'ctx>(
         .build_call(func_in_current_module, &compiled_args, "module_func_call")
         .unwrap();
 
+    let return_type_opt = target_func.get_type().get_return_type();
+    if return_type_opt.is_none() {
+        return create_unit(self_compiler);
+    }
+    let return_type = return_type_opt.unwrap();
+
     let result_val = match call_site.try_as_basic_value() {
         ValueKind::Basic(val) => val,
         ValueKind::Instruction(_) => {
@@ -3999,15 +4098,7 @@ pub fn create_module_access<'ctx>(
         }
     };
 
-    let return_ptr = self_compiler
-        .builder
-        .build_alloca(self_compiler.runtime_value_type, "return_ptr")
-        .unwrap();
-    self_compiler
-        .builder
-        .build_store(return_ptr, result_val)
-        .unwrap();
-    Ok(return_ptr.into())
+    box_return_value(self_compiler, return_type, result_val)
 }
 
 pub fn create_unit<'ctx>(
