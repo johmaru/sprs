@@ -1151,15 +1151,23 @@ fn box_return_value<'ctx>(
             "compile_expr_call_res_alloc",
         )
         .unwrap();
-   
+
     if return_type.is_int_type() {
         let int_val = result_val.into_int_value();
 
-        let val_i64 = self_compiler.builder.build_int_s_extend(int_val, self_compiler.context.i64_type(), "int_to_i64").unwrap();
+        let val_i64 = self_compiler
+            .builder
+            .build_int_s_extend(int_val, self_compiler.context.i64_type(), "int_to_i64")
+            .unwrap();
 
         let tag_ptr = self_compiler
             .builder
-            .build_struct_gep(self_compiler.runtime_value_type, result_ptr, 0, "res_tag_ptr")
+            .build_struct_gep(
+                self_compiler.runtime_value_type,
+                result_ptr,
+                0,
+                "res_tag_ptr",
+            )
             .unwrap();
         self_compiler
             .builder
@@ -1171,26 +1179,42 @@ fn box_return_value<'ctx>(
                     .const_int(Tag::Integer as u64, false),
             )
             .unwrap();
-        
+
         let data_ptr = self_compiler
             .builder
-            .build_struct_gep(self_compiler.runtime_value_type, result_ptr, 1, "res_data_ptr")
+            .build_struct_gep(
+                self_compiler.runtime_value_type,
+                result_ptr,
+                1,
+                "res_data_ptr",
+            )
             .unwrap();
         self_compiler
             .builder
             .build_store(data_ptr, val_i64)
             .unwrap();
-        
     } else if return_type.is_float_type() {
         let float_val = result_val.into_float_value();
 
-        let val_f64 = self_compiler.builder.build_float_ext(float_val, self_compiler.context.f64_type(), "float_to_f64").unwrap();
+        let val_f64 = self_compiler
+            .builder
+            .build_float_ext(float_val, self_compiler.context.f64_type(), "float_to_f64")
+            .unwrap();
 
-        let data = self_compiler.builder.build_bit_cast(val_f64, self_compiler.context.i64_type(), "f64_to_i64").unwrap().into_int_value();
-        
+        let data = self_compiler
+            .builder
+            .build_bit_cast(val_f64, self_compiler.context.i64_type(), "f64_to_i64")
+            .unwrap()
+            .into_int_value();
+
         let tag_ptr = self_compiler
             .builder
-            .build_struct_gep(self_compiler.runtime_value_type, result_ptr, 0, "res_tag_ptr")
+            .build_struct_gep(
+                self_compiler.runtime_value_type,
+                result_ptr,
+                0,
+                "res_tag_ptr",
+            )
             .unwrap();
         self_compiler
             .builder
@@ -1205,22 +1229,68 @@ fn box_return_value<'ctx>(
 
         let data_ptr = self_compiler
             .builder
-            .build_struct_gep(self_compiler.runtime_value_type, result_ptr, 1, "res_data_ptr")
+            .build_struct_gep(
+                self_compiler.runtime_value_type,
+                result_ptr,
+                1,
+                "res_data_ptr",
+            )
             .unwrap();
-        self_compiler
-            .builder
-            .build_store(data_ptr, data)
-            .unwrap();
-        
+        self_compiler.builder.build_store(data_ptr, data).unwrap();
     } else if return_type.is_struct_type() {
         self_compiler
             .builder
             .build_store(result_ptr, result_val)
             .unwrap();
+    } else if return_type.is_pointer_type() {
+        let ptr_val = result_val.into_pointer_value();
+        let ptr_as_i64 = self_compiler
+            .builder
+            .build_ptr_to_int(ptr_val, self_compiler.context.i64_type(), "ptr_to_i64")
+            .unwrap();
+
+        let tag_ptr = self_compiler
+            .builder
+            .build_struct_gep(
+                self_compiler.runtime_value_type,
+                result_ptr,
+                0,
+                "res_tag_ptr",
+            )
+            .unwrap();
+        self_compiler
+            .builder
+            .build_store(
+                tag_ptr,
+                self_compiler
+                    .context
+                    .i32_type()
+                    .const_int(Tag::String as u64, false),
+            )
+            .unwrap();
+
+        let data_ptr = self_compiler
+            .builder
+            .build_struct_gep(
+                self_compiler.runtime_value_type,
+                result_ptr,
+                1,
+                "res_data_ptr",
+            )
+            .unwrap();
+        self_compiler
+            .builder
+            .build_store(data_ptr, ptr_as_i64)
+            .unwrap();
     } else {
         let tag_ptr = self_compiler
             .builder
-            .build_struct_gep(self_compiler.runtime_value_type, result_ptr, 0, "res_tag_ptr")
+            .build_struct_gep(
+                self_compiler.runtime_value_type,
+                result_ptr,
+                0,
+                "res_tag_ptr",
+            )
             .unwrap();
         self_compiler
             .builder
@@ -1306,7 +1376,7 @@ pub fn create_call_expr<'ctx>(
         compiled_args.push(temp_arg_ptr.into());
 
         if let ast::Expr::Var(name) = arg {
-            if let Some(var_ptr_enum) = self_compiler.variables.get(name) {
+            if let Some((var_ptr_enum, _)) = self_compiler.variables.get(name) {
                 let var_ptr = var_ptr_enum.into_pointer_value();
 
                 let current_tag = val_tag.into_int_value();
@@ -1431,11 +1501,12 @@ pub fn create_call_expr<'ctx>(
     let return_type = return_type_opt.unwrap();
     let result_val = match call_site.try_as_basic_value() {
         ValueKind::Basic(val) => val,
-        ValueKind::Instruction(_) => return Err("Expected basic value from function call".to_string()),
+        ValueKind::Instruction(_) => {
+            return Err("Expected basic value from function call".to_string());
+        }
     };
 
     box_return_value(self_compiler, return_type, result_val)
-    
 }
 
 pub fn create_add_expr<'ctx>(

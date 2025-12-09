@@ -1,6 +1,7 @@
 use crate::command_helper;
 use crate::front::ast;
 use crate::interpreter::runner::parse_only;
+use crate::interpreter::type_helper;
 use crate::interpreter::type_helper::Type;
 use crate::llvm::builder_helper;
 use crate::llvm::builder_helper::Comparison;
@@ -14,13 +15,14 @@ use inkwell::module::Module;
 use inkwell::types::{BasicMetadataTypeEnum, StructType};
 use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue, ValueKind};
 use std::collections::HashMap;
+use std::f32::consts::E;
 use std::result;
 
 pub struct Compiler<'ctx> {
     pub context: &'ctx Context,
     pub modules: HashMap<String, Module<'ctx>>, // name, module
     pub builder: Builder<'ctx>,
-    pub variables: HashMap<String, BasicValueEnum<'ctx>>,
+    pub variables: HashMap<String, (BasicValueEnum<'ctx>, Type)>,
     pub function_signatures: Option<FunctionValue<'ctx>>,
     pub runtime_value_type: StructType<'ctx>,
     pub target_os: OS,
@@ -272,7 +274,10 @@ impl<'ctx> Compiler<'ctx> {
             match ret_ty {
                 Type::Any => self.runtime_value_type.fn_type(&arg_types, false),
                 Type::Int => self.context.i64_type().fn_type(&arg_types, false),
-                Type::Str => self.context.ptr_type(AddressSpace::default()).fn_type(&arg_types, false),
+                Type::Str => self
+                    .context
+                    .ptr_type(AddressSpace::default())
+                    .fn_type(&arg_types, false),
                 Type::Float => self.context.f64_type().fn_type(&arg_types, false),
                 Type::Bool => self.context.bool_type().fn_type(&arg_types, false),
                 Type::Unit => self.context.void_type().fn_type(&arg_types, false),
@@ -335,6 +340,54 @@ impl<'ctx> Compiler<'ctx> {
         }
     }
 
+    fn infer_type(&self, expr: &ast::Expr) -> Type {
+        match expr {
+            ast::Expr::Number(_) => Type::Int,
+            ast::Expr::Float(_) => Type::Float,
+            ast::Expr::Str(_) => Type::Str,
+            ast::Expr::Bool(_) => Type::Bool,
+            ast::Expr::Unit() => Type::Unit,
+            ast::Expr::Var(name) => self
+                .variables
+                .get(name)
+                .map(|(_, ty)| ty.clone())
+                .unwrap_or(Type::Any),
+            ast::Expr::TypeI8 => Type::TypeI8,
+            ast::Expr::TypeU8 => Type::TypeU8,
+            ast::Expr::TypeI16 => Type::TypeI16,
+            ast::Expr::TypeU16 => Type::TypeU16,
+            ast::Expr::TypeI32 => Type::TypeI32,
+            ast::Expr::TypeU32 => Type::TypeU32,
+            ast::Expr::TypeI64 => Type::TypeI64,
+            ast::Expr::TypeU64 => Type::TypeU64,
+            ast::Expr::TypeF16 => Type::TypeF16,
+            ast::Expr::TypeF32 => Type::TypeF32,
+            ast::Expr::TypeF64 => Type::TypeF64,
+            ast::Expr::Add(lhs, _)
+            | ast::Expr::Mul(lhs, _)
+            | ast::Expr::Minus(lhs, _)
+            | ast::Expr::Div(lhs, _)
+            | ast::Expr::Mod(lhs, _) => self.infer_type(lhs),
+            ast::Expr::If(_, then, if_else) => {
+                let then_ty = self.infer_type(then);
+                let else_ty = self.infer_type(if_else);
+                if then_ty == else_ty {
+                    then_ty
+                } else {
+                    Type::Any
+                }
+            }
+            &ast::Expr::Call(_, _, ref ret_ty_opt) => {
+                if let Some(ret_ty) = ret_ty_opt {
+                    ret_ty.clone()
+                } else {
+                    Type::Any
+                }
+            }
+            _ => Type::Any,
+        }
+    }
+
     pub fn compile_fn(
         &mut self,
         func: &ast::Function,
@@ -366,7 +419,8 @@ impl<'ctx> Compiler<'ctx> {
                 .build_alloca(self.runtime_value_type, &param.ident)
                 .unwrap();
             let _ = self.builder.build_store(alloca, arg_val);
-            self.variables.insert(param.ident.clone(), alloca.into());
+            self.variables
+                .insert(param.ident.clone(), (alloca.into(), Type::Any));
         }
 
         self.compile_block(&func.blk, module)?;
@@ -400,7 +454,10 @@ impl<'ctx> Compiler<'ctx> {
                         .compile_expr(&var.expr.as_ref().unwrap_or(&ast::Expr::Unit()), module)?
                         .into_pointer_value();
 
-                    if let Some(&existing) = self.variables.get(&var.ident) {
+                    let var_type =
+                        self.infer_type(&var.expr.as_ref().unwrap_or(&ast::Expr::Unit()));
+
+                    if let Some((existing, _)) = self.variables.get(&var.ident) {
                         let ptr = existing.into_pointer_value();
 
                         builder_helper::load_at_init_variable_with_existing(
@@ -408,8 +465,9 @@ impl<'ctx> Compiler<'ctx> {
                         );
 
                         if let Some(ast::Expr::Var(src_val_name)) = &var.expr {
-                            if let Some(&src_ptr_enum) = self.variables.get(src_val_name) {
-                                builder_helper::move_variable(self, &src_ptr_enum, &var.ident);
+                            let var_val = self.variables.get(src_val_name).map(|(v, _)| *v);
+                            if let Some(val) = var_val {
+                                builder_helper::move_variable(self, &val, &var.ident);
                             }
                         }
                         local_vars.push(var.ident.clone());
@@ -417,12 +475,14 @@ impl<'ctx> Compiler<'ctx> {
                         let ptr =
                             builder_helper::var_load_at_init_variable(self, init_val, &var.ident);
                         if let Some(ast::Expr::Var(src_val_name)) = &var.expr {
-                            if let Some(&src_ptr_enum) = self.variables.get(src_val_name) {
-                                builder_helper::move_variable(self, &src_ptr_enum, &var.ident);
+                            let var_val = self.variables.get(src_val_name).map(|(v, _)| *v);
+                            if let Some(val) = var_val {
+                                builder_helper::move_variable(self, &val, &var.ident);
                             }
                         }
                         local_vars.push(var.ident.clone());
-                        self.variables.insert(var.ident.clone(), ptr.into());
+                        self.variables
+                            .insert(var.ident.clone(), (ptr.into(), var_type));
                     }
                 }
                 ast::Stmt::Return(expr_opt) => {
@@ -430,13 +490,55 @@ impl<'ctx> Compiler<'ctx> {
                         let ptr = self.compile_expr(expr, module)?.into_pointer_value();
 
                         if let ast::Expr::Var(name) = expr {
-                            if let Some(&var_ptr_enum) = self.variables.get(name) {
-                                builder_helper::var_return_store(self, &var_ptr_enum, name);
+                            let var_val = self.variables.get(name).map(|(v, _)| *v);
+                            if let Some(val) = var_val {
+                                let val_ptr = val.into_pointer_value();
+                                builder_helper::var_return_store(self, &val_ptr.into(), name);
                             }
                         }
 
                         let current_fn = self.function_signatures.unwrap();
                         let return_type = current_fn.get_type().get_return_type();
+
+                        let expr_type = self.infer_type(expr);
+
+                        if let Some(ret_ty) = return_type {
+                            if ret_ty.is_pointer_type() {
+                                let llvm_int_ty = type_helper::is_int_type_in_llvm();
+                                if llvm_int_ty.contains(&expr_type) {
+                                    return Err(format!(
+                                        "Type mismatch: Function expects pointer type (e.g. str) but got {:?} from expression {:?}",
+                                        expr_type, expr
+                                    ));
+                                }
+                            } else if ret_ty.is_int_type() {
+                                let width = ret_ty.into_int_type().get_bit_width();
+                                if width == 1 {
+                                    if expr_type != Type::Bool {
+                                        return Err(format!(
+                                            "Type mismatch: Function expects Bool but got {:?} from expression {:?}",
+                                            expr_type, expr
+                                        ));
+                                    }
+                                } else {
+                                    let llvm_not_int = type_helper::not_int_type_in_llvm();
+                                    if llvm_not_int.contains(&expr_type) {
+                                        return Err(format!(
+                                            "Type mismatch: Function expects Int type but got {:?} from expression {:?}",
+                                            expr_type, expr
+                                        ));
+                                    }
+                                }
+                            } else if ret_ty.is_float_type() {
+                                let llvm_float_ty = type_helper::is_float_type_in_llvm();
+                                if !llvm_float_ty.contains(&expr_type) {
+                                    return Err(format!(
+                                        "Type mismatch: Function expects Float type but got {:?} from expression {:?}",
+                                        expr_type, expr
+                                    ));
+                                }
+                            }
+                        }
 
                         if let Some(ret_ty) = return_type {
                             if ret_ty == self.runtime_value_type.into() {
@@ -447,43 +549,65 @@ impl<'ctx> Compiler<'ctx> {
                                 Some(val)
                             } else {
                                 let data_ptr = self
-                                .builder
-                                .build_struct_gep(self.runtime_value_type, ptr, 1, "data_ptr")
-                                .unwrap();
-                            let data_val = self
-                                .builder
-                                .build_load(self.context.i64_type(), data_ptr, "data_load")
-                                .unwrap()
-                                .into_int_value();
+                                    .builder
+                                    .build_struct_gep(self.runtime_value_type, ptr, 1, "data_ptr")
+                                    .unwrap();
+                                let data_val = self
+                                    .builder
+                                    .build_load(self.context.i64_type(), data_ptr, "data_load")
+                                    .unwrap()
+                                    .into_int_value();
 
-                            let casted_val : BasicValueEnum = if ret_ty.is_int_type() {
-                                let int_type = ret_ty.into_int_type();
-                                if int_type.get_bit_width() < 64 {
-                                    self.builder.build_int_truncate(data_val, int_type, "truncated").unwrap().into()
-                                } else {
-                                    data_val.into()
-                                }
-                            } else if ret_ty.is_float_type() {
-                                let float_type = ret_ty.into_float_type();
-                                let f64_val = self.builder.build_bit_cast(data_val, self.context.f64_type(), "casted_float").unwrap().into_float_value();
+                                let casted_val: BasicValueEnum = if ret_ty.is_int_type() {
+                                    let int_type = ret_ty.into_int_type();
+                                    if int_type.get_bit_width() < 64 {
+                                        self.builder
+                                            .build_int_truncate(data_val, int_type, "truncated")
+                                            .unwrap()
+                                            .into()
+                                    } else {
+                                        data_val.into()
+                                    }
+                                } else if ret_ty.is_float_type() {
+                                    let float_type = ret_ty.into_float_type();
+                                    let f64_val = self
+                                        .builder
+                                        .build_bit_cast(
+                                            data_val,
+                                            self.context.f64_type(),
+                                            "casted_float",
+                                        )
+                                        .unwrap()
+                                        .into_float_value();
 
-                                if float_type.get_bit_width() == 32 {
-                                    self.builder.build_float_trunc(f64_val, float_type, "truncated_float").unwrap().into()
+                                    if float_type.get_bit_width() == 32 {
+                                        self.builder
+                                            .build_float_trunc(
+                                                f64_val,
+                                                float_type,
+                                                "truncated_float",
+                                            )
+                                            .unwrap()
+                                            .into()
+                                    } else {
+                                        f64_val.into()
+                                    }
+                                } else if ret_ty.is_pointer_type() {
+                                    let ptr_type = ret_ty.into_pointer_type();
+                                    let i8_ptr = self
+                                        .builder
+                                        .build_int_to_ptr(data_val, ptr_type, "int_to_ptr")
+                                        .unwrap()
+                                        .into();
+                                    i8_ptr
                                 } else {
-                                    f64_val.into()
-                                }
-                            } else if ret_ty.is_pointer_type() {
-                                let ptr_type = ret_ty.into_pointer_type();
-                                let i8_ptr = self.builder.build_int_to_ptr(data_val, ptr_type, "int_to_ptr").unwrap().into();
-                                i8_ptr
-                            } else {
-                                return Err("Unsupported return type conversion".to_string());
-                            };
-                            Some(casted_val)
+                                    return Err("Unsupported return type conversion".to_string());
+                                };
+                                Some(casted_val)
+                            }
+                        } else {
+                            None
                         }
-                    } else {
-                        None
-                    }
                     } else {
                         None
                     };
@@ -497,7 +621,7 @@ impl<'ctx> Compiler<'ctx> {
                         .is_none()
                     {
                         for var_name in local_vars.iter().rev() {
-                            if let Some(val_enum) = self.variables.get(var_name) {
+                            if let Some((val_enum, _)) = self.variables.get(var_name) {
                                 let ptr = val_enum.into_pointer_value();
 
                                 builder_helper::drop_var(self, ptr, drop_fn, var_name);
@@ -536,7 +660,7 @@ impl<'ctx> Compiler<'ctx> {
             .is_none()
         {
             for var_name in local_vars.iter().rev() {
-                if let Some(val_enum) = self.variables.get(var_name) {
+                if let Some((val_enum, _)) = self.variables.get(var_name) {
                     let ptr = val_enum.into_pointer_value();
 
                     builder_helper::drop_var(self, ptr, drop_fn, var_name);
@@ -614,7 +738,7 @@ impl<'ctx> Compiler<'ctx> {
                 result
             }
             ast::Expr::Var(ident) => {
-                if let Some(var_addr) = self.variables.get(ident) {
+                if let Some((var_addr, _)) = self.variables.get(ident) {
                     Ok(*var_addr)
                 } else {
                     Err(format!("Undefined variable: {}", ident))
