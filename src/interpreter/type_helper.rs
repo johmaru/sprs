@@ -9,6 +9,8 @@ pub enum Type {
     Bool,
     Str,
     Unit,
+    Enum,
+    Struct(String),
 
     // System types
     TypeI8,

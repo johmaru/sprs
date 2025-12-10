@@ -62,6 +62,31 @@ pub fn create_panic_err<'ctx>(
     Ok(())
 }
 
+fn create_entry_block_alloca<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+    name: &str,
+) -> PointerValue<'ctx> {
+    let builder = &self_compiler.builder;
+    let current_block = builder.get_insert_block().unwrap();
+    let function = current_block.get_parent().unwrap();
+    let entry_block = function.get_first_basic_block().unwrap();
+
+    match entry_block.get_first_instruction() {
+        Some(first_instr) => builder.position_before(&first_instr),
+        None => builder.position_at_end(entry_block),
+    }
+
+    let alloca = builder
+        .build_alloca(
+            self_compiler.runtime_value_type,
+            format!("{}_var_alloca", name).as_str(),
+        )
+        .unwrap();
+
+    builder.position_at_end(current_block);
+    alloca
+}
+
 // !normal functions
 
 pub fn create_list_from_expr<'ctx>(
@@ -262,10 +287,7 @@ pub fn var_load_at_init_variable<'ctx>(
     init_value: PointerValue<'ctx>,
     name: &str,
 ) -> PointerValue<'ctx> {
-    let ptr = self_compiler
-        .builder
-        .build_alloca(self_compiler.runtime_value_type, name)
-        .unwrap();
+    let ptr = create_entry_block_alloca(self_compiler, name);
 
     let val = self_compiler
         .builder
@@ -341,10 +363,7 @@ pub fn drop_var<'ctx>(
 }
 
 pub fn create_dummy_for_no_return<'ctx>(self_compiler: &mut Compiler<'ctx>) {
-    let dummy = self_compiler
-        .builder
-        .build_alloca(self_compiler.runtime_value_type, "ret_dummy")
-        .unwrap();
+    let dummy = create_entry_block_alloca(self_compiler, "ret_dummy");
     let tag_ptr = self_compiler
         .builder
         .build_struct_gep(self_compiler.runtime_value_type, dummy, 0, "ret_dummy_tag")
@@ -545,10 +564,7 @@ pub fn create_integer<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
     n: &i64,
 ) -> Result<BasicValueEnum<'ctx>, String> {
-    let ptr = self_compiler
-        .builder
-        .build_alloca(self_compiler.runtime_value_type, "num_alloc")
-        .unwrap();
+    let ptr = create_entry_block_alloca(self_compiler, "num_alloc");
 
     let tag_ptr = self_compiler
         .builder
@@ -584,10 +600,7 @@ pub fn create_float<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
     f: f64,
 ) -> Result<BasicValueEnum<'ctx>, String> {
-    let ptr = self_compiler
-        .builder
-        .build_alloca(self_compiler.runtime_value_type, "float_alloc")
-        .unwrap();
+    let ptr = create_entry_block_alloca(self_compiler, "float_alloc");
 
     let tag_ptr = self_compiler
         .builder
@@ -644,10 +657,7 @@ pub fn create_string<'ctx>(
         global
     };
 
-    let ptr = self_compiler
-        .builder
-        .build_alloca(self_compiler.runtime_value_type, "str_alloc")
-        .unwrap();
+    let ptr = create_entry_block_alloca(self_compiler, "str_alloc");
 
     let tag_ptr = self_compiler
         .builder
@@ -685,10 +695,7 @@ pub fn create_bool<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
     boolean: &bool,
 ) -> Result<BasicValueEnum<'ctx>, String> {
-    let ptr = self_compiler
-        .builder
-        .build_alloca(self_compiler.runtime_value_type, "bool_alloc")
-        .unwrap();
+    let ptr = create_entry_block_alloca(self_compiler, "bool_alloc");
 
     let tag_ptr = self_compiler
         .builder
@@ -724,10 +731,7 @@ pub fn create_bool<'ctx>(
 pub fn create_int8<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
-    let ptr = self_compiler
-        .builder
-        .build_alloca(self_compiler.runtime_value_type, "int8_alloc")
-        .unwrap();
+    let ptr = create_entry_block_alloca(self_compiler, "int8_alloc");
 
     let tag_ptr = self_compiler
         .builder
@@ -762,10 +766,7 @@ pub fn create_int8<'ctx>(
 pub fn create_uint8<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
-    let ptr = self_compiler
-        .builder
-        .build_alloca(self_compiler.runtime_value_type, "uint8_alloc")
-        .unwrap();
+    let ptr = create_entry_block_alloca(self_compiler, "uint8_alloc");
 
     let tag_ptr = self_compiler
         .builder
@@ -800,10 +801,7 @@ pub fn create_uint8<'ctx>(
 pub fn create_int16<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
-    let ptr = self_compiler
-        .builder
-        .build_alloca(self_compiler.runtime_value_type, "int16_alloc")
-        .unwrap();
+    let ptr = create_entry_block_alloca(self_compiler, "int16_alloc");
 
     let tag_ptr = self_compiler
         .builder
@@ -838,10 +836,7 @@ pub fn create_int16<'ctx>(
 pub fn create_uint16<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
-    let ptr = self_compiler
-        .builder
-        .build_alloca(self_compiler.runtime_value_type, "uint16_alloc")
-        .unwrap();
+    let ptr = create_entry_block_alloca(self_compiler, "uint16_alloc");
 
     let tag_ptr = self_compiler
         .builder
@@ -876,10 +871,7 @@ pub fn create_uint16<'ctx>(
 pub fn create_int32<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
-    let ptr = self_compiler
-        .builder
-        .build_alloca(self_compiler.runtime_value_type, "int32_alloc")
-        .unwrap();
+    let ptr = create_entry_block_alloca(self_compiler, "int32_alloc");
 
     let tag_ptr = self_compiler
         .builder
@@ -914,10 +906,7 @@ pub fn create_int32<'ctx>(
 pub fn create_uint32<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
-    let ptr = self_compiler
-        .builder
-        .build_alloca(self_compiler.runtime_value_type, "uint32_alloc")
-        .unwrap();
+    let ptr = create_entry_block_alloca(self_compiler, "uint32_alloc");
 
     let tag_ptr = self_compiler
         .builder
@@ -952,10 +941,7 @@ pub fn create_uint32<'ctx>(
 pub fn create_int64<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
-    let ptr = self_compiler
-        .builder
-        .build_alloca(self_compiler.runtime_value_type, "int64_alloc")
-        .unwrap();
+    let ptr = create_entry_block_alloca(self_compiler, "int64_alloc");
 
     let tag_ptr = self_compiler
         .builder
@@ -990,10 +976,7 @@ pub fn create_int64<'ctx>(
 pub fn create_uint64<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
-    let ptr = self_compiler
-        .builder
-        .build_alloca(self_compiler.runtime_value_type, "uint64_alloc")
-        .unwrap();
+    let ptr = create_entry_block_alloca(self_compiler, "uint64_alloc");
 
     let tag_ptr = self_compiler
         .builder
@@ -1028,10 +1011,7 @@ pub fn create_uint64<'ctx>(
 pub fn create_float16<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
-    let ptr = self_compiler
-        .builder
-        .build_alloca(self_compiler.runtime_value_type, "f16_alloc")
-        .unwrap();
+    let ptr = create_entry_block_alloca(self_compiler, "f16_alloc");
 
     let tag_ptr = self_compiler
         .builder
@@ -1066,10 +1046,7 @@ pub fn create_float16<'ctx>(
 pub fn create_float32<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
-    let ptr = self_compiler
-        .builder
-        .build_alloca(self_compiler.runtime_value_type, "f32_alloc")
-        .unwrap();
+    let ptr = create_entry_block_alloca(self_compiler, "f32_alloc");
 
     let tag_ptr = self_compiler
         .builder
@@ -1104,10 +1081,7 @@ pub fn create_float32<'ctx>(
 pub fn create_float64<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
-    let ptr = self_compiler
-        .builder
-        .build_alloca(self_compiler.runtime_value_type, "f64_alloc")
-        .unwrap();
+    let ptr = create_entry_block_alloca(self_compiler, "f64_alloc");
 
     let tag_ptr = self_compiler
         .builder
@@ -1144,13 +1118,7 @@ fn box_return_value<'ctx>(
     return_type: inkwell::types::BasicTypeEnum<'ctx>,
     result_val: BasicValueEnum<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
-    let result_ptr = self_compiler
-        .builder
-        .build_alloca(
-            self_compiler.runtime_value_type,
-            "compile_expr_call_res_alloc",
-        )
-        .unwrap();
+    let result_ptr = create_entry_block_alloca(self_compiler, "compile_expr_call_res_alloc");
 
     if return_type.is_int_type() {
         let int_val = result_val.into_int_value();
@@ -1326,10 +1294,7 @@ pub fn create_call_expr<'ctx>(
         let arg_val = self_compiler.compile_expr(arg, module)?;
         let arg_ptr = arg_val.into_pointer_value();
 
-        let temp_arg_ptr = self_compiler
-            .builder
-            .build_alloca(self_compiler.runtime_value_type, "arg_tmp_alloc")
-            .unwrap();
+        let temp_arg_ptr = create_entry_block_alloca(self_compiler, "compile_expr_arg_alloc");
         let val_tag_ptr = self_compiler
             .builder
             .build_struct_gep(self_compiler.runtime_value_type, arg_ptr, 0, "val_tag_ptr")
@@ -1376,7 +1341,7 @@ pub fn create_call_expr<'ctx>(
         compiled_args.push(temp_arg_ptr.into());
 
         if let ast::Expr::Var(name) = arg {
-            if let Some((var_ptr_enum, _)) = self_compiler.variables.get(name) {
+            if let Some((var_ptr_enum, _)) = self_compiler.get_variables(name) {
                 let var_ptr = var_ptr_enum.into_pointer_value();
 
                 let current_tag = val_tag.into_int_value();
@@ -1993,10 +1958,7 @@ fn create_add_expr_build_int_branch<'ctx>(
         .build_int_add(l_int_val, r_int_val, "int_sum")
         .unwrap();
 
-    let int_res_ptr = self_compiler
-        .builder
-        .build_alloca(self_compiler.runtime_value_type, "int_res_alloc")
-        .unwrap();
+    let int_res_ptr = create_entry_block_alloca(self_compiler, "int_res_alloc");
     let int_res_tag_ptr = self_compiler
         .builder
         .build_struct_gep(
@@ -2239,10 +2201,7 @@ fn create_add_expr_build_float_branch<'ctx>(
     ]);
     let res_data = phi.as_basic_value().into_int_value();
 
-    let float_res_ptr = self_compiler
-        .builder
-        .build_alloca(self_compiler.runtime_value_type, "float_res_alloc")
-        .unwrap();
+    let float_res_ptr = create_entry_block_alloca(self_compiler, "float_res_alloc");
     let float_res_tag_ptr = self_compiler
         .builder
         .build_struct_gep(
@@ -2401,10 +2360,7 @@ fn create_add_expr_build_string_branch<'ctx>(
         .build_store(end_ptr, self_compiler.context.i8_type().const_int(0, false))
         .unwrap();
 
-    let str_res_ptr = self_compiler
-        .builder
-        .build_alloca(self_compiler.runtime_value_type, "str_res_alloc")
-        .unwrap();
+    let str_res_ptr = create_entry_block_alloca(self_compiler, "str_res_alloc");
 
     let str_res_tag_ptr = self_compiler
         .builder
@@ -2501,10 +2457,7 @@ fn create_int8_add_logic<'ctx>(
         .builder
         .build_int_s_extend(res_i8, self_compiler.context.i64_type(), "i8_sum_ext")
         .unwrap();
-    let res_ptr = self_compiler
-        .builder
-        .build_alloca(self_compiler.runtime_value_type, "res_alloc")
-        .unwrap();
+    let res_ptr = create_entry_block_alloca(self_compiler, "int8_add_res_alloc");
 
     let res_tag_ptr = self_compiler
         .builder
@@ -2583,10 +2536,7 @@ fn create_uint8_add_logic<'ctx>(
         .builder
         .build_int_z_extend(res_u8, self_compiler.context.i64_type(), "u8_sum_ext")
         .unwrap();
-    let res_ptr = self_compiler
-        .builder
-        .build_alloca(self_compiler.runtime_value_type, "res_alloc")
-        .unwrap();
+    let res_ptr = create_entry_block_alloca(self_compiler, "uint8_add_res_alloc");
 
     let res_tag_ptr = self_compiler
         .builder
@@ -2665,10 +2615,7 @@ fn create_int16_add_logic<'ctx>(
         .builder
         .build_int_s_extend(res_i16, _self_compiler.context.i64_type(), "i16_sum_ext")
         .unwrap();
-    let res_ptr = _self_compiler
-        .builder
-        .build_alloca(_self_compiler.runtime_value_type, "res_alloc")
-        .unwrap();
+    let res_ptr = create_entry_block_alloca(_self_compiler, "int16_add_res_alloc");
     let res_tag_ptr = _self_compiler
         .builder
         .build_struct_gep(_self_compiler.runtime_value_type, res_ptr, 0, "res_tag_ptr")
@@ -2751,10 +2698,7 @@ fn create_uint16_add_logic<'ctx>(
         .builder
         .build_int_z_extend(res_u16, _self_compiler.context.i64_type(), "u16_sum_ext")
         .unwrap();
-    let res_ptr = _self_compiler
-        .builder
-        .build_alloca(_self_compiler.runtime_value_type, "res_alloc")
-        .unwrap();
+    let res_ptr = create_entry_block_alloca(_self_compiler, "uint16_add_res_alloc");
     let res_tag_ptr = _self_compiler
         .builder
         .build_struct_gep(_self_compiler.runtime_value_type, res_ptr, 0, "res_tag_ptr")
@@ -2837,10 +2781,7 @@ fn create_int32_add_logic<'ctx>(
         .builder
         .build_int_s_extend(res_i32, _self_compiler.context.i64_type(), "i32_sum_ext")
         .unwrap();
-    let res_ptr = _self_compiler
-        .builder
-        .build_alloca(_self_compiler.runtime_value_type, "res_alloc")
-        .unwrap();
+    let res_ptr = create_entry_block_alloca(_self_compiler, "int32_add_res_alloc");
     let res_tag_ptr = _self_compiler
         .builder
         .build_struct_gep(_self_compiler.runtime_value_type, res_ptr, 0, "res_tag_ptr")
@@ -2923,10 +2864,7 @@ fn create_uint32_add_logic<'ctx>(
         .builder
         .build_int_z_extend(res_u32, _self_compiler.context.i64_type(), "u32_sum_ext")
         .unwrap();
-    let res_ptr = _self_compiler
-        .builder
-        .build_alloca(_self_compiler.runtime_value_type, "res_alloc")
-        .unwrap();
+    let res_ptr = create_entry_block_alloca(_self_compiler, "uint32_add_res_alloc");
     let res_tag_ptr = _self_compiler
         .builder
         .build_struct_gep(_self_compiler.runtime_value_type, res_ptr, 0, "res_tag_ptr")
@@ -2996,10 +2934,7 @@ fn create_int64_add_logic<'ctx>(
         .build_int_add(l_val, r_val, "i64_sum")
         .unwrap();
 
-    let res_ptr = self_compiler
-        .builder
-        .build_alloca(self_compiler.runtime_value_type, "res_alloc")
-        .unwrap();
+    let res_ptr = create_entry_block_alloca(self_compiler, "int64_add_res_alloc");
 
     let res_tag_ptr = self_compiler
         .builder
@@ -3066,10 +3001,7 @@ fn create_uint64_add_logic<'ctx>(
         .build_int_add(l_val, r_val, "u64_sum")
         .unwrap();
 
-    let res_ptr = self_compiler
-        .builder
-        .build_alloca(self_compiler.runtime_value_type, "res_alloc")
-        .unwrap();
+    let res_ptr = create_entry_block_alloca(self_compiler, "uint64_add_res_alloc");
 
     let res_tag_ptr = self_compiler
         .builder
@@ -3164,10 +3096,7 @@ fn create_float16_add_logic<'ctx>(
         .builder
         .build_int_s_extend(res_i16, _self_compiler.context.i64_type(), "f16_sum_to_i64")
         .unwrap();
-    let res_ptr = _self_compiler
-        .builder
-        .build_alloca(_self_compiler.runtime_value_type, "res_alloc")
-        .unwrap();
+    let res_ptr = create_entry_block_alloca(_self_compiler, "float16_add_res_alloc");
     let res_tag_ptr = _self_compiler
         .builder
         .build_struct_gep(_self_compiler.runtime_value_type, res_ptr, 0, "res_tag_ptr")
@@ -3268,10 +3197,7 @@ fn create_float32_add_logic<'ctx>(
         .builder
         .build_int_z_extend(res_i32, self_compiler.context.i64_type(), "f32_sum_to_i64")
         .unwrap();
-    let res_ptr = self_compiler
-        .builder
-        .build_alloca(self_compiler.runtime_value_type, "res_alloc")
-        .unwrap();
+    let res_ptr = create_entry_block_alloca(self_compiler, "float32_add_res_alloc");
     let res_tag_ptr = self_compiler
         .builder
         .build_struct_gep(self_compiler.runtime_value_type, res_ptr, 0, "res_tag_ptr")
@@ -3352,10 +3278,7 @@ fn create_float64_add_logic<'ctx>(
         .unwrap()
         .into_int_value();
 
-    let res_ptr = self_compiler
-        .builder
-        .build_alloca(self_compiler.runtime_value_type, "res_alloc")
-        .unwrap();
+    let res_ptr = create_entry_block_alloca(self_compiler, "float64_add_res_alloc");
     let res_tag_ptr = self_compiler
         .builder
         .build_struct_gep(self_compiler.runtime_value_type, res_ptr, 0, "res_tag_ptr")
@@ -3509,10 +3432,7 @@ where
         },
     )?;
 
-    let res_ptr = self_compiler
-        .builder
-        .build_alloca(self_compiler.runtime_value_type, "res_alloc")
-        .unwrap();
+    let res_ptr = create_entry_block_alloca(self_compiler, "res_alloc");
 
     let res_tag_ptr = self_compiler
         .builder
@@ -3664,10 +3584,7 @@ where
         },
     )?;
 
-    let res_ptr = self_compiler
-        .builder
-        .build_alloca(self_compiler.runtime_value_type, "res_alloc")
-        .unwrap();
+    let res_ptr = create_entry_block_alloca(self_compiler, "eq_or_neq_res_alloc");
 
     let res_tag_ptr = self_compiler
         .builder
@@ -3762,10 +3679,7 @@ where
         },
     )?;
 
-    let res_ptr = self_compiler
-        .builder
-        .build_alloca(self_compiler.runtime_value_type, "res_alloc")
-        .unwrap();
+    let res_ptr = create_entry_block_alloca(self_compiler, "comparison_res_alloc");
 
     let res_tag_ptr = self_compiler
         .builder
@@ -3910,10 +3824,7 @@ pub fn create_list<'ctx>(
     let list_ptr = self_compiler.build_list_from_exprs(elements, module)?;
     let i64_type = self_compiler.context.i64_type();
 
-    let res_ptr = self_compiler
-        .builder
-        .build_alloca(self_compiler.runtime_value_type, "list_res_alloc")
-        .unwrap();
+    let res_ptr = create_entry_block_alloca(self_compiler, "list_res_alloc");
     let res_tag_ptr = self_compiler
         .builder
         .build_struct_gep(self_compiler.runtime_value_type, res_ptr, 0, "res_tag_ptr")
@@ -4081,10 +3992,7 @@ pub fn create_range<'ctx>(
         }
     };
 
-    let res_ptr = self_compiler
-        .builder
-        .build_alloca(self_compiler.runtime_value_type, "range_res_alloc")
-        .unwrap();
+    let res_ptr = create_entry_block_alloca(self_compiler, "range_res_alloc");
 
     let res_tag_ptr = self_compiler
         .builder
@@ -4172,13 +4080,115 @@ pub fn create_module_access<'ctx>(
     box_return_value(self_compiler, return_type, result_val)
 }
 
+pub fn create_field_access<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+    struct_expr: &ast::Expr,
+    field_index: u32,
+    module: &inkwell::module::Module<'ctx>,
+) -> Result<BasicValueEnum<'ctx>, String> {
+    let struct_ptr = self_compiler
+        .compile_expr(struct_expr, module)?
+        .into_pointer_value();
+
+    let struct_data_ptr = self_compiler
+        .builder
+        .build_struct_gep(
+            self_compiler.runtime_value_type,
+            struct_ptr,
+            1,
+            "struct_data_ptr",
+        )
+        .unwrap();
+
+    let heap_ptr_int = self_compiler
+        .builder
+        .build_load(
+            self_compiler.context.i64_type(),
+            struct_data_ptr,
+            "heap_ptr_int",
+        )
+        .unwrap()
+        .into_int_value();
+
+    let heap_ptr = self_compiler
+        .builder
+        .build_int_to_ptr(
+            heap_ptr_int,
+            self_compiler.context.ptr_type(AddressSpace::default()),
+            "heap_ptr",
+        )
+        .unwrap();
+
+    let field_ptr = unsafe {
+        self_compiler
+            .builder
+            .build_gep(
+                self_compiler.runtime_value_type,
+                heap_ptr,
+                &[self_compiler
+                    .context
+                    .i64_type()
+                    .const_int(field_index as u64, false)],
+                "field_ptr",
+            )
+            .unwrap()
+    };
+
+    let field_tag_ptr = self_compiler
+        .builder
+        .build_struct_gep(
+            self_compiler.runtime_value_type,
+            field_ptr,
+            0,
+            "field_tag_ptr",
+        )
+        .unwrap();
+    let field_tag = self_compiler
+        .builder
+        .build_load(self_compiler.context.i32_type(), field_tag_ptr, "field_tag")
+        .unwrap();
+
+    let field_data_ptr = self_compiler
+        .builder
+        .build_struct_gep(
+            self_compiler.runtime_value_type,
+            field_ptr,
+            1,
+            "field_data_ptr",
+        )
+        .unwrap();
+    let field_data = self_compiler
+        .builder
+        .build_load(
+            self_compiler.context.i64_type(),
+            field_data_ptr,
+            "field_data",
+        )
+        .unwrap();
+
+    let res_ptr = create_entry_block_alloca(self_compiler, "field_access_res_alloc");
+
+    let res_tag_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, res_ptr, 0, "res_tag_ptr")
+        .unwrap();
+
+    let res_data_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, res_ptr, 1, "res_data_ptr")
+        .unwrap();
+    self_compiler
+        .builder
+        .build_store(res_tag_ptr, field_tag)
+        .unwrap();
+
+    Ok(res_ptr.into())
+}
+
 pub fn create_unit<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
-    let res_ptr = self_compiler
-        .builder
-        .build_alloca(self_compiler.runtime_value_type, "unit_res")
-        .unwrap();
+    let res_ptr = create_entry_block_alloca(self_compiler, "unit_res_alloc");
     let res_tag_ptr = self_compiler
         .builder
         .build_struct_gep(self_compiler.runtime_value_type, res_ptr, 0, "res_tag_ptr")
@@ -4212,10 +4222,7 @@ pub fn call_builtin_macro_println<'ctx>(
         .build_call(print_fn, &[list_ptr.into()], "println_call")
         .unwrap();
 
-    let res_ptr = self_compiler
-        .builder
-        .build_alloca(self_compiler.runtime_value_type, "unit_res")
-        .unwrap();
+    let res_ptr = create_entry_block_alloca(self_compiler, "println_res_alloc");
     let res_tag_ptr = self_compiler
         .builder
         .build_struct_gep(self_compiler.runtime_value_type, res_ptr, 0, "res_tag_ptr")
@@ -4306,10 +4313,7 @@ pub fn call_builtin_macro_list_push<'ctx>(
         )
         .unwrap();
 
-    let res_ptr = self_compiler
-        .builder
-        .build_alloca(self_compiler.runtime_value_type, "unit_res")
-        .unwrap();
+    let res_ptr = create_entry_block_alloca(self_compiler, "list_push_res_alloc");
     let res_tag_ptr = self_compiler
         .builder
         .build_struct_gep(self_compiler.runtime_value_type, res_ptr, 0, "res_tag_ptr")
@@ -4380,10 +4384,7 @@ pub fn call_builtin_macro_clone<'ctx>(
         ValueKind::Instruction(_) => Err("Expected basic value from clone function".to_string()),
     };
 
-    let result_ptr = self_compiler
-        .builder
-        .build_alloca(self_compiler.runtime_value_type, "clone_res_alloc")
-        .unwrap();
+    let result_ptr = create_entry_block_alloca(self_compiler, "clone_res_alloc");
 
     self_compiler
         .builder
@@ -4829,10 +4830,7 @@ pub fn call_builtin_macro_cast<'ctx>(
         }
     };
 
-    let result_ptr = self_compiler
-        .builder
-        .build_alloca(self_compiler.runtime_value_type, "cast_res_alloc")
-        .unwrap();
+    let result_ptr = create_entry_block_alloca(self_compiler, "cast_res_alloc");
     let res_tag_ptr = self_compiler
         .builder
         .build_struct_gep(

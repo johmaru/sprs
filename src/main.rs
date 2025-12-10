@@ -350,6 +350,16 @@ fn main() {
             return;
         }
 
+        if command == "debug" {
+            if argc > 2 {
+                println!("not supported yet with arguments.");
+            } else {
+                println!("interpreter currently not support yet.");
+                llvm_executer::build_and_run(argv[0].clone(), llvm_executer::ExecuteMode::Debug);
+            }
+            return;
+        }
+
         if command == "help" {
             let args = get_all_arguments(argv.clone());
 

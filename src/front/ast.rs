@@ -26,6 +26,7 @@ pub enum Expr {
     Range(Box<Expr>, Box<Expr>),             // Start, End
     Index(Box<Expr>, Box<Expr>),             // Collection, Index
     ModuleAccess(String, String, Vec<Expr>), // Module, functionName, args e.g. module.ident
+    FieldAccess(Box<Expr>, String),          // e.g. struct.field
     Unit(),
 
     // System types
@@ -55,6 +56,7 @@ pub enum Item {
     VarItem(VarDecl),
     FunctionItem(Function),
     Preprocessor(String),
+    EnumItem(Enum),
 }
 
 #[derive(Debug, PartialEq)]
@@ -72,10 +74,22 @@ pub struct VarDecl {
     pub ident: String,
     pub expr: Option<Expr>,
 }
+#[derive(Debug, PartialEq)]
+pub struct AssignStmt {
+    pub name: String,
+    pub expr: Expr,
+}
+#[derive(Debug, PartialEq)]
+pub struct Enum {
+    pub ident: String,
+    pub variants: Vec<String>,
+    pub is_public: bool,
+}
 
 #[derive(Debug, PartialEq)]
 pub enum Stmt {
     Var(VarDecl),
+    Assign(AssignStmt),
     Expr(Expr),
     If {
         cond: Expr,
@@ -87,4 +101,5 @@ pub enum Stmt {
         body: Vec<Stmt>,
     },
     Return(Option<Expr>),
+    EnumItem(Enum),
 }

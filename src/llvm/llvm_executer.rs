@@ -17,6 +17,7 @@ const RUNTIME_SOURCE: &str = include_str!("../runtime/runtime.rs");
 pub enum ExecuteMode {
     Build,
     Run,
+    Debug,
 }
 
 pub fn build_and_run(_full_path: String, mode: ExecuteMode) {

@@ -15,7 +15,7 @@ pub enum Token {
     MinusMinus,
     Div,
     Mod,
-    Eq,
+    Assign,
     EqEq,
     Neq,
     Lt,
@@ -43,9 +43,9 @@ pub enum Token {
     Import,
     Var,
     Public,
+    Enum,
 
     // System types
-
     TypeInt,
     TypeFloat,
     TypeBool,
@@ -95,7 +95,7 @@ enum RawTok {
     #[token("%")]
     Mod,
     #[token("=")]
-    Eq,
+    Assign,
     #[token("==")]
     EqEq,
     #[token("!=")]
@@ -159,9 +159,10 @@ enum RawTok {
     Var,
     #[token("pub")]
     Public,
+    #[token("enum")]
+    Enum,
 
     // System types
-
     #[token("int")]
     TypeInt,
     #[token("fp")]
@@ -241,7 +242,7 @@ impl<'input> Iterator for Lexer<'input> {
             RawTok::MinusMinus => Token::MinusMinus,
             RawTok::Div => Token::Div,
             RawTok::Mod => Token::Mod,
-            RawTok::Eq => Token::Eq,
+            RawTok::Assign => Token::Assign,
             RawTok::EqEq => Token::EqEq,
             RawTok::Neq => Token::Neq,
             RawTok::Lt => Token::Lt,
@@ -271,6 +272,7 @@ impl<'input> Iterator for Lexer<'input> {
             RawTok::Import => Token::Import,
             RawTok::Var => Token::Var,
             RawTok::Public => Token::Public,
+            RawTok::Enum => Token::Enum,
             RawTok::Comment => return self.next(),
 
             // System types

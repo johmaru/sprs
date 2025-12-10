@@ -418,6 +418,27 @@ fn execute_block(
                     return Ok(Value::Return(Box::new(Value::Unit)));
                 }
             }
+            ast::Stmt::EnumItem(enm) => {
+                println!("  Enum declarations are not executed at runtime");
+            }
+            ast::Stmt::Assign(assign_stmt) => {
+                println!(
+                    "  Evaluating assignment: {} = {:?}",
+                    assign_stmt.name, assign_stmt.expr
+                );
+                match evalute_expr(&assign_stmt.expr, functions, scope) {
+                    Ok(val) => {
+                        scope.insert(assign_stmt.name.clone(), val.clone());
+                        println!("    Assigned variable {}: {}", assign_stmt.name, val);
+                    }
+                    Err(e) => {
+                        return Err(format!(
+                            "Error evaluating assignment for {}: {}",
+                            assign_stmt.name, e
+                        ));
+                    }
+                }
+            }
         }
     }
     Ok(Value::Unit)
@@ -616,6 +637,14 @@ fn evalute_expr(
         ast::Expr::ModuleAccess(module_name, function_name, args) => {
             // !TODO Implement module access
             Err("Module access not implemented".to_string())
+        }
+        ast::Expr::FieldAccess(struct_expr, field_name) => {
+            let struct_val = evalute_expr(struct_expr, functions, scope)?;
+            // !TODO Implement field access for structs
+            Err(format!(
+                "Field access not implemented for field {}",
+                field_name
+            ))
         }
         ast::Expr::Unit() => Ok(Value::Unit),
     }

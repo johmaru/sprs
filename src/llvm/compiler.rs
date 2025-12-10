@@ -22,13 +22,14 @@ pub struct Compiler<'ctx> {
     pub context: &'ctx Context,
     pub modules: HashMap<String, Module<'ctx>>, // name, module
     pub builder: Builder<'ctx>,
-    pub variables: HashMap<String, (BasicValueEnum<'ctx>, Type)>,
+    pub scopes: Vec<Scope<'ctx>>,
     pub function_signatures: Option<FunctionValue<'ctx>>,
     pub runtime_value_type: StructType<'ctx>,
     pub target_os: OS,
     pub string_constants: HashMap<String, inkwell::values::GlobalValue<'ctx>>,
     pub malloc_type: inkwell::types::FunctionType<'ctx>,
     pub source_path: String,
+    pub struct_defs: HashMap<String, HashMap<String, u32>>, // struct name -> (field name -> field type)
 }
 
 #[derive(PartialEq, Eq, Hash, Clone, Copy)]
@@ -47,6 +48,7 @@ pub enum Tag {
     List = 4,
     Range = 5,
     Unit = 6,
+    Enum = 7,
 
     // System types
     Int8 = 100,
@@ -66,6 +68,20 @@ pub enum Tag {
 const WINDOWS_STR: &str = "Windows";
 const LINUX_STR: &str = "Linux";
 
+pub struct Scope<'ctx> {
+    pub variables: HashMap<String, (BasicValueEnum<'ctx>, Type)>,
+    pub var_name: Vec<String>,
+}
+
+impl<'ctx> Scope<'ctx> {
+    pub fn new() -> Self {
+        Scope {
+            variables: HashMap::new(),
+            var_name: Vec::new(),
+        }
+    }
+}
+
 impl<'ctx> Compiler<'ctx> {
     pub fn new(context: &'ctx Context, builder: Builder<'ctx>, source_path: String) -> Self {
         let runtime_value_type = context.struct_type(
@@ -77,18 +93,111 @@ impl<'ctx> Compiler<'ctx> {
         let i8_ptr_type = context.ptr_type(AddressSpace::default());
         let malloc_type = i8_ptr_type.fn_type(&[i64_type.into()], false);
 
+        // scope index 0 equals global scope
+        let mut scopes = Vec::new();
+        scopes.push(Scope::new());
+
         Compiler {
             context,
             modules: HashMap::new(),
             builder,
-            variables: HashMap::new(),
+            scopes,
             function_signatures: None,
             runtime_value_type,
             target_os: OS::Unknown,
             string_constants: HashMap::new(),
             malloc_type,
             source_path,
+            struct_defs: HashMap::new(),
         }
+    }
+
+    fn enter_scope(&mut self) {
+        self.scopes.push(Scope::new());
+    }
+
+    fn exit_scope(&mut self, module: &Module<'ctx>) {
+        let scope = self.scopes.pop().unwrap();
+
+        if self
+            .builder
+            .get_insert_block()
+            .unwrap()
+            .get_terminator()
+            .is_none()
+        {
+            let drop_fn = self.get_runtime_fn(module, "__drop");
+
+            for name in scope.var_name.iter().rev() {
+                if let Some((val, _)) = scope.variables.get(name) {
+                    if val.is_pointer_value() {
+                        builder_helper::drop_var(self, val.into_pointer_value(), drop_fn, name);
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn get_variables(&self, name: &str) -> Option<(BasicValueEnum<'ctx>, Type)> {
+        for scope in self.scopes.iter().rev() {
+            if let Some(var) = scope.variables.get(name) {
+                return Some(var.clone());
+            }
+        }
+        None
+    }
+
+    pub fn add_variable(&mut self, name: String, value: BasicValueEnum<'ctx>, ty: Type) {
+        if let Some(current_scope) = self.scopes.last_mut() {
+            current_scope.variables.insert(name.clone(), (value, ty));
+            current_scope.var_name.push(name);
+        }
+    }
+
+    pub fn remove_variable(&mut self, name: &str) {
+        if let Some(current_scope) = self.scopes.last_mut() {
+            current_scope.variables.remove(name);
+        }
+    }
+
+    fn emit_drop_for_return(&mut self, module: &Module<'ctx>) {
+        let drop_fn = self.get_runtime_fn(module, "__drop");
+
+        let mut vars_to_drop: Vec<(PointerValue<'ctx>, String)> = Vec::new();
+
+        for scope in self.scopes.iter().skip(1).rev() {
+            for name in scope.var_name.iter().rev() {
+                if let Some((val, _)) = scope.variables.get(name) {
+                    if val.is_pointer_value() {
+                        vars_to_drop.push((val.into_pointer_value(), name.clone()));
+                    }
+                }
+            }
+        }
+
+        for (ptr, var_name) in vars_to_drop.into_iter().rev() {
+            builder_helper::drop_var(self, ptr, drop_fn, &var_name);
+        }
+    }
+
+    pub fn register_struct(&mut self, name: String, fields: Vec<String>) {
+        let mut field_map = HashMap::new();
+        for (i, field) in fields.iter().enumerate() {
+            field_map.insert(field.clone(), i as u32);
+        }
+        self.struct_defs.insert(name, field_map);
+    }
+
+    pub fn get_field_index(&self, struct_name: &str, field_name: &str) -> Result<u32, String> {
+        self.struct_defs
+            .get(struct_name)
+            .and_then(|fields| fields.get(field_name).cloned())
+            .ok_or_else(|| {
+                format!(
+                    "Field '{}' not found in struct '{}'",
+                    field_name, struct_name
+                )
+            })
     }
 
     pub fn build_list_from_exprs(
@@ -188,12 +297,13 @@ impl<'ctx> Compiler<'ctx> {
 
         self.inject_runtime_constants(&module);
 
+        // First, load and compile all imports
         for item in &items {
             if let ast::Item::Import(import_name) = item {
                 self.load_and_compile_module(import_name, None)?;
             }
         }
-
+        // Declare all function prototypes
         for item in &items {
             match item {
                 ast::Item::FunctionItem(func) => {
@@ -203,6 +313,26 @@ impl<'ctx> Compiler<'ctx> {
             }
         }
 
+        let mut private_enum_variants: Vec<String> = Vec::new();
+
+        // get enums
+        for item in &items {
+            match item {
+                ast::Item::EnumItem(enm) => {
+                    self.register_enum(enm);
+
+                    if !enm.is_public {
+                        for variant in &enm.variants {
+                            let full_name = format!("{}.{}", enm.ident, variant);
+                            private_enum_variants.push(full_name);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Now compile all functions
         for item in &items {
             match item {
                 ast::Item::FunctionItem(func) => {
@@ -211,7 +341,6 @@ impl<'ctx> Compiler<'ctx> {
                 _ => {}
             }
         }
-
         if llvm_module_name == "main" {
             if let Some(sprs_main_fn) = module.get_function("_sprs_main") {
                 let i32_type = self.context.i32_type();
@@ -232,6 +361,11 @@ impl<'ctx> Compiler<'ctx> {
         }
 
         self.modules.insert(llvm_module_name, module);
+
+        for private_variant in private_enum_variants {
+            self.remove_variable(&private_variant);
+        }
+
         Ok(())
     }
 
@@ -244,6 +378,25 @@ impl<'ctx> Compiler<'ctx> {
                     self.target_os = OS::Linux;
                 }
             }
+        }
+    }
+
+    fn register_enum(&mut self, enm: &ast::Enum) {
+        if enm.variants.is_empty() {
+            return;
+        }
+
+        for (idx, variant) in enm.variants.iter().enumerate() {
+            let full_name = format!("{}.{}", enm.ident, variant);
+            let tag_value = idx as i32;
+
+            self.add_variable(
+                full_name,
+                BasicValueEnum::IntValue(
+                    self.context.i32_type().const_int(tag_value as u64, false),
+                ),
+                Type::Enum,
+            );
         }
     }
 
@@ -281,6 +434,8 @@ impl<'ctx> Compiler<'ctx> {
                 Type::Float => self.context.f64_type().fn_type(&arg_types, false),
                 Type::Bool => self.context.bool_type().fn_type(&arg_types, false),
                 Type::Unit => self.context.void_type().fn_type(&arg_types, false),
+                Type::Enum => self.context.i64_type().fn_type(&arg_types, false),
+                Type::Struct(_) => self.runtime_value_type.fn_type(&arg_types, false),
 
                 Type::TypeI8 => self.context.i8_type().fn_type(&arg_types, false),
                 Type::TypeU8 => self.context.i8_type().fn_type(&arg_types, false),
@@ -348,8 +503,7 @@ impl<'ctx> Compiler<'ctx> {
             ast::Expr::Bool(_) => Type::Bool,
             ast::Expr::Unit() => Type::Unit,
             ast::Expr::Var(name) => self
-                .variables
-                .get(name)
+                .get_variables(name)
                 .map(|(_, ty)| ty.clone())
                 .unwrap_or(Type::Any),
             ast::Expr::TypeI8 => Type::TypeI8,
@@ -378,7 +532,7 @@ impl<'ctx> Compiler<'ctx> {
                     Type::Any
                 }
             }
-            &ast::Expr::Call(_, _, ref ret_ty_opt) => {
+            ast::Expr::Call(_, _, ret_ty_opt) => {
                 if let Some(ret_ty) = ret_ty_opt {
                     ret_ty.clone()
                 } else {
@@ -412,6 +566,8 @@ impl<'ctx> Compiler<'ctx> {
         self.builder.position_at_end(entry);
         self.function_signatures = Some(fn_val);
 
+        self.enter_scope();
+
         for (idx, param) in func.params.iter().enumerate() {
             let arg_val = fn_val.get_nth_param(idx as u32).unwrap();
 
@@ -422,15 +578,18 @@ impl<'ctx> Compiler<'ctx> {
             self.builder
                 .build_store(alloca, arg_val)
                 .map_err(|e| e.to_string())?;
-            self.variables
-                .insert(param.ident.clone(), (alloca.into(), Type::Any));
+            self.add_variable(param.ident.clone(), alloca.into(), Type::Any);
         }
 
         self.compile_block(&func.blk, module)?;
 
         let current_block = self.builder.get_insert_block().unwrap();
         if current_block.get_terminator().is_none() {
+            // Inter compile_block will execute exit_scope, so need scope of function args end here
+            self.exit_scope(module);
             builder_helper::create_dummy_for_no_return(self);
+        } else {
+            self.scopes.pop();
         }
 
         if fn_val.verify(true) {
@@ -448,7 +607,7 @@ impl<'ctx> Compiler<'ctx> {
         stmts: &Vec<ast::Stmt>,
         module: &Module<'ctx>,
     ) -> Result<(), String> {
-        let mut local_vars: Vec<String> = Vec::new();
+        self.enter_scope(); // New scope for the block
 
         for stmt in stmts {
             if self
@@ -470,40 +629,22 @@ impl<'ctx> Compiler<'ctx> {
                     let var_type =
                         self.infer_type(&var.expr.as_ref().unwrap_or(&ast::Expr::Unit()));
 
-                    if let Some((existing, _)) = self.variables.get(&var.ident) {
-                        let ptr = existing.into_pointer_value();
+                    builder_helper::var_load_at_init_variable(self, init_val, &var.ident);
 
-                        builder_helper::load_at_init_variable_with_existing(
-                            self, init_val, ptr, &var.ident,
-                        );
-
-                        if let Some(ast::Expr::Var(src_val_name)) = &var.expr {
-                            let var_val = self.variables.get(src_val_name).map(|(v, _)| *v);
-                            if let Some(val) = var_val {
-                                builder_helper::move_variable(self, &val, &var.ident);
-                            }
+                    if let Some(ast::Expr::Var(src_val_name)) = &var.expr {
+                        let var_val = self.get_variables(src_val_name).map(|(v, _)| v);
+                        if let Some(val) = var_val {
+                            builder_helper::move_variable(self, &val, &var.ident);
                         }
-                        local_vars.push(var.ident.clone());
-                    } else {
-                        let ptr =
-                            builder_helper::var_load_at_init_variable(self, init_val, &var.ident);
-                        if let Some(ast::Expr::Var(src_val_name)) = &var.expr {
-                            let var_val = self.variables.get(src_val_name).map(|(v, _)| *v);
-                            if let Some(val) = var_val {
-                                builder_helper::move_variable(self, &val, &var.ident);
-                            }
-                        }
-                        local_vars.push(var.ident.clone());
-                        self.variables
-                            .insert(var.ident.clone(), (ptr.into(), var_type));
                     }
+                    self.add_variable(var.ident.clone(), init_val.into(), var_type);
                 }
                 ast::Stmt::Return(expr_opt) => {
                     let ret_val = if let Some(expr) = expr_opt {
                         let ptr = self.compile_expr(expr, module)?.into_pointer_value();
 
                         if let ast::Expr::Var(name) = expr {
-                            let var_val = self.variables.get(name).map(|(v, _)| *v);
+                            let var_val = self.get_variables(name).map(|(v, _)| v);
                             if let Some(val) = var_val {
                                 let val_ptr = val.into_pointer_value();
                                 builder_helper::var_return_store(self, &val_ptr.into(), name);
@@ -624,23 +765,7 @@ impl<'ctx> Compiler<'ctx> {
                     } else {
                         None
                     };
-                    let drop_fn = self.get_runtime_fn(module, "__drop");
-
-                    if self
-                        .builder
-                        .get_insert_block()
-                        .unwrap()
-                        .get_terminator()
-                        .is_none()
-                    {
-                        for var_name in local_vars.iter().rev() {
-                            if let Some((val_enum, _)) = self.variables.get(var_name) {
-                                let ptr = val_enum.into_pointer_value();
-
-                                builder_helper::drop_var(self, ptr, drop_fn, var_name);
-                            }
-                        }
-                    }
+                    self.emit_drop_for_return(module);
 
                     if let Some(val) = ret_val {
                         self.builder.build_return(Some(&val)).unwrap();
@@ -663,24 +788,42 @@ impl<'ctx> Compiler<'ctx> {
                 ast::Stmt::Expr(expr) => {
                     self.compile_expr(expr, module)?;
                 }
-            }
-        }
-        let drop_fn = self.get_runtime_fn(module, "__drop");
-        if self
-            .builder
-            .get_insert_block()
-            .unwrap()
-            .get_terminator()
-            .is_none()
-        {
-            for var_name in local_vars.iter().rev() {
-                if let Some((val_enum, _)) = self.variables.get(var_name) {
-                    let ptr = val_enum.into_pointer_value();
+                ast::Stmt::EnumItem(enm) => {
+                    self.register_enum(enm);
+                }
+                ast::Stmt::Assign(assign_stmt) => {
+                    let val_ptr = self
+                        .compile_expr(&assign_stmt.expr, module)?
+                        .into_pointer_value();
 
-                    builder_helper::drop_var(self, ptr, drop_fn, var_name);
+                    let (target_val, _) = self
+                        .get_variables(&assign_stmt.name)
+                        .ok_or_else(|| format!("Undefined variable: {}", &assign_stmt.name))?;
+
+                    let target_ptr = target_val.into_pointer_value();
+
+                    let drop_fn = self.get_runtime_fn(module, "__drop");
+                    builder_helper::drop_var(self, target_ptr, drop_fn, &assign_stmt.name);
+
+                    let new_val = self
+                        .builder
+                        .build_load(self.runtime_value_type, val_ptr, "assign_load")
+                        .unwrap();
+                    self.builder
+                        .build_store(target_ptr, new_val)
+                        .map_err(|e| e.to_string())?;
+
+                    if let ast::Expr::Var(src_val_name) = &assign_stmt.expr {
+                        let var_val = self.get_variables(src_val_name).map(|(v, _)| v);
+                        if let Some(val) = var_val {
+                            builder_helper::move_variable(self, &val, &assign_stmt.name);
+                        }
+                    }
                 }
             }
         }
+
+        self.exit_scope(module);
 
         Ok(())
     }
@@ -752,8 +895,8 @@ impl<'ctx> Compiler<'ctx> {
                 result
             }
             ast::Expr::Var(ident) => {
-                if let Some((var_addr, _)) = self.variables.get(ident) {
-                    Ok(*var_addr)
+                if let Some((var_addr, _)) = self.get_variables(ident) {
+                    Ok(var_addr)
                 } else {
                     Err(format!("Undefined variable: {}", ident))
                 }
@@ -780,6 +923,21 @@ impl<'ctx> Compiler<'ctx> {
                 }
 
                 let result = builder_helper::create_call_expr(self, ident, args, module);
+                result
+            }
+            ast::Expr::FieldAccess(lhs, rhs) => {
+                let lhs_type = self.infer_type(lhs);
+
+                let struct_name = match lhs_type {
+                    Type::Struct(name) => name,
+                    _ => {
+                        return Err(format!("Field access on non-struct type: {:?}", lhs_type));
+                    }
+                };
+
+                let index = self.get_field_index(&struct_name, rhs)?;
+
+                let result = builder_helper::create_field_access(self, lhs, index, module);
                 result
             }
             ast::Expr::Add(lhs, rhs) => {

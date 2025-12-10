@@ -45,6 +45,7 @@ pub fn collect_signatures(items: &[ast::Item]) -> Vec<ItemSig> {
             ast::Item::Preprocessor(_) => None,
             ast::Item::Import(_) => None,
             ast::Item::Package(_) => None,
+            ast::Item::EnumItem(_) => None,
         })
         .collect();
 
@@ -110,6 +111,8 @@ pub fn collect_vardecls_in_block<'a>(
                 collect_vardecls_in_block(body, item_name, out);
             }
             ast::Stmt::Return(_) => {}
+            ast::Stmt::EnumItem(_) => {}
+            &ast::Stmt::Assign(_) => {}
         }
     }
 }
@@ -150,6 +153,8 @@ fn collect_varinfo_in_block<'a>(stmts: &'a [ast::Stmt], table: &mut Vec<VarInfo<
                 collect_varinfo_in_block(body, table);
             }
             ast::Stmt::Return(_) => {}
+            ast::Stmt::EnumItem(_) => {}
+            ast::Stmt::Assign(_) => {}
         }
     }
 }
@@ -235,6 +240,7 @@ fn infer_type_hint(expr: &ast::Expr, sigs: &[ItemSig]) -> Option<Type> {
         Range(_, _) => Some(Type::Any),
         Index(_, _) => Some(Type::Any),
         ModuleAccess(_, _, _) => Some(Type::Any), // !TODO Implement module access type inference
+        FieldAccess(_, _) => Some(Type::Any),     // !TODO Implement field access type inference
         Unit() => Some(Type::Unit),
     }
 }
