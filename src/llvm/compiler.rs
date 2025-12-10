@@ -368,6 +368,7 @@ impl<'ctx> Compiler<'ctx> {
             | ast::Expr::Minus(lhs, _)
             | ast::Expr::Div(lhs, _)
             | ast::Expr::Mod(lhs, _) => self.infer_type(lhs),
+            ast::Expr::Increment(value) | ast::Expr::Decrement(value) => self.infer_type(value),
             ast::Expr::If(_, then, if_else) => {
                 let then_ty = self.infer_type(then);
                 let else_ty = self.infer_type(if_else);
@@ -418,7 +419,9 @@ impl<'ctx> Compiler<'ctx> {
                 .builder
                 .build_alloca(self.runtime_value_type, &param.ident)
                 .unwrap();
-            let _ = self.builder.build_store(alloca, arg_val);
+            self.builder
+                .build_store(alloca, arg_val)
+                .map_err(|e| e.to_string())?;
             self.variables
                 .insert(param.ident.clone(), (alloca.into(), Type::Any));
         }
@@ -448,6 +451,16 @@ impl<'ctx> Compiler<'ctx> {
         let mut local_vars: Vec<String> = Vec::new();
 
         for stmt in stmts {
+            if self
+                .builder
+                .get_insert_block()
+                .unwrap()
+                .get_terminator()
+                .is_some()
+            {
+                break;
+            }
+
             match stmt {
                 ast::Stmt::Var(var) => {
                     let init_val = self
@@ -640,11 +653,12 @@ impl<'ctx> Compiler<'ctx> {
                     then_blk,
                     else_blk,
                 } => {
-                    let _ =
-                        builder_helper::create_if_condition(self, cond, then_blk, else_blk, module);
+                    builder_helper::create_if_condition(self, cond, then_blk, else_blk, module)
+                        .map_err(|e| e.to_string())?;
                 }
                 ast::Stmt::While { cond, body } => {
-                    let _ = builder_helper::create_while_condition(self, cond, body, module);
+                    builder_helper::create_while_condition(self, cond, body, module)
+                        .map_err(|e| e.to_string())?;
                 }
                 ast::Stmt::Expr(expr) => {
                     self.compile_expr(expr, module)?;

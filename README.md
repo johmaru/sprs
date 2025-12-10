@@ -37,7 +37,7 @@ For this language development environment setup is WSL2(Ubuntu) + VSCode is reco
 ### Language Features
 #### **Basic data types:**
  * Int (i64)
- * Float (f64)
+ * Float (f64) : return type semantic use this word 'fp'
  * Bool
  * Str
  * List(128) (dynamic array)
@@ -76,7 +76,7 @@ y = "now a string"; # y is now a string
 ```
 
 - Functions
-```sprs
+```rust
 fn add(a, b) {
    return a + b;
 }
@@ -89,6 +89,13 @@ fn main() {
 
 if a function is not marked as 'pub', it is private function.
 the function can call in same module.
+
+if when need to use a return type for function, use '>>' syntax.
+```rust
+fn add(a, b) >> int {
+  return a + b;
+}
+```
 
 - runtime functions
 
@@ -106,7 +113,7 @@ the function can call in same module.
   | __panic | for handling panic situations|
 
 - Control flow
-```sprs
+```rust
 if x > 5 then {
   println!("x is greater than 5");
 } else {
@@ -182,13 +189,12 @@ Currently this language has
 * 'import' for module importing
 
 examples:
-```sprs
+```rust
 
 import test;
 #define Windows
 
        fn main() {
-          # access to module function
           var x = test.test();
           var y = [];
           var z = 20;
@@ -198,26 +204,22 @@ import test;
           list_push!(y, z);
           list_push!(y, alpha);
           println!(y[1]);
-          # println(x + alpha);
 
-           # test calc
              var result = (x + 10) * 2;
              println!(result);
-           # test while
              var i = cast!(0, i8);
                while i <= 5 {
                    println!(i);
                    i = i + 1;
                }
 
-           # test mod
              var m = 10 % 3;
              println!(m);
        }
 
 ```
 
-```sprs
+```rust
 
 pkg test;
 
@@ -227,7 +229,6 @@ pkg test;
            var c = "hello" + " world";
            println!(c);
 
-           # test equality
            if a == 3 then {
                return a;
            }
@@ -264,7 +265,7 @@ This command creates a new directory structure with a default `sprs.toml` config
 The Sprs has a simple runtime move system.
 
 **Example:**
-```sprs
+```rust
 fn main() {
    test();
 }
@@ -273,7 +274,6 @@ fn test() {
   var test = "Hello, Sprs!"; # set a string to variable
   var a = test; # move the value from test to a, test is now invalid
   return println!(a); # function call with a, a is now invalid after this line
-  # if you don't want to move a 'a' variable, use clone! macro
   println!(clone!(a)); # a is still valid after this line
 }
 

@@ -33,7 +33,7 @@
 //! ## Language Features
 //! ### **Basic data types:**
 //!  * Int (i64)
-//!  * Float (f64)
+//!  * Float (f64) : return type semantic use this word 'fp'
 //!  * Bool
 //!  * Str
 //!  * List(128) (dynamic array)
@@ -72,7 +72,7 @@
 //! ```
 //!
 //! - Functions
-//! ```sprs
+//! ```
 //! fn add(a, b) {
 //!    return a + b;
 //! }
@@ -85,6 +85,13 @@
 //!
 //! if a function is not marked as 'pub', it is private function.
 //! the function can call in same module.
+//!
+//! if when need to use a return type for function, use '>>' syntax.
+//! ```
+//! fn add(a, b) >> int {
+//!   return a + b;
+//! }
+//! ```
 //!
 //! - runtime functions
 //!
@@ -102,7 +109,7 @@
 //!   | __panic | for handling panic situations|
 //!
 //! - Control flow
-//! ```sprs
+//! ```
 //! if x > 5 then {
 //!   println!("x is greater than 5");
 //! } else {
@@ -178,7 +185,7 @@
 //! * 'import' for module importing
 //!
 //! examples:
-//! ```sprs
+//! ```
 //!
 //! import test;
 //! #define Windows
@@ -213,7 +220,7 @@
 //!
 //! ```
 //!
-//! ```sprs
+//! ```
 //!
 //! pkg test;
 //!
@@ -260,7 +267,7 @@
 //! The Sprs has a simple runtime move system.
 //!
 //! **Example:**
-//! ```sprs
+//! ```
 //! fn main() {
 //!    test();
 //!}
