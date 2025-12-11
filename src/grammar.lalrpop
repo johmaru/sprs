@@ -1,6 +1,6 @@
 grammar;
 
-use crate::front::ast::{Item, VarDecl, Expr, Stmt, Function, FunctionParam, Enum, AssignStmt, FieldAccess};
+use crate::front::ast::{Item, VarDecl, Expr, Stmt, Function, FunctionParam, Enum, AssignStmt};
 use crate::front::lexer::Token;
 use crate::interpreter::type_helper::Type;
 use lalrpop_util::ParseError;

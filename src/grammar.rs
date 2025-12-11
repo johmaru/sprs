@@ -1,6 +1,6 @@
 // auto-generated: "lalrpop 0.22.2"
-// sha3: 0c683164f60d403f41790c7caf714fe143a8af13cc532e2bc888c5da7f1d7094
-use crate::front::ast::{Item, VarDecl, Expr, Stmt, Function, FunctionParam, Enum, AssignStmt, FieldAccess};
+// sha3: 418d4b0373b960073e5621b6da57017160c8f7affba7b59781d3826fef770f8c
+use crate::front::ast::{Item, VarDecl, Expr, Stmt, Function, FunctionParam, Enum, AssignStmt};
 use crate::front::lexer::Token;
 use crate::interpreter::type_helper::Type;
 use lalrpop_util::ParseError;
@@ -16,7 +16,7 @@ extern crate alloc;
 #[allow(explicit_outlives_requirements, non_snake_case, non_camel_case_types, unused_mut, unused_variables, unused_imports, unused_parens, clippy::needless_lifetimes, clippy::type_complexity, clippy::needless_return, clippy::too_many_arguments, clippy::match_single_binding)]
 mod __parse__Start {
 
-    use crate::front::ast::{Item, VarDecl, Expr, Stmt, Function, FunctionParam, Enum, AssignStmt, FieldAccess};
+    use crate::front::ast::{Item, VarDecl, Expr, Stmt, Function, FunctionParam, Enum, AssignStmt};
     use crate::front::lexer::Token;
     use crate::interpreter::type_helper::Type;
     use lalrpop_util::ParseError;

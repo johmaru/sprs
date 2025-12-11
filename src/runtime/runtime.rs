@@ -13,6 +13,7 @@ pub enum Tag {
     List = 4,
     Range = 5,
     Unit = 6,
+    Enum = 7,
 
     // System types
     Int8 = 100,
@@ -89,6 +90,12 @@ pub struct SprsRange {
 pub extern "C" fn __range_new(start: i64, end: i64) -> *mut SprsRange {
     let range = Box::new(SprsRange { start, end });
     Box::into_raw(range)
+}
+
+#[repr(C)]
+pub struct EnumInfo {
+    pub name: *const i8,
+    pub variant_index: i64,
 }
 
 #[unsafe(no_mangle)]
@@ -183,6 +190,16 @@ pub extern "C" fn __println(list_ptr: *mut Vec<SprsValue>) {
             t if t == Tag::Unit as i32 => {
                 // unit
                 println!("Value[{}]: ()", i);
+            }
+            t if t == Tag::Enum as i32 => {
+                // enum
+                let info = unsafe { &*(val.data as *const EnumInfo) };
+                let c_str = unsafe { std::ffi::CStr::from_ptr(info.name) };
+                let name_str = c_str.to_string_lossy();
+                println!(
+                    "Value[{}]: <enum variant index {}>",
+                    name_str, info.variant_index
+                );
             }
             _ => {
                 println!("Value[{}]: <unknown type>", i);
