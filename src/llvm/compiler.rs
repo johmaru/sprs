@@ -472,20 +472,16 @@ impl<'ctx> Compiler<'ctx> {
                 self.builder.position_at_end(current_block);
                 alloca
             } else {
-                let global = module.add_global(
-                    self.runtime_value_type,
-                    Some(AddressSpace::default()),
-                    &full_name,
-                );
+                let global_name = format!("enum_name_str_{}", full_name.replace(".", "_"));
                 let str_const = self.context.const_string(full_name.as_bytes(), true);
                 let global_str = module.add_global(
                     str_const.get_type(),
                     Some(AddressSpace::default()),
-                    "enum_name_str",
+                    &global_name,
                 );
-                global.set_initializer(&str_const);
-                global.set_constant(true);
-                global.set_linkage(Linkage::Internal);
+                global_str.set_initializer(&str_const);
+                global_str.set_constant(true);
+                global_str.set_linkage(Linkage::Internal);
 
                 let zero = self.context.i32_type().const_int(0, false);
                 let name_ptr = unsafe {
@@ -498,10 +494,12 @@ impl<'ctx> Compiler<'ctx> {
                 let enum_info_const =
                     enum_info_type.const_named_struct(&[name_ptr.into(), idx_val.into()]);
 
+                let global_info_name = format!("enum_info_const_{}", full_name.replace(".", "_"));
+
                 let global_enum_info = module.add_global(
                     enum_info_type,
                     Some(AddressSpace::default()),
-                    "enum_info_global",
+                    &global_info_name,
                 );
                 global_enum_info.set_initializer(&enum_info_const);
                 global_enum_info.set_constant(true);
