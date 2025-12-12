@@ -39,6 +39,8 @@
 //!  * List(128) (dynamic array)
 //!  * Range
 //!  * Unit
+//!  * Enum
+//!  * Struct
 //!  * i8 (only for cast! macro)
 //!  * u8 (only for cast! macro)
 //!  * i16 (only for cast! macro)
@@ -107,6 +109,26 @@
 //!   | __drop | for dropping a value|
 //!   | __clone | for cloning a value|
 //!   | __panic | for handling panic situations|
+//!
+//!
+//! - enum
+//!
+//! ```
+//!pub enum Animal {
+//!  Dog,
+//!  Cat,
+//!}
+//!
+//!fn main() {
+//!    # test enum
+//!    println!(Animal.Dog);
+//!
+//!    #  Will be print out from a runtime "Value[Animal.Dog]: <enum variant index 1>"
+//! }
+//!
+//! ```
+//!
+//!
 //!
 //! - Control flow
 //! ```

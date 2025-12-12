@@ -44,6 +44,7 @@ pub enum Token {
     Var,
     Public,
     Enum,
+    Struct,
 
     // System types
     TypeInt,
@@ -161,6 +162,8 @@ enum RawTok {
     Public,
     #[token("enum")]
     Enum,
+    #[token("struct")]
+    Struct,
 
     // System types
     #[token("int")]
@@ -273,6 +276,7 @@ impl<'input> Iterator for Lexer<'input> {
             RawTok::Var => Token::Var,
             RawTok::Public => Token::Public,
             RawTok::Enum => Token::Enum,
+            RawTok::Struct => Token::Struct,
             RawTok::Comment => return self.next(),
 
             // System types

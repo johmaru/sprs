@@ -46,6 +46,7 @@ pub fn collect_signatures(items: &[ast::Item]) -> Vec<ItemSig> {
             ast::Item::Import(_) => None,
             ast::Item::Package(_) => None,
             ast::Item::EnumItem(_) => None,
+            ast::Item::StructItem(_) => None,
         })
         .collect();
 

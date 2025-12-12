@@ -1,6 +1,6 @@
 use crate::interpreter::type_helper::Type;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum Expr {
     Number(i64),                             // Value
     Float(f64),                              // Value
@@ -57,6 +57,7 @@ pub enum Item {
     FunctionItem(Function),
     Preprocessor(String),
     EnumItem(Enum),
+    StructItem(Struct),
 }
 
 #[derive(Debug, PartialEq)]
@@ -84,6 +85,21 @@ pub struct Enum {
     pub ident: String,
     pub variants: Vec<String>,
     pub is_public: bool,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct Struct {
+    pub ident: String,
+    pub fields: Vec<StructField>,
+    pub _methods: Vec<Function>, // currently not implemented
+    pub is_public: bool,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct StructField {
+    pub ident: String,
+    pub ty: Option<Type>,
+    pub default_value: Option<Expr>,
 }
 
 #[derive(Debug, PartialEq)]

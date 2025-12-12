@@ -1,6 +1,16 @@
 grammar;
 
-use crate::front::ast::{Item, VarDecl, Expr, Stmt, Function, FunctionParam, Enum, AssignStmt};
+use crate::front::ast::{
+    Item, 
+    VarDecl, 
+    Expr, 
+    Stmt, 
+    Function, 
+    FunctionParam, 
+    Enum, 
+    AssignStmt,
+    Struct,
+};
 use crate::front::lexer::Token;
 use crate::interpreter::type_helper::Type;
 use lalrpop_util::ParseError;
@@ -54,6 +64,7 @@ extern {
         Var => Token::Var,
         Public => Token::Public,
         Enum => Token::Enum,
+        Struct => Token::Struct,
 
         // System types
         TypeInt => Token::TypeInt,
@@ -87,6 +98,7 @@ ItemNode: Item = {
     <i:ImportDirective> => Item::Import(i),
     <p:PackageDirective> => Item::Package(p),
     <e:EnumDef> => Item::EnumItem(e),
+    <s:StructDef> => Item::StructItem(s),
 };
 
 PreprocessorDirective: String = {
@@ -131,6 +143,49 @@ EnumVariantTail: Vec<String> = {
         v.extend(rest);
         v
     }
+};
+
+StructDef: Struct =
+    <is_pub:PublicKw> Struct <name:Ident> LBrace <fields:StructFieldList> RBrace => {
+        Struct {
+            ident: name,
+            fields,
+            is_public: is_pub,
+        }
+    };
+
+StructFieldList: Vec<FunctionParam> = {
+    => vec![],
+    <first:FunctionParamNode> <rest:MoreStructFields> => {
+        let mut v = vec![first];
+        v.extend(rest);
+        v
+    }
+};
+
+MoreStructFields: Vec<FunctionParam> = {
+    => vec![],
+    Comma <p:StructFieldNode> <mut rest:MoreStructFields> => {
+        let mut v = vec![p];
+        v.append(&mut rest);
+        v
+    }
+};
+
+StructFieldNode: StructField = {
+    <id:Ident> <ty:FieldType?> <def:FieldDefault?> => StructField {
+        ident: id,
+        ty,
+        default: def,
+    }
+};
+
+FieldType: Type = {
+    GtGt <t:Type> => t,
+};
+
+FieldDefault: Expr = {
+    Assign <e:Expr> => e,
 };
 
 FnKw: () = <tok:Function> => ();

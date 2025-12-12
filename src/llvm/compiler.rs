@@ -3,6 +3,7 @@ use crate::front::ast;
 use crate::interpreter::runner::parse_only;
 use crate::interpreter::type_helper;
 use crate::interpreter::type_helper::Type;
+use crate::llvm;
 use crate::llvm::builder_helper;
 use crate::llvm::builder_helper::Comparison;
 use crate::llvm::builder_helper::EqNeq;
@@ -12,12 +13,19 @@ use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::Linkage;
 use inkwell::module::Module;
+use inkwell::types::BasicTypeEnum;
 use inkwell::types::{BasicMetadataTypeEnum, StructType};
 use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue, ValueKind};
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::f32::consts::E;
 use std::result;
+
+pub struct StructDef<'ctx> {
+    pub fields: Vec<ast::StructField>,
+    pub field_indices: HashMap<String, u32>,
+    pub llvm_type: StructType<'ctx>,
+}
 
 pub struct Compiler<'ctx> {
     pub context: &'ctx Context,
@@ -30,7 +38,7 @@ pub struct Compiler<'ctx> {
     pub string_constants: HashMap<String, inkwell::values::GlobalValue<'ctx>>,
     pub malloc_type: inkwell::types::FunctionType<'ctx>,
     pub source_path: String,
-    pub struct_defs: HashMap<String, HashMap<String, u32>>, // struct name -> (field name -> field type)
+    pub struct_defs: HashMap<String, StructDef<'ctx>>, // struct name -> struct definition
     pub enum_names: HashSet<String>,
 }
 
@@ -183,18 +191,57 @@ impl<'ctx> Compiler<'ctx> {
         }
     }
 
-    pub fn register_struct(&mut self, name: String, fields: Vec<String>) {
-        let mut field_map = HashMap::new();
+    pub fn register_struct(&mut self, name: String, fields: Vec<ast::StructField>) {
+        let mut field_indices = HashMap::new();
+        let mut llvm_field_types: Vec<BasicTypeEnum> = Vec::new();
         for (i, field) in fields.iter().enumerate() {
-            field_map.insert(field.clone(), i as u32);
+            field_indices.insert(field.ident.clone(), i as u32);
+
+            let llvm_ty = if let Some(ty) = &field.ty {
+                match ty {
+                    Type::Any => self.runtime_value_type.into(),
+                    Type::Int => self.context.i64_type().into(),
+                    Type::Str => self.context.ptr_type(AddressSpace::default()).into(),
+                    Type::Float => self.context.f64_type().into(),
+                    Type::Bool => self.context.bool_type().into(),
+                    Type::Unit => self.runtime_value_type.into(),
+                    Type::Enum => self.context.i64_type().into(),
+                    Type::Struct(_) => self.runtime_value_type.into(),
+
+                    Type::TypeI8 => self.context.i8_type().into(),
+                    Type::TypeU8 => self.context.i8_type().into(),
+                    Type::TypeI16 => self.context.i16_type().into(),
+                    Type::TypeU16 => self.context.i16_type().into(),
+                    Type::TypeI32 => self.context.i32_type().into(),
+                    Type::TypeU32 => self.context.i32_type().into(),
+                    Type::TypeI64 => self.context.i64_type().into(),
+                    Type::TypeU64 => self.context.i64_type().into(),
+                    Type::TypeF16 => self.context.f16_type().into(),
+                    Type::TypeF32 => self.context.f32_type().into(),
+                    Type::TypeF64 => self.context.f64_type().into(),
+                }
+            } else {
+                self.runtime_value_type.into()
+            };
+            llvm_field_types.push(llvm_ty);
         }
-        self.struct_defs.insert(name, field_map);
+
+        let llvm_type = self.context.struct_type(&llvm_field_types, false);
+
+        self.struct_defs.insert(
+            name,
+            StructDef {
+                fields,
+                field_indices,
+                llvm_type,
+            },
+        );
     }
 
     pub fn get_field_index(&self, struct_name: &str, field_name: &str) -> Result<u32, String> {
         self.struct_defs
             .get(struct_name)
-            .and_then(|fields| fields.get(field_name).cloned())
+            .and_then(|def| def.field_indices.get(field_name).cloned())
             .ok_or_else(|| {
                 format!(
                     "Field '{}' not found in struct '{}'",
@@ -320,10 +367,21 @@ impl<'ctx> Compiler<'ctx> {
         }
 
         let mut private_enum_variants: Vec<String> = Vec::new();
+        let mut private_struct_fields: Vec<String> = Vec::new();
 
-        // get enums
+        // get enums and structs first
         for item in &items {
             match item {
+                ast::Item::StructItem(items) => {
+                    self.register_struct(items.ident.clone(), items.fields.clone());
+
+                    if !items.is_public {
+                        for field in &items.fields {
+                            let full_name = format!("{}.{}", items.ident, field.ident);
+                            private_struct_fields.push(full_name);
+                        }
+                    }
+                }
                 ast::Item::EnumItem(enm) => {
                     self.register_enum(enm, &module, true);
 
@@ -368,6 +426,10 @@ impl<'ctx> Compiler<'ctx> {
 
         self.modules.insert(llvm_module_name, module);
 
+        for private_field in private_struct_fields {
+            self.remove_variable(&private_field);
+        }
+
         for private_variant in private_enum_variants {
             self.remove_variable(&private_variant);
         }
@@ -406,7 +468,6 @@ impl<'ctx> Compiler<'ctx> {
 
         for (idx, variant) in enm.variants.iter().enumerate() {
             let full_name = format!("{}.{}", enm.ident, variant);
-            let tag_value = idx as u64;
 
             let enum_tag = self.context.i32_type().const_int(Tag::Enum as u64, false);
 
