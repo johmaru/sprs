@@ -1,5 +1,4 @@
 use core::error;
-use std::fmt::Result;
 
 use inkwell::{
     AddressSpace,
