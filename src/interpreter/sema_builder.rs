@@ -243,5 +243,6 @@ fn infer_type_hint(expr: &ast::Expr, sigs: &[ItemSig]) -> Option<Type> {
         ModuleAccess(_, _, _) => Some(Type::Any), // !TODO Implement module access type inference
         FieldAccess(_, _) => Some(Type::Any),     // !TODO Implement field access type inference
         Unit() => Some(Type::Unit),
+        StructInit(_, _) => Some(Type::Any), // !TODO Implement struct init type inference
     }
 }

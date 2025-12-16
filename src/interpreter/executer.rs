@@ -19,6 +19,7 @@ pub enum Value {
     Return(Box<Value>),
     List(std::rc::Rc<std::cell::RefCell<Vec<Value>>>),
     Range(i64, i64),
+    StructInit(String, HashMap<String, Value>),
 
     // System types
     TypeI8,
@@ -107,6 +108,18 @@ impl std::fmt::Display for Value {
                 write!(f, "]")
             }
             Value::Range(start, end) => write!(f, "{}..{}", start, end),
+            Value::StructInit(name, fields) => {
+                write!(f, "{} {{ ", name)?;
+                let mut first = true;
+                for (key, value) in fields {
+                    if !first {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}: {}", key, value)?;
+                    first = false;
+                }
+                write!(f, " }}")
+            }
         }
     }
 }
@@ -647,5 +660,14 @@ fn evalute_expr(
             ))
         }
         ast::Expr::Unit() => Ok(Value::Unit),
+        ast::Expr::StructInit(struct_name, fields) => {
+            let mut field_values = HashMap::new();
+            for (field_name, field_expr) in fields {
+                let val = evalute_expr(field_expr, functions, scope)?;
+                field_values.insert(field_name.clone(), val.clone());
+                println!("  Initialized field {}: {}", field_name, val);
+            }
+            Ok(Value::StructInit(struct_name.clone(), field_values))
+        }
     }
 }

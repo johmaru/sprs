@@ -28,6 +28,7 @@ pub enum Expr {
     ModuleAccess(String, String, Vec<Expr>), // Module, functionName, args e.g. module.ident
     FieldAccess(Box<Expr>, String),          // e.g. struct.field
     Unit(),
+    StructInit(String, Vec<(String, Expr)>), // StructName, Fields
 
     // System types
     TypeI8,
@@ -100,6 +101,12 @@ pub struct StructField {
     pub ident: String,
     pub ty: Option<Type>,
     pub default_value: Option<Expr>,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum Suffix {
+    Call(Vec<Expr>),
+    Struct(Vec<(String, Expr)>),
 }
 
 #[derive(Debug, PartialEq)]

@@ -59,6 +59,7 @@ pub enum Tag {
     Range = 5,
     Unit = 6,
     Enum = 7,
+    Struct = 8,
 
     // System types
     Int8 = 100,
@@ -724,6 +725,7 @@ impl<'ctx> Compiler<'ctx> {
                     Type::Any
                 }
             }
+            ast::Expr::StructInit(name, _) => Type::Struct(name.clone()),
             _ => Type::Any,
         }
     }
@@ -1286,6 +1288,10 @@ impl<'ctx> Compiler<'ctx> {
             }
             ast::Expr::Unit() => {
                 let result = builder_helper::create_unit(self);
+                result
+            }
+            ast::Expr::StructInit(struct_name, fields) => {
+                let result = builder_helper::create_struct_init(self, struct_name, fields, module);
                 result
             }
         }

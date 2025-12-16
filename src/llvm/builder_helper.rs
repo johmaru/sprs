@@ -1,4 +1,5 @@
 use core::error;
+use std::fmt::Result;
 
 use inkwell::{
     AddressSpace,
@@ -4204,6 +4205,94 @@ pub fn create_unit<'ctx>(
         )
         .unwrap();
     Ok(res_ptr.into())
+}
+
+pub fn create_struct_init<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+    struct_name: &str,
+    field_exprs: &[(String, ast::Expr)],
+    module: &inkwell::module::Module<'ctx>,
+) -> Result<BasicValueEnum<'ctx>, String> {
+    let struct_def = self_compiler
+        .struct_defs
+        .get(struct_name)
+        .ok_or_else(|| format!("Undefined struct : {}", struct_name))?;
+
+    let llvm_type = struct_def.llvm_type;
+    let field_indices = struct_def.field_indices.clone();
+    let def_fields = struct_def.fields.clone();
+
+    let struct_ptr = self_compiler
+        .builder
+        .build_malloc(llvm_type, &format!("{}_struct_alloc", struct_name))
+        .map_err(|e| e.to_string())?;
+
+    for (field_name, field_expr) in field_exprs {
+        let index = field_indices.get(field_name).ok_or_else(|| {
+            format!(
+                "Field '{}' not found in struct '{}'",
+                field_name, struct_name
+            )
+        })?;
+
+        let value = self_compiler.compile_expr(field_expr, module)?;
+
+        let field_ptr = self_compiler
+            .builder
+            .build_struct_gep(llvm_type, struct_ptr, *index, "field_ptr")
+            .map_err(|e| e.to_string())?;
+
+        let val_to_store = if value.is_pointer_value() {
+            self_compiler
+                .builder
+                .build_load(
+                    self_compiler.runtime_value_type,
+                    value.into_pointer_value(),
+                    "field_value",
+                )
+                .unwrap()
+        } else {
+            value
+        };
+        self_compiler
+            .builder
+            .build_store(field_ptr, val_to_store)
+            .unwrap();
+    }
+
+    let allloca = self_compiler
+        .builder
+        .build_alloca(self_compiler.runtime_value_type, "struct_init_res_alloc")
+        .unwrap();
+
+    let tag = self_compiler
+        .context
+        .i32_type()
+        .const_int(Tag::Struct as u64, false);
+    let tag_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, allloca, 0, "tag_ptr")
+        .unwrap();
+    self_compiler.builder.build_store(tag_ptr, tag).unwrap();
+
+    let data_int = self_compiler
+        .builder
+        .build_ptr_to_int(
+            struct_ptr,
+            self_compiler.context.i64_type(),
+            "struct_ptr_as_int",
+        )
+        .unwrap();
+    let data_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, allloca, 1, "data_ptr")
+        .unwrap();
+    self_compiler
+        .builder
+        .build_store(data_ptr, data_int)
+        .unwrap();
+
+    Ok(allloca.into())
 }
 
 // !Define builtin macro handlers
