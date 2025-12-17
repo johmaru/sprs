@@ -15,10 +15,12 @@ use inkwell::module::Linkage;
 use inkwell::module::Module;
 use inkwell::types::BasicTypeEnum;
 use inkwell::types::{BasicMetadataTypeEnum, StructType};
+use inkwell::values::IntValue;
 use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue, ValueKind};
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::f32::consts::E;
+use std::ptr;
 use std::result;
 
 pub struct StructDef<'ctx> {
@@ -40,6 +42,158 @@ pub struct Compiler<'ctx> {
     pub source_path: String,
     pub struct_defs: HashMap<String, StructDef<'ctx>>, // struct name -> struct definition
     pub enum_names: HashSet<String>,
+}
+
+pub struct RuntimeValueStoreOptions<'ctx> {
+    pub float: Option<f64>,
+    pub str_ptr: Option<PointerValue<'ctx>>,
+}
+
+pub struct TagOptions<'ctx> {
+    pub tag: u64,
+    pub int_value_tag: Option<IntValue<'ctx>>,
+}
+
+impl<'ctx> Compiler<'ctx> {
+    // Default options is i64 integer store
+    pub fn build_runtime_value_store(
+        &self,
+        target_ptr: PointerValue<'ctx>,
+        tag: TagOptions<'ctx>,
+        data: IntValue<'ctx>,
+        name: &str,
+        options: RuntimeValueStoreOptions<'ctx>,
+    ) {
+        let mut tag_val = self.context.i32_type().const_int(tag.tag, false);
+
+        if tag.int_value_tag.is_some() {
+            tag_val = tag.int_value_tag.unwrap();
+        }
+
+        let tag_ptr = self
+            .builder
+            .build_struct_gep(
+                self.runtime_value_type,
+                target_ptr,
+                0,
+                &format!("{}_tag_ptr", name),
+            )
+            .unwrap();
+        self.builder.build_store(tag_ptr, tag_val).unwrap();
+
+        let data_ptr = self
+            .builder
+            .build_struct_gep(
+                self.runtime_value_type,
+                target_ptr,
+                1,
+                &format!("{}_data_ptr", name),
+            )
+            .unwrap();
+
+        if options.float.is_some() {
+            let float_bit = options.float.unwrap().to_bits();
+            self.builder
+                .build_store(
+                    data_ptr,
+                    self.context.i64_type().const_int(float_bit, false),
+                )
+                .unwrap();
+            return;
+        }
+
+        if options.str_ptr.is_some() {
+            let str_ptr = options.str_ptr.unwrap();
+            let str_ptr_as_i64 = self
+                .builder
+                .build_ptr_to_int(str_ptr, self.context.i64_type(), "str_ptr_as_i64")
+                .unwrap();
+            self.builder.build_store(data_ptr, str_ptr_as_i64).unwrap();
+            return;
+        }
+
+        self.builder.build_store(data_ptr, data).unwrap();
+    }
+    pub fn tag_only_runtime_value_store(
+        &self,
+        target_ptr: PointerValue<'ctx>,
+        tag: u64,
+        name: &str,
+    ) {
+        let tag_val = self.context.i32_type().const_int(tag, false);
+
+        let tag_ptr = self
+            .builder
+            .build_struct_gep(
+                self.runtime_value_type,
+                target_ptr,
+                0,
+                &format!("{}_tag_ptr", name),
+            )
+            .unwrap();
+        self.builder.build_store(tag_ptr, tag_val).unwrap();
+    }
+    pub fn build_sprs_value_call_func(
+        &self,
+        ptr: PointerValue<'ctx>,
+        func: FunctionValue<'_>,
+        name: &str,
+        extra_args: &[BasicValueEnum<'ctx>],
+        is_extra_args_front_call: bool,
+    ) {
+        let tag_ptr = self
+            .builder
+            .build_struct_gep(
+                self.runtime_value_type,
+                ptr,
+                0,
+                &format!("{}_tag_ptr", name),
+            )
+            .unwrap();
+        let tag = self
+            .builder
+            .build_load(self.context.i32_type(), tag_ptr, &format!("{}_tag", name))
+            .unwrap()
+            .into_int_value();
+
+        let data_ptr = self
+            .builder
+            .build_struct_gep(
+                self.runtime_value_type,
+                ptr,
+                1,
+                &format!("{}_data_ptr", name),
+            )
+            .unwrap();
+        let data = self
+            .builder
+            .build_load(self.context.i64_type(), data_ptr, &format!("{}_data", name))
+            .unwrap()
+            .into_int_value();
+
+        if is_extra_args_front_call {
+            let mut args = Vec::with_capacity(2 + extra_args.len());
+            for extra in extra_args {
+                args.push((*extra).into());
+            }
+            args.push(tag.into());
+            args.push(data.into());
+            self.builder
+                .build_call(func, &args, &format!("call_{}", name))
+                .unwrap();
+            return;
+        }
+
+        let mut args = Vec::with_capacity(2 + extra_args.len());
+        args.push(tag.into());
+        args.push(data.into());
+        for extra in extra_args {
+            args.push((*extra).into());
+        }
+        self.builder
+            .build_call(func, &args, &format!("call_{}", name))
+            .unwrap();
+    }
 }
 
 #[derive(PartialEq, Eq, Hash, Clone, Copy)]

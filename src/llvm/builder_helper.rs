@@ -9,7 +9,7 @@ use inkwell::{
 
 use crate::{
     front::ast,
-    llvm::compiler::{Compiler, Tag},
+    llvm::compiler::{Compiler, RuntimeValueStoreOptions, Tag, TagOptions},
 };
 
 // !support functions
@@ -89,6 +89,29 @@ fn create_entry_block_alloca<'ctx>(
 
 // !normal functions
 
+pub trait BuilderExt<'ctx> {
+    fn build_struct_load(
+        &self,
+        struct_ptr: PointerValue<'ctx>,
+        index: u32,
+        name: &str,
+    ) -> BasicValueEnum<'ctx>;
+
+    fn build_struct_store(
+        &self,
+        struct_ptr: PointerValue<'ctx>,
+        index: u32,
+        value: BasicValueEnum<'ctx>,
+    );
+
+    fn gep_struct(
+        &self,
+        struct_ptr: PointerValue<'ctx>,
+        index: u32,
+        name: &str,
+    ) -> PointerValue<'ctx>;
+}
+
 pub fn create_list_from_expr<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
     elements: &[ast::Expr],
@@ -119,34 +142,13 @@ pub fn create_list_from_expr<'ctx>(
             .compile_expr(elem, module)?
             .into_pointer_value();
 
-        let target_ptr = self_compiler
-            .builder
-            .build_struct_gep(self_compiler.runtime_value_type, val_ptr, 0, "val_tag_ptr")
-            .unwrap();
-        let val_tag = self_compiler
-            .builder
-            .build_load(self_compiler.context.i32_type(), target_ptr, "val_tag")
-            .unwrap()
-            .into_int_value();
-
-        let data_ptr = self_compiler
-            .builder
-            .build_struct_gep(self_compiler.runtime_value_type, val_ptr, 1, "val_data_ptr")
-            .unwrap();
-        let val_data = self_compiler
-            .builder
-            .build_load(self_compiler.context.i64_type(), data_ptr, "val_data")
-            .unwrap()
-            .into_int_value();
-
-        self_compiler
-            .builder
-            .build_call(
-                list_push_fn,
-                &[list_ptr_val.into(), val_tag.into(), val_data.into()],
-                "list_push_call",
-            )
-            .unwrap();
+        self_compiler.build_sprs_value_call_func(
+            val_ptr,
+            list_push_fn,
+            "list_push",
+            &[list_ptr_val.into()],
+            true,
+        );
     }
     Ok(list_ptr_val)
 }
@@ -265,23 +267,6 @@ pub fn move_variable<'ctx>(
     self_compiler.builder.position_at_end(cont_bb);
 }
 
-pub fn load_at_init_variable_with_existing<'ctx>(
-    self_compiler: &mut Compiler<'ctx>,
-    init_value: PointerValue<'ctx>,
-    ptr: PointerValue<'ctx>,
-    name: &str,
-) {
-    let val = self_compiler
-        .builder
-        .build_load(
-            self_compiler.runtime_value_type,
-            init_value,
-            &format!("{}_assign_load", name),
-        )
-        .unwrap();
-    let _ = self_compiler.builder.build_store(ptr, val);
-}
-
 pub fn var_load_at_init_variable<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
     init_value: PointerValue<'ctx>,
@@ -308,26 +293,7 @@ pub fn var_return_store<'ctx>(
 ) {
     let var_ptr = value_enum.into_pointer_value();
 
-    let tag_ptr = self_compiler
-        .builder
-        .build_struct_gep(
-            self_compiler.runtime_value_type,
-            var_ptr,
-            0,
-            &format!("{}_tag_ptr", name),
-        )
-        .unwrap();
-
-    self_compiler
-        .builder
-        .build_store(
-            tag_ptr,
-            self_compiler
-                .context
-                .i32_type()
-                .const_int(Tag::Unit as u64, false),
-        )
-        .unwrap();
+    self_compiler.tag_only_runtime_value_store(var_ptr, Tag::Unit as u64, name);
 }
 
 pub fn drop_var<'ctx>(
@@ -336,59 +302,24 @@ pub fn drop_var<'ctx>(
     drop_fn: FunctionValue<'_>,
     name: &str,
 ) {
-    let tag_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, ptr, 0, "var_tag_ptr")
-        .unwrap();
-    let tag = self_compiler
-        .builder
-        .build_load(self_compiler.context.i32_type(), tag_ptr, "var_tag")
-        .unwrap()
-        .into_int_value();
-
-    let data_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, ptr, 1, "var_data_ptr")
-        .unwrap();
-    let data = self_compiler
-        .builder
-        .build_load(self_compiler.context.i64_type(), data_ptr, "var_data")
-        .unwrap()
-        .into_int_value();
-
-    self_compiler
-        .builder
-        .build_call(drop_fn, &[tag.into(), data.into()], "drop_var_call")
-        .unwrap();
+    self_compiler.build_sprs_value_call_func(ptr, drop_fn, name, &[], false);
 }
 
 pub fn create_dummy_for_no_return<'ctx>(self_compiler: &mut Compiler<'ctx>) {
     let dummy = create_entry_block_alloca(self_compiler, "ret_dummy");
-    let tag_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, dummy, 0, "ret_dummy_tag")
-        .unwrap();
-    self_compiler
-        .builder
-        .build_store(
-            tag_ptr,
-            self_compiler
-                .context
-                .i32_type()
-                .const_int(Tag::Unit as u64, false),
-        )
-        .unwrap();
-    let data_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, dummy, 1, "ret_dummy_data")
-        .unwrap();
-    self_compiler
-        .builder
-        .build_store(
-            data_ptr,
-            self_compiler.context.i64_type().const_int(0, false),
-        )
-        .unwrap();
+    self_compiler.build_runtime_value_store(
+        dummy,
+        TagOptions {
+            tag: Tag::Unit as u64,
+            int_value_tag: None,
+        },
+        self_compiler.context.i64_type().const_int(0, false),
+        "ret_dummy",
+        RuntimeValueStoreOptions {
+            float: None,
+            str_ptr: None,
+        },
+    );
 
     let val = self_compiler
         .builder
@@ -566,32 +497,19 @@ pub fn create_integer<'ctx>(
 ) -> Result<BasicValueEnum<'ctx>, String> {
     let ptr = create_entry_block_alloca(self_compiler, "num_alloc");
 
-    let tag_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, ptr, 0, "tag_ptr")
-        .unwrap();
-    self_compiler
-        .builder
-        .build_store(
-            tag_ptr,
-            self_compiler
-                .context
-                .i32_type()
-                .const_int(Tag::Integer as u64, false),
-        )
-        .unwrap();
-
-    let data_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, ptr, 1, "data_ptr")
-        .unwrap();
-    self_compiler
-        .builder
-        .build_store(
-            data_ptr,
-            self_compiler.context.i64_type().const_int(*n as u64, false),
-        )
-        .unwrap();
+    self_compiler.build_runtime_value_store(
+        ptr,
+        TagOptions {
+            tag: Tag::Integer as u64,
+            int_value_tag: None,
+        },
+        self_compiler.context.i64_type().const_int(*n as u64, false),
+        "int",
+        RuntimeValueStoreOptions {
+            float: None,
+            str_ptr: None,
+        },
+    );
 
     Ok(ptr.into())
 }
@@ -602,36 +520,22 @@ pub fn create_float<'ctx>(
 ) -> Result<BasicValueEnum<'ctx>, String> {
     let ptr = create_entry_block_alloca(self_compiler, "float_alloc");
 
-    let tag_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, ptr, 0, "tag_ptr")
-        .unwrap();
-    self_compiler
-        .builder
-        .build_store(
-            tag_ptr,
-            self_compiler
-                .context
-                .i32_type()
-                .const_int(Tag::Float as u64, false),
-        )
-        .unwrap();
-
-    let data_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, ptr, 1, "data_ptr")
-        .unwrap();
-    let float_bits = f.to_bits();
-    self_compiler
-        .builder
-        .build_store(
-            data_ptr,
-            self_compiler
-                .context
-                .i64_type()
-                .const_int(float_bits, false),
-        )
-        .unwrap();
+    self_compiler.build_runtime_value_store(
+        ptr,
+        TagOptions {
+            tag: Tag::Float as u64,
+            int_value_tag: None,
+        },
+        self_compiler
+            .context
+            .i64_type()
+            .const_int(f.to_bits(), false),
+        "float",
+        RuntimeValueStoreOptions {
+            float: Some(f),
+            str_ptr: None,
+        },
+    );
 
     Ok(ptr.into())
 }
@@ -659,34 +563,26 @@ pub fn create_string<'ctx>(
 
     let ptr = create_entry_block_alloca(self_compiler, "str_alloc");
 
-    let tag_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, ptr, 0, "tag_ptr")
-        .unwrap();
-    self_compiler
-        .builder
-        .build_store(
-            tag_ptr,
-            self_compiler
-                .context
-                .i32_type()
-                .const_int(Tag::String as u64, false),
-        )
-        .unwrap();
-
-    let data_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, ptr, 1, "data_ptr")
-        .unwrap();
-    let str_ptr = global.as_pointer_value();
-    let str_ptr_as_i64 = self_compiler
-        .builder
-        .build_ptr_to_int(str_ptr, self_compiler.context.i64_type(), "str_ptr_as_i64")
-        .unwrap();
-    self_compiler
-        .builder
-        .build_store(data_ptr, str_ptr_as_i64)
-        .unwrap();
+    self_compiler.build_runtime_value_store(
+        ptr,
+        TagOptions {
+            tag: Tag::String as u64,
+            int_value_tag: None,
+        },
+        self_compiler
+            .builder
+            .build_ptr_to_int(
+                global.as_pointer_value(),
+                self_compiler.context.i64_type(),
+                "str_ptr_as_i64",
+            )
+            .unwrap(),
+        "string",
+        RuntimeValueStoreOptions {
+            float: None,
+            str_ptr: Some(global.as_pointer_value()),
+        },
+    );
 
     Ok(ptr.into())
 }
@@ -697,33 +593,22 @@ pub fn create_bool<'ctx>(
 ) -> Result<BasicValueEnum<'ctx>, String> {
     let ptr = create_entry_block_alloca(self_compiler, "bool_alloc");
 
-    let tag_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, ptr, 0, "bool_tag_ptr")
-        .unwrap();
-    self_compiler
-        .builder
-        .build_store(
-            tag_ptr,
-            self_compiler
-                .context
-                .i32_type()
-                .const_int(Tag::Boolean as u64, false),
-        )
-        .unwrap();
-
-    let data_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, ptr, 1, "bool_data_ptr")
-        .unwrap();
-    let bool_val = if *boolean { 1 } else { 0 };
-    self_compiler
-        .builder
-        .build_store(
-            data_ptr,
-            self_compiler.context.i64_type().const_int(bool_val, false),
-        )
-        .unwrap();
+    self_compiler.build_runtime_value_store(
+        ptr,
+        TagOptions {
+            tag: Tag::Boolean as u64,
+            int_value_tag: None,
+        },
+        self_compiler
+            .context
+            .i64_type()
+            .const_int(if *boolean { 1 } else { 0 }, false),
+        "bool",
+        RuntimeValueStoreOptions {
+            float: None,
+            str_ptr: None,
+        },
+    );
 
     Ok(ptr.into())
 }
@@ -733,32 +618,19 @@ pub fn create_int8<'ctx>(
 ) -> Result<BasicValueEnum<'ctx>, String> {
     let ptr = create_entry_block_alloca(self_compiler, "int8_alloc");
 
-    let tag_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, ptr, 0, "int8_tag_ptr")
-        .unwrap();
-    self_compiler
-        .builder
-        .build_store(
-            tag_ptr,
-            self_compiler
-                .context
-                .i32_type()
-                .const_int(Tag::Int8 as u64, false),
-        )
-        .unwrap();
-
-    let data_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, ptr, 1, "int8_data_ptr")
-        .unwrap();
-    self_compiler
-        .builder
-        .build_store(
-            data_ptr,
-            self_compiler.context.i64_type().const_int(0, false),
-        )
-        .unwrap();
+    self_compiler.build_runtime_value_store(
+        ptr,
+        TagOptions {
+            tag: Tag::Int8 as u64,
+            int_value_tag: None,
+        },
+        self_compiler.context.i64_type().const_int(0, false),
+        "int8",
+        RuntimeValueStoreOptions {
+            float: None,
+            str_ptr: None,
+        },
+    );
 
     Ok(ptr.into())
 }
@@ -768,32 +640,19 @@ pub fn create_uint8<'ctx>(
 ) -> Result<BasicValueEnum<'ctx>, String> {
     let ptr = create_entry_block_alloca(self_compiler, "uint8_alloc");
 
-    let tag_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, ptr, 0, "uint8_tag_ptr")
-        .unwrap();
-    self_compiler
-        .builder
-        .build_store(
-            tag_ptr,
-            self_compiler
-                .context
-                .i32_type()
-                .const_int(Tag::Uint8 as u64, false),
-        )
-        .unwrap();
-
-    let data_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, ptr, 1, "uint8_data_ptr")
-        .unwrap();
-    self_compiler
-        .builder
-        .build_store(
-            data_ptr,
-            self_compiler.context.i64_type().const_int(0, false),
-        )
-        .unwrap();
+    self_compiler.build_runtime_value_store(
+        ptr,
+        TagOptions {
+            tag: Tag::Uint8 as u64,
+            int_value_tag: None,
+        },
+        self_compiler.context.i64_type().const_int(0, false),
+        "uint8",
+        RuntimeValueStoreOptions {
+            float: None,
+            str_ptr: None,
+        },
+    );
 
     Ok(ptr.into())
 }
@@ -803,32 +662,19 @@ pub fn create_int16<'ctx>(
 ) -> Result<BasicValueEnum<'ctx>, String> {
     let ptr = create_entry_block_alloca(self_compiler, "int16_alloc");
 
-    let tag_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, ptr, 0, "int16_tag_ptr")
-        .unwrap();
-    self_compiler
-        .builder
-        .build_store(
-            tag_ptr,
-            self_compiler
-                .context
-                .i32_type()
-                .const_int(Tag::Int16 as u64, false),
-        )
-        .unwrap();
-
-    let data_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, ptr, 1, "int16_data_ptr")
-        .unwrap();
-    self_compiler
-        .builder
-        .build_store(
-            data_ptr,
-            self_compiler.context.i64_type().const_int(0, false),
-        )
-        .unwrap();
+    self_compiler.build_runtime_value_store(
+        ptr,
+        TagOptions {
+            tag: Tag::Int16 as u64,
+            int_value_tag: None,
+        },
+        self_compiler.context.i64_type().const_int(0, false),
+        "int16",
+        RuntimeValueStoreOptions {
+            float: None,
+            str_ptr: None,
+        },
+    );
 
     Ok(ptr.into())
 }
@@ -838,32 +684,19 @@ pub fn create_uint16<'ctx>(
 ) -> Result<BasicValueEnum<'ctx>, String> {
     let ptr = create_entry_block_alloca(self_compiler, "uint16_alloc");
 
-    let tag_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, ptr, 0, "uint16_tag_ptr")
-        .unwrap();
-    self_compiler
-        .builder
-        .build_store(
-            tag_ptr,
-            self_compiler
-                .context
-                .i32_type()
-                .const_int(Tag::Uint16 as u64, false),
-        )
-        .unwrap();
-
-    let data_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, ptr, 1, "uint16_data_ptr")
-        .unwrap();
-    self_compiler
-        .builder
-        .build_store(
-            data_ptr,
-            self_compiler.context.i64_type().const_int(0, false),
-        )
-        .unwrap();
+    self_compiler.build_runtime_value_store(
+        ptr,
+        TagOptions {
+            tag: Tag::Uint16 as u64,
+            int_value_tag: None,
+        },
+        self_compiler.context.i64_type().const_int(0, false),
+        "uint16",
+        RuntimeValueStoreOptions {
+            float: None,
+            str_ptr: None,
+        },
+    );
 
     Ok(ptr.into())
 }
@@ -873,32 +706,19 @@ pub fn create_int32<'ctx>(
 ) -> Result<BasicValueEnum<'ctx>, String> {
     let ptr = create_entry_block_alloca(self_compiler, "int32_alloc");
 
-    let tag_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, ptr, 0, "int32_tag_ptr")
-        .unwrap();
-    self_compiler
-        .builder
-        .build_store(
-            tag_ptr,
-            self_compiler
-                .context
-                .i32_type()
-                .const_int(Tag::Int32 as u64, false),
-        )
-        .unwrap();
-
-    let data_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, ptr, 1, "int32_data_ptr")
-        .unwrap();
-    self_compiler
-        .builder
-        .build_store(
-            data_ptr,
-            self_compiler.context.i64_type().const_int(0, false),
-        )
-        .unwrap();
+    self_compiler.build_runtime_value_store(
+        ptr,
+        TagOptions {
+            tag: Tag::Int32 as u64,
+            int_value_tag: None,
+        },
+        self_compiler.context.i64_type().const_int(0, false),
+        "int32",
+        RuntimeValueStoreOptions {
+            float: None,
+            str_ptr: None,
+        },
+    );
 
     Ok(ptr.into())
 }
@@ -908,32 +728,19 @@ pub fn create_uint32<'ctx>(
 ) -> Result<BasicValueEnum<'ctx>, String> {
     let ptr = create_entry_block_alloca(self_compiler, "uint32_alloc");
 
-    let tag_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, ptr, 0, "uint32_tag_ptr")
-        .unwrap();
-    self_compiler
-        .builder
-        .build_store(
-            tag_ptr,
-            self_compiler
-                .context
-                .i32_type()
-                .const_int(Tag::Uint32 as u64, false),
-        )
-        .unwrap();
-
-    let data_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, ptr, 1, "uint32_data_ptr")
-        .unwrap();
-    self_compiler
-        .builder
-        .build_store(
-            data_ptr,
-            self_compiler.context.i64_type().const_int(0, false),
-        )
-        .unwrap();
+    self_compiler.build_runtime_value_store(
+        ptr,
+        TagOptions {
+            tag: Tag::Uint32 as u64,
+            int_value_tag: None,
+        },
+        self_compiler.context.i64_type().const_int(0, false),
+        "uint32",
+        RuntimeValueStoreOptions {
+            float: None,
+            str_ptr: None,
+        },
+    );
 
     Ok(ptr.into())
 }
@@ -943,32 +750,19 @@ pub fn create_int64<'ctx>(
 ) -> Result<BasicValueEnum<'ctx>, String> {
     let ptr = create_entry_block_alloca(self_compiler, "int64_alloc");
 
-    let tag_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, ptr, 0, "int64_tag_ptr")
-        .unwrap();
-    self_compiler
-        .builder
-        .build_store(
-            tag_ptr,
-            self_compiler
-                .context
-                .i32_type()
-                .const_int(Tag::Int64 as u64, false),
-        )
-        .unwrap();
-
-    let data_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, ptr, 1, "int64_data_ptr")
-        .unwrap();
-    self_compiler
-        .builder
-        .build_store(
-            data_ptr,
-            self_compiler.context.i64_type().const_int(0, false),
-        )
-        .unwrap();
+    self_compiler.build_runtime_value_store(
+        ptr,
+        TagOptions {
+            tag: Tag::Int64 as u64,
+            int_value_tag: None,
+        },
+        self_compiler.context.i64_type().const_int(0, false),
+        "int64",
+        RuntimeValueStoreOptions {
+            float: None,
+            str_ptr: None,
+        },
+    );
 
     Ok(ptr.into())
 }
@@ -978,32 +772,19 @@ pub fn create_uint64<'ctx>(
 ) -> Result<BasicValueEnum<'ctx>, String> {
     let ptr = create_entry_block_alloca(self_compiler, "uint64_alloc");
 
-    let tag_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, ptr, 0, "uint64_tag_ptr")
-        .unwrap();
-    self_compiler
-        .builder
-        .build_store(
-            tag_ptr,
-            self_compiler
-                .context
-                .i32_type()
-                .const_int(Tag::Uint64 as u64, false),
-        )
-        .unwrap();
-
-    let data_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, ptr, 1, "uint64_data_ptr")
-        .unwrap();
-    self_compiler
-        .builder
-        .build_store(
-            data_ptr,
-            self_compiler.context.i64_type().const_int(0, false),
-        )
-        .unwrap();
+    self_compiler.build_runtime_value_store(
+        ptr,
+        TagOptions {
+            tag: Tag::Uint64 as u64,
+            int_value_tag: None,
+        },
+        self_compiler.context.i64_type().const_int(0, false),
+        "uint64",
+        RuntimeValueStoreOptions {
+            float: None,
+            str_ptr: None,
+        },
+    );
 
     Ok(ptr.into())
 }
@@ -1013,32 +794,19 @@ pub fn create_float16<'ctx>(
 ) -> Result<BasicValueEnum<'ctx>, String> {
     let ptr = create_entry_block_alloca(self_compiler, "f16_alloc");
 
-    let tag_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, ptr, 0, "f16_tag_ptr")
-        .unwrap();
-    self_compiler
-        .builder
-        .build_store(
-            tag_ptr,
-            self_compiler
-                .context
-                .i32_type()
-                .const_int(Tag::Float16 as u64, false),
-        )
-        .unwrap();
-
-    let data_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, ptr, 1, "f16_data_ptr")
-        .unwrap();
-    self_compiler
-        .builder
-        .build_store(
-            data_ptr,
-            self_compiler.context.i64_type().const_int(0, false),
-        )
-        .unwrap();
+    self_compiler.build_runtime_value_store(
+        ptr,
+        TagOptions {
+            tag: Tag::Float16 as u64,
+            int_value_tag: None,
+        },
+        self_compiler.context.i64_type().const_int(0, false),
+        "f16",
+        RuntimeValueStoreOptions {
+            float: None,
+            str_ptr: None,
+        },
+    );
 
     Ok(ptr.into())
 }
@@ -1048,32 +816,19 @@ pub fn create_float32<'ctx>(
 ) -> Result<BasicValueEnum<'ctx>, String> {
     let ptr = create_entry_block_alloca(self_compiler, "f32_alloc");
 
-    let tag_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, ptr, 0, "f32_tag_ptr")
-        .unwrap();
-    self_compiler
-        .builder
-        .build_store(
-            tag_ptr,
-            self_compiler
-                .context
-                .i32_type()
-                .const_int(Tag::Float32 as u64, false),
-        )
-        .unwrap();
-
-    let data_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, ptr, 1, "f32_data_ptr")
-        .unwrap();
-    self_compiler
-        .builder
-        .build_store(
-            data_ptr,
-            self_compiler.context.i64_type().const_int(0, false),
-        )
-        .unwrap();
+    self_compiler.build_runtime_value_store(
+        ptr,
+        TagOptions {
+            tag: Tag::Float32 as u64,
+            int_value_tag: None,
+        },
+        self_compiler.context.i64_type().const_int(0, false),
+        "f32",
+        RuntimeValueStoreOptions {
+            float: None,
+            str_ptr: None,
+        },
+    );
 
     Ok(ptr.into())
 }
@@ -1083,32 +838,19 @@ pub fn create_float64<'ctx>(
 ) -> Result<BasicValueEnum<'ctx>, String> {
     let ptr = create_entry_block_alloca(self_compiler, "f64_alloc");
 
-    let tag_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, ptr, 0, "f64_tag_ptr")
-        .unwrap();
-    self_compiler
-        .builder
-        .build_store(
-            tag_ptr,
-            self_compiler
-                .context
-                .i32_type()
-                .const_int(Tag::Float64 as u64, false),
-        )
-        .unwrap();
-
-    let data_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, ptr, 1, "f64_data_ptr")
-        .unwrap();
-    self_compiler
-        .builder
-        .build_store(
-            data_ptr,
-            self_compiler.context.i64_type().const_int(0, false),
-        )
-        .unwrap();
+    self_compiler.build_runtime_value_store(
+        ptr,
+        TagOptions {
+            tag: Tag::Float64 as u64,
+            int_value_tag: None,
+        },
+        self_compiler.context.i64_type().const_int(0, false),
+        "f64",
+        RuntimeValueStoreOptions {
+            float: None,
+            str_ptr: None,
+        },
+    );
 
     Ok(ptr.into())
 }
@@ -1128,39 +870,19 @@ fn box_return_value<'ctx>(
             .build_int_s_extend(int_val, self_compiler.context.i64_type(), "int_to_i64")
             .unwrap();
 
-        let tag_ptr = self_compiler
-            .builder
-            .build_struct_gep(
-                self_compiler.runtime_value_type,
-                result_ptr,
-                0,
-                "res_tag_ptr",
-            )
-            .unwrap();
-        self_compiler
-            .builder
-            .build_store(
-                tag_ptr,
-                self_compiler
-                    .context
-                    .i32_type()
-                    .const_int(Tag::Integer as u64, false),
-            )
-            .unwrap();
-
-        let data_ptr = self_compiler
-            .builder
-            .build_struct_gep(
-                self_compiler.runtime_value_type,
-                result_ptr,
-                1,
-                "res_data_ptr",
-            )
-            .unwrap();
-        self_compiler
-            .builder
-            .build_store(data_ptr, val_i64)
-            .unwrap();
+        self_compiler.build_runtime_value_store(
+            result_ptr,
+            TagOptions {
+                tag: Tag::Integer as u64,
+                int_value_tag: None,
+            },
+            val_i64,
+            "res_integer",
+            RuntimeValueStoreOptions {
+                float: None,
+                str_ptr: None,
+            },
+        );
     } else if return_type.is_float_type() {
         let float_val = result_val.into_float_value();
 
@@ -1175,36 +897,19 @@ fn box_return_value<'ctx>(
             .unwrap()
             .into_int_value();
 
-        let tag_ptr = self_compiler
-            .builder
-            .build_struct_gep(
-                self_compiler.runtime_value_type,
-                result_ptr,
-                0,
-                "res_tag_ptr",
-            )
-            .unwrap();
-        self_compiler
-            .builder
-            .build_store(
-                tag_ptr,
-                self_compiler
-                    .context
-                    .i32_type()
-                    .const_int(Tag::Float as u64, false),
-            )
-            .unwrap();
-
-        let data_ptr = self_compiler
-            .builder
-            .build_struct_gep(
-                self_compiler.runtime_value_type,
-                result_ptr,
-                1,
-                "res_data_ptr",
-            )
-            .unwrap();
-        self_compiler.builder.build_store(data_ptr, data).unwrap();
+        self_compiler.build_runtime_value_store(
+            result_ptr,
+            TagOptions {
+                tag: Tag::Float as u64,
+                int_value_tag: None,
+            },
+            data,
+            "res_float",
+            RuntimeValueStoreOptions {
+                float: None,
+                str_ptr: None,
+            },
+        );
     } else if return_type.is_struct_type() {
         self_compiler
             .builder
@@ -1217,59 +922,21 @@ fn box_return_value<'ctx>(
             .build_ptr_to_int(ptr_val, self_compiler.context.i64_type(), "ptr_to_i64")
             .unwrap();
 
-        let tag_ptr = self_compiler
-            .builder
-            .build_struct_gep(
-                self_compiler.runtime_value_type,
-                result_ptr,
-                0,
-                "res_tag_ptr",
-            )
-            .unwrap();
-        self_compiler
-            .builder
-            .build_store(
-                tag_ptr,
-                self_compiler
-                    .context
-                    .i32_type()
-                    .const_int(Tag::String as u64, false),
-            )
-            .unwrap();
-
-        let data_ptr = self_compiler
-            .builder
-            .build_struct_gep(
-                self_compiler.runtime_value_type,
-                result_ptr,
-                1,
-                "res_data_ptr",
-            )
-            .unwrap();
-        self_compiler
-            .builder
-            .build_store(data_ptr, ptr_as_i64)
-            .unwrap();
+        self_compiler.build_runtime_value_store(
+            result_ptr,
+            TagOptions {
+                tag: Tag::String as u64,
+                int_value_tag: None,
+            },
+            ptr_as_i64,
+            "res_string",
+            RuntimeValueStoreOptions {
+                float: None,
+                str_ptr: None,
+            },
+        );
     } else {
-        let tag_ptr = self_compiler
-            .builder
-            .build_struct_gep(
-                self_compiler.runtime_value_type,
-                result_ptr,
-                0,
-                "res_tag_ptr",
-            )
-            .unwrap();
-        self_compiler
-            .builder
-            .build_store(
-                tag_ptr,
-                self_compiler
-                    .context
-                    .i32_type()
-                    .const_int(Tag::Unit as u64, false),
-            )
-            .unwrap();
+        self_compiler.tag_only_runtime_value_store(result_ptr, Tag::Unit as u64, "res_unit");
     };
     Ok(result_ptr.into())
 }
@@ -1959,34 +1626,19 @@ fn create_add_expr_build_int_branch<'ctx>(
         .unwrap();
 
     let int_res_ptr = create_entry_block_alloca(self_compiler, "int_res_alloc");
-    let int_res_tag_ptr = self_compiler
-        .builder
-        .build_struct_gep(
-            self_compiler.runtime_value_type,
-            int_res_ptr,
-            0,
-            "int_res_tag_ptr",
-        )
-        .unwrap();
-
-    self_compiler
-        .builder
-        .build_store(int_res_tag_ptr, l_tag)
-        .unwrap();
-
-    let int_res_data_ptr = self_compiler
-        .builder
-        .build_struct_gep(
-            self_compiler.runtime_value_type,
-            int_res_ptr,
-            1,
-            "int_res_data_ptr",
-        )
-        .unwrap();
-    self_compiler
-        .builder
-        .build_store(int_res_data_ptr, int_sum)
-        .unwrap();
+    self_compiler.build_runtime_value_store(
+        int_res_ptr,
+        TagOptions {
+            tag: 0,
+            int_value_tag: Some(l_tag),
+        },
+        int_sum,
+        "int_res",
+        RuntimeValueStoreOptions {
+            float: None,
+            str_ptr: None,
+        },
+    );
 
     Ok(int_res_ptr)
 }
