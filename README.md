@@ -43,6 +43,8 @@ For this language development environment setup is WSL2(Ubuntu) + VSCode is reco
  * List(128) (dynamic array)
  * Range
  * Unit
+ * Enum
+ * Struct
  * i8 (only for cast! macro)
  * u8 (only for cast! macro)
  * i16 (only for cast! macro)
@@ -111,6 +113,41 @@ fn add(a, b) >> int {
   | __drop | for dropping a value|
   | __clone | for cloning a value|
   | __panic | for handling panic situations|
+
+
+- enum
+
+```rust
+pub enum Animal {
+ Dog,
+ Cat,
+}
+
+fn main() {
+   println!(Animal.Dog);
+
+}
+
+```
+
+- struct
+
+```rust
+pub struct Point {
+  x >> i64,
+  y >> i64
+}
+
+fn main() {
+ var p = Point {
+  x = 10,
+  y = 20
+ };
+
+println!(p.x); # prints 10
+println!(p.y); # prints 20
+}
+```
 
 - Control flow
 ```rust

@@ -128,7 +128,24 @@
 //!
 //! ```
 //!
+//! - struct
 //!
+//! ```
+//! pub struct Point {
+//!   x >> i64,
+//!   y >> i64
+//! }
+//!
+//! fn main() {
+//!  var p = Point {
+//!   x = 10,
+//!   y = 20
+//!  };
+//!
+//! println!(p.x); # prints 10
+//! println!(p.y); # prints 20
+//! }
+//! ```
 //!
 //! - Control flow
 //! ```

@@ -4084,6 +4084,7 @@ pub fn create_field_access<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
     struct_expr: &ast::Expr,
     field_index: u32,
+    struct_name: &str,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
     let struct_ptr = self_compiler
@@ -4119,67 +4120,144 @@ pub fn create_field_access<'ctx>(
         )
         .unwrap();
 
-    let field_ptr = unsafe {
-        self_compiler
-            .builder
-            .build_gep(
-                self_compiler.runtime_value_type,
-                heap_ptr,
-                &[self_compiler
-                    .context
-                    .i64_type()
-                    .const_int(field_index as u64, false)],
-                "field_ptr",
-            )
-            .unwrap()
-    };
+    let struct_def = self_compiler
+        .struct_defs
+        .get(struct_name)
+        .ok_or_else(|| format!("Undefined struct : {}", struct_name))?;
+    let llvm_type = struct_def.llvm_type;
+    let field_def = &struct_def.fields[field_index as usize];
 
-    let field_tag_ptr = self_compiler
+    let struct_ptr_typed = self_compiler
         .builder
-        .build_struct_gep(
-            self_compiler.runtime_value_type,
-            field_ptr,
-            0,
-            "field_tag_ptr",
+        .build_pointer_cast(
+            heap_ptr,
+            llvm_type.get_context().ptr_type(AddressSpace::default()),
+            "struct_ptr_typed",
         )
-        .unwrap();
-    let field_tag = self_compiler
-        .builder
-        .build_load(self_compiler.context.i32_type(), field_tag_ptr, "field_tag")
         .unwrap();
 
-    let field_data_ptr = self_compiler
+    let field_ptr = self_compiler
         .builder
-        .build_struct_gep(
-            self_compiler.runtime_value_type,
-            field_ptr,
-            1,
-            "field_data_ptr",
-        )
+        .build_struct_gep(llvm_type, struct_ptr_typed, field_index, "field_ptr")
         .unwrap();
-    let field_data = self_compiler
+
+    if let Some(ty) = &field_def.ty {
+        if crate::interpreter::type_helper::is_int_type_in_llvm().contains(ty) {
+            match ty {
+                crate::interpreter::type_helper::Type::Int
+                | crate::interpreter::type_helper::Type::TypeI64
+                | crate::interpreter::type_helper::Type::TypeU64 => {
+                    let val = self_compiler
+                        .builder
+                        .build_load(self_compiler.context.i64_type(), field_ptr, "field_val")
+                        .unwrap()
+                        .into_int_value();
+
+                    let res_ptr =
+                        create_entry_block_alloca(self_compiler, "int_field_access_res_alloc");
+                    let res_tag_ptr = self_compiler
+                        .builder
+                        .build_struct_gep(
+                            self_compiler.runtime_value_type,
+                            res_ptr,
+                            0,
+                            "res_tag_ptr",
+                        )
+                        .unwrap();
+                    self_compiler
+                        .builder
+                        .build_store(
+                            res_tag_ptr,
+                            self_compiler
+                                .context
+                                .i32_type()
+                                .const_int(Tag::Integer as u64, false),
+                        )
+                        .unwrap();
+                    let res_data_ptr = self_compiler
+                        .builder
+                        .build_struct_gep(
+                            self_compiler.runtime_value_type,
+                            res_ptr,
+                            1,
+                            "res_data_ptr",
+                        )
+                        .unwrap();
+                    self_compiler
+                        .builder
+                        .build_store(res_data_ptr, val)
+                        .unwrap();
+                    return Ok(res_ptr.into());
+                }
+                crate::interpreter::type_helper::Type::Str => {
+                    let val = self_compiler
+                        .builder
+                        .build_load(
+                            self_compiler.context.ptr_type(AddressSpace::default()),
+                            field_ptr,
+                            "str_field_ptr_load",
+                        )
+                        .unwrap()
+                        .into_pointer_value();
+                    let var_int = self_compiler
+                        .builder
+                        .build_ptr_to_int(
+                            val,
+                            self_compiler.context.i64_type(),
+                            "str_field_ptr_as_int",
+                        )
+                        .unwrap();
+                    let res_ptr =
+                        create_entry_block_alloca(self_compiler, "str_field_access_res_alloc");
+                    let tag_ptr = self_compiler
+                        .builder
+                        .build_struct_gep(
+                            self_compiler.runtime_value_type,
+                            res_ptr,
+                            0,
+                            "res_tag_ptr",
+                        )
+                        .unwrap();
+                    self_compiler
+                        .builder
+                        .build_store(
+                            tag_ptr,
+                            self_compiler
+                                .context
+                                .i32_type()
+                                .const_int(Tag::String as u64, false),
+                        )
+                        .unwrap();
+                    let data_ptr = self_compiler
+                        .builder
+                        .build_struct_gep(
+                            self_compiler.runtime_value_type,
+                            res_ptr,
+                            1,
+                            "res_data_ptr",
+                        )
+                        .unwrap();
+                    self_compiler
+                        .builder
+                        .build_store(data_ptr, var_int)
+                        .unwrap();
+                    return Ok(res_ptr.into());
+                }
+                _ => { /* Fallback to generic field access */ }
+            }
+        }
+    }
+
+    let field_val = self_compiler
         .builder
-        .build_load(
-            self_compiler.context.i64_type(),
-            field_data_ptr,
-            "field_data",
-        )
+        .build_load(self_compiler.runtime_value_type, field_ptr, "field_val")
         .unwrap();
 
     let res_ptr = create_entry_block_alloca(self_compiler, "field_access_res_alloc");
 
-    let res_tag_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, res_ptr, 0, "res_tag_ptr")
-        .unwrap();
-
-    let res_data_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, res_ptr, 1, "res_data_ptr")
-        .unwrap();
     self_compiler
         .builder
-        .build_store(res_tag_ptr, field_tag)
+        .build_store(res_ptr, field_val)
         .unwrap();
 
     Ok(res_ptr.into())
@@ -4234,12 +4312,88 @@ pub fn create_struct_init<'ctx>(
             )
         })?;
 
+        let field_def = def_fields
+            .iter()
+            .find(|f| f.ident == *field_name)
+            .ok_or_else(|| {
+                format!(
+                    "Field definition for '{}' not found in struct '{}'",
+                    field_name, struct_name
+                )
+            })?;
+
         let value = self_compiler.compile_expr(field_expr, module)?;
 
         let field_ptr = self_compiler
             .builder
             .build_struct_gep(llvm_type, struct_ptr, *index, "field_ptr")
             .map_err(|e| e.to_string())?;
+
+        if let Some(ty) = &field_def.ty {
+            if crate::interpreter::type_helper::is_int_type_in_llvm().contains(ty) {
+                match ty {
+                    crate::interpreter::type_helper::Type::Int
+                    | crate::interpreter::type_helper::Type::TypeI64
+                    | crate::interpreter::type_helper::Type::TypeU64 => {
+                        let val_ptr = value.into_pointer_value();
+                        let data_ptr = self_compiler
+                            .builder
+                            .build_struct_gep(
+                                self_compiler.runtime_value_type,
+                                val_ptr,
+                                1,
+                                "int_field_data_ptr",
+                            )
+                            .unwrap();
+                        let int_val = self_compiler
+                            .builder
+                            .build_load(self_compiler.context.i64_type(), data_ptr, "int_field_val")
+                            .unwrap()
+                            .into_int_value();
+                        self_compiler
+                            .builder
+                            .build_store(field_ptr, int_val)
+                            .unwrap();
+                        continue;
+                    }
+                    crate::interpreter::type_helper::Type::Str => {
+                        let val_ptr = value.into_pointer_value();
+                        let data_ptr = self_compiler
+                            .builder
+                            .build_struct_gep(
+                                self_compiler.runtime_value_type,
+                                val_ptr,
+                                1,
+                                "str_field_data_ptr",
+                            )
+                            .unwrap();
+                        let str_ptr_int = self_compiler
+                            .builder
+                            .build_load(
+                                self_compiler.context.i64_type(),
+                                data_ptr,
+                                "str_field_ptr_int",
+                            )
+                            .unwrap()
+                            .into_int_value();
+                        let str_ptr = self_compiler
+                            .builder
+                            .build_int_to_ptr(
+                                str_ptr_int,
+                                self_compiler.context.ptr_type(AddressSpace::default()),
+                                "str_field_ptr",
+                            )
+                            .unwrap();
+                        self_compiler
+                            .builder
+                            .build_store(field_ptr, str_ptr)
+                            .unwrap();
+                        continue;
+                    }
+                    _ => { /* Fallback to generic field store */ }
+                }
+            }
+        }
 
         let val_to_store = if value.is_pointer_value() {
             self_compiler

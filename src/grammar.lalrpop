@@ -139,6 +139,7 @@ StructDef: Struct =
             ident: name,
             fields,
             is_public: is_pub,
+            _methods: vec![],
         }
 };
 
@@ -299,7 +300,7 @@ Stmt: Stmt = {
         }
     },
     IfStmt,
-    While <c:Expr> <body:Block> =>
+    While <c:ExprNoStruct> <body:Block> =>
         Stmt::While {
             cond: c,
             body: body,
@@ -525,6 +526,106 @@ Postfix: Expr = {
 }
 
 Atom: Expr = {
+    <id:Ident> LParen RParen => Expr::Call(id, vec![], None),
+    <id:Ident> LParen <first:Expr> <rest:(Comma <Expr>)*> RParen => {
+        let mut args = vec![first];
+        args.extend(rest);
+        Expr::Call(id, args, None)
+    },
+    <id:Ident> LBrace <fields:StructInitFields> RBrace => {
+        Expr::StructInit(id, fields)
+    },
+    <id:Ident> => Expr::Var(id),
+    <n:Num> => Expr::Number(n),
+    <f:Float> => Expr::Float(f),
+    <s:StringLiteral> => Expr::Str(s),
+    <b:BooleanLiteral> => Expr::Bool(b),
+    <i:TypeI8> => Expr::TypeI8,
+    <u:TypeU8> => Expr::TypeU8,
+    <i:TypeI16> => Expr::TypeI16,
+    <u:TypeU16> => Expr::TypeU16,
+    <i:TypeI32> => Expr::TypeI32,
+    <u:TypeU32> => Expr::TypeU32,
+    <i:TypeI64> => Expr::TypeI64,
+    <u:TypeU64> => Expr::TypeU64,
+    <f:TypeF16> => Expr::TypeF16,
+    <f:TypeF32> => Expr::TypeF32,
+    <f:TypeF64> => Expr::TypeF64,
+    LParen RParen => Expr::Unit(),
+    LParen <e:Expr> RParen => e,
+    LBracket RBracket => Expr::List(vec![]),
+    LBracket <first:Expr> <rest:(Comma <Expr>)*> RBracket => {
+        let mut v = vec![first];
+        v.extend(rest);
+        Expr::List(v)
+    },
+};
+
+ExprNoStruct: Expr = RangeExprNoStruct;
+
+RangeExprNoStruct: Expr = {
+    <l:ComparisonNoStruct> DotDot <r:ComparisonNoStruct> => Expr::Range(Box::new(l), Box::new(r)),
+    <e:ComparisonNoStruct> => e,
+}
+
+ComparisonNoStruct: Expr = {
+    <l:ComparisonNoStruct> EqEq <r:AddAndMinusNoStruct> => Expr::Eq(Box::new(l), Box::new(r)),
+    <l:ComparisonNoStruct> Neq <r:AddAndMinusNoStruct> => Expr::Neq(Box::new(l), Box::new(r)),
+    <l:ComparisonNoStruct> Lt <r:AddAndMinusNoStruct> => Expr::Lt(Box::new(l), Box::new(r)),
+    <l:ComparisonNoStruct> Gt <r:AddAndMinusNoStruct> => Expr::Gt(Box::new(l), Box::new(r)),
+    <l:ComparisonNoStruct> Le <r:AddAndMinusNoStruct> => Expr::Le(Box::new(l), Box::new(r)),
+    <l:ComparisonNoStruct> Ge <r:AddAndMinusNoStruct> => Expr::Ge(Box::new(l), Box::new(r)),
+    <a:AddAndMinusNoStruct>                   => a,
+}
+
+AddAndMinusNoStruct: Expr = {
+    <l:AddAndMinusNoStruct> Plus <r:MulAndDivAndModNoStruct> => Expr::Add(Box::new(l), Box::new(r)),
+    <l:AddAndMinusNoStruct> Minus <r:MulAndDivAndModNoStruct> => Expr::Minus(Box::new(l), Box::new(r)),
+    <m:MulAndDivAndModNoStruct>              => m,
+};
+
+MulAndDivAndModNoStruct: Expr = {
+    <l:MulAndDivAndModNoStruct> Star <r:UnaryNoStruct> => Expr::Mul(Box::new(l), Box::new(r)),
+    <l:MulAndDivAndModNoStruct> Div <r:UnaryNoStruct> => Expr::Div(Box::new(l), Box::new(r)),
+    <l:MulAndDivAndModNoStruct> Mod <r:UnaryNoStruct> => Expr::Mod(Box::new(l), Box::new(r)),
+    <u:UnaryNoStruct> => u,
+};
+
+UnaryNoStruct: Expr = {
+    <p: PostfixNoStruct> => p,
+}
+
+PostfixNoStruct: Expr = {
+    <base:PostfixNoStruct> LBracket <index:Expr> RBracket => Expr::Index(Box::new(base), Box::new(index)),
+    <e:PostfixNoStruct> PlusPlus => Expr::Increment(Box::new(e)),
+    <e:PostfixNoStruct> MinusMinus => Expr::Decrement(Box::new(e)),
+    <base:PostfixNoStruct> Dot <field:Ident> LParen RParen => {
+        if let Expr::Var(mod_name) = base {
+            Expr::ModuleAccess(mod_name, field, vec![])
+        } else {
+            Expr::Call(field, vec![], None)
+        }
+    },
+    <base:PostfixNoStruct> Dot <field:Ident> LParen <first:Expr> <rest:(Comma <Expr>)*> RParen => {
+        let mut args = vec![first];
+        args.extend(rest);
+        if let Expr::Var(mod_name) = base {
+            Expr::ModuleAccess(mod_name, field, args)
+        } else {
+            Expr::Call(field, args, None)
+        }
+    },
+    <base:PostfixNoStruct> Dot <field:Ident> => {
+        if let Expr::Var(val) = base {
+            Expr::FieldAccess(Box::new(Expr::Var(val)), field)
+        } else {
+            Expr::FieldAccess(Box::new(base), field)
+        }
+    },
+    <f:AtomNoStruct> => f,
+}
+
+AtomNoStruct: Expr = {
     <id:Ident> LParen RParen => Expr::Call(id, vec![], None),
     <id:Ident> LParen <first:Expr> <rest:(Comma <Expr>)*> RParen => {
         let mut args = vec![first];

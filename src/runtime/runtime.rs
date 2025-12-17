@@ -14,6 +14,7 @@ pub enum Tag {
     Range = 5,
     Unit = 6,
     Enum = 7,
+    Struct = 8,
 
     // System types
     Int8 = 100,
@@ -200,6 +201,10 @@ pub extern "C" fn __println(list_ptr: *mut Vec<SprsValue>) {
                     "Value[{}]: <enum variant index {}>",
                     name_str, info.variant_index
                 );
+            }
+            t if t == Tag::Struct as i32 => {
+                // struct
+                println!("Value[{}]: <struct at {:p}>", i, val.data as *mut u8);
             }
             _ => {
                 println!("Value[{}]: <unknown type>", i);

@@ -681,6 +681,13 @@ impl<'ctx> Compiler<'ctx> {
         }
     }
 
+    pub fn get_expr_name(&self, expr: &ast::Expr) -> Option<String> {
+        match expr {
+            ast::Expr::Var(name) => Some(name.clone()),
+            _ => None,
+        }
+    }
+
     fn infer_type(&self, expr: &ast::Expr) -> Type {
         match expr {
             ast::Expr::Number(_) => Type::Int,
@@ -1129,13 +1136,17 @@ impl<'ctx> Compiler<'ctx> {
                 let struct_name = match lhs_type {
                     Type::Struct(name) => name,
                     _ => {
-                        return Err(format!("Field access on non-struct type: {:?}", lhs_type));
+                        return Err(format!(
+                            "Undefined variable: {}",
+                            self.get_expr_name(lhs).unwrap_or_default()
+                        ));
                     }
                 };
 
                 let index = self.get_field_index(&struct_name, rhs)?;
 
-                let result = builder_helper::create_field_access(self, lhs, index, module);
+                let result =
+                    builder_helper::create_field_access(self, lhs, index, &struct_name, module);
                 result
             }
             ast::Expr::Add(lhs, rhs) => {
