@@ -7,6 +7,7 @@ use crate::llvm;
 use crate::llvm::builder_helper;
 use crate::llvm::builder_helper::Comparison;
 use crate::llvm::builder_helper::EqNeq;
+use crate::llvm::builder_helper::TagOptionsInst;
 use crate::llvm::builder_helper::UpDown;
 use inkwell::AddressSpace;
 use inkwell::builder::Builder;
@@ -15,8 +16,11 @@ use inkwell::module::Linkage;
 use inkwell::module::Module;
 use inkwell::types::BasicTypeEnum;
 use inkwell::types::{BasicMetadataTypeEnum, StructType};
+use inkwell::values::FloatValue;
 use inkwell::values::IntValue;
 use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue, ValueKind};
+use serde::de::value;
+use std::any::Any;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::f32::consts::E;
@@ -44,31 +48,32 @@ pub struct Compiler<'ctx> {
     pub enum_names: HashSet<String>,
 }
 
-pub struct RuntimeValueStoreOptions<'ctx> {
-    pub float: Option<f64>,
-    pub str_ptr: Option<PointerValue<'ctx>>,
+pub enum StoreTag<'ctx> {
+    Int(u64),
+    Dynamic(IntValue<'ctx>),
 }
 
-pub struct TagOptions<'ctx> {
-    pub tag: u64,
-    pub int_value_tag: Option<IntValue<'ctx>>,
+pub enum StoreValue<'ctx> {
+    Int(IntValue<'ctx>),
+    Float(f64),
+    Ptr(PointerValue<'ctx>),
+    Bool(IntValue<'ctx>),
 }
 
+// Support builder_helper.rs for LLVM instuctions of execution.
 impl<'ctx> Compiler<'ctx> {
     // Default options is i64 integer store
     pub fn build_runtime_value_store(
         &self,
         target_ptr: PointerValue<'ctx>,
-        tag: TagOptions<'ctx>,
-        data: IntValue<'ctx>,
+        tag: StoreTag<'ctx>,
+        value: StoreValue<'ctx>,
         name: &str,
-        options: RuntimeValueStoreOptions<'ctx>,
     ) {
-        let mut tag_val = self.context.i32_type().const_int(tag.tag, false);
-
-        if tag.int_value_tag.is_some() {
-            tag_val = tag.int_value_tag.unwrap();
-        }
+        let tag_val = match tag {
+            StoreTag::Int(t) => self.context.i32_type().const_int(t, false),
+            StoreTag::Dynamic(t) => t,
+        };
 
         let tag_ptr = self
             .builder
@@ -91,28 +96,20 @@ impl<'ctx> Compiler<'ctx> {
             )
             .unwrap();
 
-        if options.float.is_some() {
-            let float_bit = options.float.unwrap().to_bits();
-            self.builder
-                .build_store(
-                    data_ptr,
-                    self.context.i64_type().const_int(float_bit, false),
-                )
-                .unwrap();
-            return;
-        }
-
-        if options.str_ptr.is_some() {
-            let str_ptr = options.str_ptr.unwrap();
-            let str_ptr_as_i64 = self
+        let data_val = match value {
+            StoreValue::Int(v) => v,
+            StoreValue::Float(f) => self.context.i64_type().const_int(f.to_bits(), false),
+            StoreValue::Ptr(p) => self
                 .builder
-                .build_ptr_to_int(str_ptr, self.context.i64_type(), "str_ptr_as_i64")
-                .unwrap();
-            self.builder.build_store(data_ptr, str_ptr_as_i64).unwrap();
-            return;
-        }
+                .build_ptr_to_int(p, self.context.i64_type(), "ptr_to_int")
+                .unwrap(),
+            StoreValue::Bool(b) => self
+                .builder
+                .build_int_z_extend(b, self.context.i64_type(), name)
+                .unwrap(),
+        };
 
-        self.builder.build_store(data_ptr, data).unwrap();
+        self.builder.build_store(data_ptr, data_val).unwrap();
     }
     pub fn tag_only_runtime_value_store(
         &self,
