@@ -1,24 +1,39 @@
+// interpreter currently not support yet, for now this file set a allowed unused
+#![allow(unused)]
+
 use crate::{
-    ast::{self, Function},
-    runner::{parse_only, parse_run},
+    front::ast::{self},
+    interpreter::runner::parse_only,
 };
-use std::{
-    collections::{HashMap, hash_map},
-    fmt::format,
-    fs::read_to_string,
-};
+use std::collections::HashMap;
 
 type Scope = HashMap<String, Value>;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     Int(i64),
+    Float(f64),
     Bool(bool),
     Str(String),
     Unit,
     Return(Box<Value>),
     List(std::rc::Rc<std::cell::RefCell<Vec<Value>>>),
     Range(i64, i64),
+    StructInit(String, HashMap<String, Value>),
+
+    // System types
+    TypeI8,
+    TypeU8,
+    TypeI16,
+    TypeU16,
+    TypeI32,
+    TypeU32,
+    TypeI64,
+    TypeU64,
+
+    TypeF16,
+    TypeF32,
+    TypeF64,
 }
 
 pub struct Module {
@@ -65,6 +80,18 @@ impl std::fmt::Display for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Value::Int(n) => write!(f, "{}", n),
+            Value::Float(n) => write!(f, "{}", n),
+            Value::TypeI8 => write!(f, "i8"),
+            Value::TypeU8 => write!(f, "u8"),
+            Value::TypeI16 => write!(f, "i16"),
+            Value::TypeU16 => write!(f, "u16"),
+            Value::TypeI32 => write!(f, "i32"),
+            Value::TypeU32 => write!(f, "u32"),
+            Value::TypeI64 => write!(f, "i64"),
+            Value::TypeU64 => write!(f, "u64"),
+            Value::TypeF16 => write!(f, "fp16"),
+            Value::TypeF32 => write!(f, "fp32"),
+            Value::TypeF64 => write!(f, "fp64"),
             Value::Bool(b) => write!(f, "{}", b),
             Value::Str(s) => write!(f, "{}", s),
             Value::Unit => write!(f, "()"),
@@ -81,6 +108,18 @@ impl std::fmt::Display for Value {
                 write!(f, "]")
             }
             Value::Range(start, end) => write!(f, "{}..{}", start, end),
+            Value::StructInit(name, fields) => {
+                write!(f, "{} {{ ", name)?;
+                let mut first = true;
+                for (key, value) in fields {
+                    if !first {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}: {}", key, value)?;
+                    first = false;
+                }
+                write!(f, " }}")
+            }
         }
     }
 }
@@ -142,11 +181,11 @@ fn entry_builtin_functions() -> HashMap<&'static str, Callable<'static>> {
     let mut map = HashMap::new();
     map.insert(
         "println",
-        Callable::Builtin(crate::builtin::builtin_function_println),
+        Callable::Builtin(crate::runtime::builtin::builtin_function_println),
     );
     map.insert(
         "vec_push!",
-        Callable::Builtin(crate::builtin::builtin_function_push),
+        Callable::Builtin(crate::runtime::builtin::builtin_function_push),
     );
     map
 }
@@ -162,8 +201,8 @@ fn load_modules(ctx: &mut RuntimeContext, module_name: &str) -> Result<(), Strin
         Ok(s) => s,
         Err(e) => return Err(format!("Error reading module {}: {}", module_name, e)),
     };
-    let ast =
-        parse_only(&source).map_err(|e| format!("Error parsing module {}: {}", module_name, e));
+    let ast = parse_only(&source, &path)
+        .map_err(|e| format!("Error parsing module {}: {}", module_name, e));
     let ast = match ast {
         Ok(a) => a,
         Err(e) => return Err(format!("Error parsing module {}: {}", module_name, e)),
@@ -182,7 +221,7 @@ fn load_modules(ctx: &mut RuntimeContext, module_name: &str) -> Result<(), Strin
                 load_modules(ctx, ident)
                     .map_err(|e| format!("Error loading module {}: {}", ident, e))?;
             }
-            &ast::Item::Package(ref name) => {
+            ast::Item::Package(name) => {
                 // Package declaration, can be used for namespacing if needed
                 println!("Loading package: {}", name);
             }
@@ -200,7 +239,7 @@ fn load_modules(ctx: &mut RuntimeContext, module_name: &str) -> Result<(), Strin
 
 pub fn execute(
     ctx: &mut RuntimeContext,
-    items: &Vec<ast::Item>,
+    items: &[ast::Item],
     entry_idx: usize,
 ) -> Result<(), String> {
     let mut functions: HashMap<&str, Callable> = HashMap::new();
@@ -293,7 +332,21 @@ fn execute_block(
     for stmt in stmts {
         match stmt {
             ast::Stmt::Var(var) => {
-                let val = evalute_expr(&var.expr, functions, scope)?;
+                let val = if let Some(expr) = &var.expr {
+                    println!(
+                        "  Evaluating variable declaration: {} = {:?}",
+                        var.ident, expr
+                    );
+                    match evalute_expr(expr, functions, scope) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            return Err(format!("Error evaluating variable {}: {}", var.ident, e));
+                        }
+                    }
+                } else {
+                    println!("  Declaring variable {} with no initial value", var.ident);
+                    Value::Unit
+                };
                 scope.insert(var.ident.clone(), val.clone());
                 println!("  Declared variable {}: {}", val, var.ident);
             }
@@ -378,6 +431,27 @@ fn execute_block(
                     return Ok(Value::Return(Box::new(Value::Unit)));
                 }
             }
+            ast::Stmt::EnumItem(enm) => {
+                println!("  Enum declarations are not executed at runtime");
+            }
+            ast::Stmt::Assign(assign_stmt) => {
+                println!(
+                    "  Evaluating assignment: {} = {:?}",
+                    assign_stmt.name, assign_stmt.expr
+                );
+                match evalute_expr(&assign_stmt.expr, functions, scope) {
+                    Ok(val) => {
+                        scope.insert(assign_stmt.name.clone(), val.clone());
+                        println!("    Assigned variable {}: {}", assign_stmt.name, val);
+                    }
+                    Err(e) => {
+                        return Err(format!(
+                            "Error evaluating assignment for {}: {}",
+                            assign_stmt.name, e
+                        ));
+                    }
+                }
+            }
         }
     }
     Ok(Value::Unit)
@@ -390,6 +464,18 @@ fn evalute_expr(
 ) -> Result<Value, String> {
     match expr {
         ast::Expr::Number(n) => Ok(Value::Int(*n)),
+        ast::Expr::Float(f) => Ok(Value::Float(*f)),
+        ast::Expr::TypeI8 => Ok(Value::TypeI8),
+        ast::Expr::TypeU8 => Ok(Value::TypeU8),
+        ast::Expr::TypeI16 => Ok(Value::TypeI16),
+        ast::Expr::TypeU16 => Ok(Value::TypeU16),
+        ast::Expr::TypeI32 => Ok(Value::TypeI32),
+        ast::Expr::TypeU32 => Ok(Value::TypeU32),
+        ast::Expr::TypeI64 => Ok(Value::TypeI64),
+        ast::Expr::TypeU64 => Ok(Value::TypeU64),
+        ast::Expr::TypeF16 => Ok(Value::TypeF16),
+        ast::Expr::TypeF32 => Ok(Value::TypeF32),
+        ast::Expr::TypeF64 => Ok(Value::TypeF64),
         ast::Expr::Str(s) => Ok(Value::Str(s.clone())),
         ast::Expr::Bool(b) => Ok(Value::Bool(*b)),
         ast::Expr::Add(lhs, rhs) => {
@@ -564,6 +650,24 @@ fn evalute_expr(
         ast::Expr::ModuleAccess(module_name, function_name, args) => {
             // !TODO Implement module access
             Err("Module access not implemented".to_string())
+        }
+        ast::Expr::FieldAccess(struct_expr, field_name) => {
+            let struct_val = evalute_expr(struct_expr, functions, scope)?;
+            // !TODO Implement field access for structs
+            Err(format!(
+                "Field access not implemented for field {}",
+                field_name
+            ))
+        }
+        ast::Expr::Unit() => Ok(Value::Unit),
+        ast::Expr::StructInit(struct_name, fields) => {
+            let mut field_values = HashMap::new();
+            for (field_name, field_expr) in fields {
+                let val = evalute_expr(field_expr, functions, scope)?;
+                field_values.insert(field_name.clone(), val.clone());
+                println!("  Initialized field {}: {}", field_name, val);
+            }
+            Ok(Value::StructInit(struct_name.clone(), field_values))
         }
     }
 }

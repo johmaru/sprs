@@ -1,7 +1,11 @@
-use crate::executer;
+// interpreter currently not support yet, for now this file set a allowed unused
+#![allow(unused)]
+
+use crate::front::lexer;
 use crate::grammar;
-use crate::lexer;
-use crate::sema_builder;
+use crate::interpreter::executer;
+use crate::interpreter::sema_builder;
+use crate::llvm::error_helper;
 
 fn find_entry<'a>(sigs: &'a [sema_builder::ItemSig]) -> Result<&'a sema_builder::ItemSig, String> {
     if let Some(main) = sigs.iter().find(|s| s.name == "main") {
@@ -73,13 +77,13 @@ pub fn parse_run(input: &str) -> Result<(), String> {
     Ok(())
 }
 
-pub fn parse_only(input: &str) -> Result<Vec<crate::ast::Item>, String> {
+pub fn parse_only(input: &str, file_path: &str) -> Result<Vec<crate::front::ast::Item>, String> {
     let mut lex = lexer::Lexer::new(input);
     match grammar::StartParser::new().parse(&mut lex) {
         Ok(items) => Ok(items),
         Err(e) => {
-            eprintln!("Error parsing input: {:?}", e);
-            Err(format!("Error parsing input: {:?}", e))
+            let error_message = error_helper::format_parse_error(input, file_path, e);
+            Err(error_message)
         }
     }
 }

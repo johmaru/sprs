@@ -15,11 +15,12 @@ pub enum Token {
     MinusMinus,
     Div,
     Mod,
-    Eq,
+    Assign,
     EqEq,
     Neq,
     Lt,
     Gt,
+    GtGt,
     Le,
     Ge,
     Dot,
@@ -34,11 +35,36 @@ pub enum Token {
     While,
     Ident(String),
     Num(i64),
+    Float(f64),
     Function,
     Return,
     Preprocessor,
     Package,
     Import,
+    Var,
+    Public,
+    Enum,
+    Struct,
+
+    // System types
+    TypeInt,
+    TypeFloat,
+    TypeBool,
+    TypeStr,
+    TypeUnit,
+
+    TypeI8,
+    TypeU8,
+    TypeI16,
+    TypeU16,
+    TypeI32,
+    TypeU32,
+    TypeI64,
+    TypeU64,
+
+    TypeF16,
+    TypeF32,
+    TypeF64,
 }
 
 #[derive(Logos, Debug, Clone, PartialEq)]
@@ -70,7 +96,7 @@ enum RawTok {
     #[token("%")]
     Mod,
     #[token("=")]
-    Eq,
+    Assign,
     #[token("==")]
     EqEq,
     #[token("!=")]
@@ -106,6 +132,8 @@ enum RawTok {
     While,
     #[regex(r"[A-Za-z_][A-Za-z0-9_]*!?")]
     Ident,
+    #[regex(r"[0-9]+\.[0-9]+")]
+    Float,
     #[regex(r"[0-9]+")]
     Num,
     #[regex(r"[ \t\r\n\f]+", logos::skip)]
@@ -118,6 +146,8 @@ enum RawTok {
     False,
     #[token("fn")]
     Function,
+    #[token(">>")]
+    GtGt,
     #[token("return")]
     Return,
     #[token("#define")]
@@ -126,6 +156,50 @@ enum RawTok {
     Package,
     #[token("import")]
     Import,
+    #[token("var")]
+    Var,
+    #[token("pub")]
+    Public,
+    #[token("enum")]
+    Enum,
+    #[token("struct")]
+    Struct,
+
+    // System types
+    #[token("int")]
+    TypeInt,
+    #[token("fp")]
+    TypeFloat,
+    #[token("bool")]
+    TypeBool,
+    #[token("str")]
+    TypeStr,
+    #[token("unit")]
+    TypeUnit,
+
+    #[token("i8")]
+    TypeI8,
+    #[token("u8")]
+    TypeU8,
+    #[token("i16")]
+    TypeI16,
+    #[token("u16")]
+    TypeU16,
+    #[token("i32")]
+    TypeI32,
+    #[token("u32")]
+    TypeU32,
+    #[token("i64")]
+    TypeI64,
+    #[token("u64")]
+    TypeU64,
+
+    #[token("fp16")]
+    TypeF16,
+    #[token("fp32")]
+    TypeF32,
+    #[token("fp64")]
+    TypeF64,
 }
 
 pub struct Lexer<'input> {
@@ -171,11 +245,12 @@ impl<'input> Iterator for Lexer<'input> {
             RawTok::MinusMinus => Token::MinusMinus,
             RawTok::Div => Token::Div,
             RawTok::Mod => Token::Mod,
-            RawTok::Eq => Token::Eq,
+            RawTok::Assign => Token::Assign,
             RawTok::EqEq => Token::EqEq,
             RawTok::Neq => Token::Neq,
             RawTok::Lt => Token::Lt,
             RawTok::Gt => Token::Gt,
+            RawTok::GtGt => Token::GtGt,
             RawTok::Le => Token::Le,
             RawTok::Ge => Token::Ge,
             RawTok::Dot => Token::Dot,
@@ -189,6 +264,7 @@ impl<'input> Iterator for Lexer<'input> {
             RawTok::While => Token::While,
             RawTok::Ident => Token::Ident(text.to_string()),
             RawTok::Num => Token::Num(text.parse().unwrap()),
+            RawTok::Float => Token::Float(text.parse().unwrap()),
             RawTok::True => Token::Bool(true),
             RawTok::False => Token::Bool(false),
             RawTok::WS => unreachable!(),
@@ -197,7 +273,31 @@ impl<'input> Iterator for Lexer<'input> {
             RawTok::Preprocessor => Token::Preprocessor,
             RawTok::Package => Token::Package,
             RawTok::Import => Token::Import,
+            RawTok::Var => Token::Var,
+            RawTok::Public => Token::Public,
+            RawTok::Enum => Token::Enum,
+            RawTok::Struct => Token::Struct,
             RawTok::Comment => return self.next(),
+
+            // System types
+            RawTok::TypeInt => Token::TypeInt,
+            RawTok::TypeFloat => Token::TypeFloat,
+            RawTok::TypeBool => Token::TypeBool,
+            RawTok::TypeStr => Token::TypeStr,
+            RawTok::TypeUnit => Token::TypeUnit,
+
+            RawTok::TypeI8 => Token::TypeI8,
+            RawTok::TypeU8 => Token::TypeU8,
+            RawTok::TypeI16 => Token::TypeI16,
+            RawTok::TypeU16 => Token::TypeU16,
+            RawTok::TypeI32 => Token::TypeI32,
+            RawTok::TypeU32 => Token::TypeU32,
+            RawTok::TypeI64 => Token::TypeI64,
+            RawTok::TypeU64 => Token::TypeU64,
+
+            RawTok::TypeF16 => Token::TypeF16,
+            RawTok::TypeF32 => Token::TypeF32,
+            RawTok::TypeF64 => Token::TypeF64,
         };
         Some(Ok((s, t, e)))
     }

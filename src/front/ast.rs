@@ -1,11 +1,9 @@
-use std::{cell::RefCell, rc::Rc};
+use crate::interpreter::type_helper::Type;
 
-use crate::executer::Value;
-use crate::type_helper::Type;
-
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum Expr {
     Number(i64),                             // Value
+    Float(f64),                              // Value
     Str(String),                             // Value
     Bool(bool),                              // Value
     Add(Box<Expr>, Box<Expr>),               // Lhs, Rhs
@@ -28,6 +26,23 @@ pub enum Expr {
     Range(Box<Expr>, Box<Expr>),             // Start, End
     Index(Box<Expr>, Box<Expr>),             // Collection, Index
     ModuleAccess(String, String, Vec<Expr>), // Module, functionName, args e.g. module.ident
+    FieldAccess(Box<Expr>, String),          // e.g. struct.field
+    Unit(),
+    StructInit(String, Vec<(String, Expr)>), // StructName, Fields
+
+    // System types
+    TypeI8,
+    TypeU8,
+    TypeI16,
+    TypeU16,
+    TypeI32,
+    TypeU32,
+    TypeI64,
+    TypeU64,
+
+    TypeF16,
+    TypeF32,
+    TypeF64,
 }
 
 #[derive(Debug, PartialEq)]
@@ -42,6 +57,8 @@ pub enum Item {
     VarItem(VarDecl),
     FunctionItem(Function),
     Preprocessor(String),
+    EnumItem(Enum),
+    StructItem(Struct),
 }
 
 #[derive(Debug, PartialEq)]
@@ -50,17 +67,52 @@ pub struct Function {
     pub params: Vec<FunctionParam>,
     // pub ret_ty: Option<Type>, currently all any
     pub blk: Vec<Stmt>,
+    pub is_public: bool,
+    pub ret_ty: Option<Type>,
 }
 
 #[derive(Debug, PartialEq)]
 pub struct VarDecl {
     pub ident: String,
+    pub expr: Option<Expr>,
+}
+#[derive(Debug, PartialEq)]
+pub struct AssignStmt {
+    pub name: String,
     pub expr: Expr,
+}
+#[derive(Debug, PartialEq)]
+pub struct Enum {
+    pub ident: String,
+    pub variants: Vec<String>,
+    pub is_public: bool,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct Struct {
+    pub ident: String,
+    pub fields: Vec<StructField>,
+    pub _methods: Vec<Function>, // currently not implemented
+    pub is_public: bool,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct StructField {
+    pub ident: String,
+    pub ty: Option<Type>,
+    pub default_value: Option<Expr>,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum Suffix {
+    Call(Vec<Expr>),
+    Struct(Vec<(String, Expr)>),
 }
 
 #[derive(Debug, PartialEq)]
 pub enum Stmt {
     Var(VarDecl),
+    Assign(AssignStmt),
     Expr(Expr),
     If {
         cond: Expr,
@@ -72,4 +124,5 @@ pub enum Stmt {
         body: Vec<Stmt>,
     },
     Return(Option<Expr>),
+    EnumItem(Enum),
 }

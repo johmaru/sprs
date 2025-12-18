@@ -36,31 +36,66 @@ For this language development environment setup is WSL2(Ubuntu) + VSCode is reco
 
 ### Language Features
 #### **Basic data types:**
- * Int
+ * Int (i64)
+ * Float (f64) : return type semantic use this word 'fp'
  * Bool
  * Str
- * List
+ * List(128) (dynamic array)
  * Range
  * Unit
+ * Enum
+ * Struct
+ * i8 (only for cast! macro)
+ * u8 (only for cast! macro)
+ * i16 (only for cast! macro)
+ * u16 (only for cast! macro)
+ * i32 (only for cast! macro)
+ * u32 (only for cast! macro)
+ * i64 (only for cast! macro)
+ * u64 (only for cast! macro)
+ * f16 (only for cast! macro)
+ * f32 (only for cast! macro)
+ * f64 (only for cast! macro)
 
 - Variables and assignments
 ```sprs
 # Comments start with a hash symbol
-x = 10;
-name = "sprs";
-is_valid = true;
-numbers = [1, 2, 3];
+var x = 10;
+var name = "sprs";
+var is_valid = true;
+var numbers = [1, 2, 3];
+
+
+# Not initialized variable
+var y;  # y is initialized to Unit type
+
+# Re-assignment
+
+var y;
+y = 20;
+y = "now a string"; # y is now a string
+
 ```
 
 - Functions
-```sprs
+```rust
 fn add(a, b) {
    return a + b;
 }
 
 fn main() {
  result = add(5, 10);
- println(result);
+ println!(result);
+}
+```
+
+if a function is not marked as 'pub', it is private function.
+the function can call in same module.
+
+if when need to use a return type for function, use '>>' syntax.
+```rust
+fn add(a, b) >> int {
+  return a + b;
 }
 ```
 
@@ -75,13 +110,51 @@ fn main() {
   | __println | for printing values to the console|
   | __strlen | for getting the length of a string|
   | __malloc | for allocating memory|
+  | __drop | for dropping a value|
+  | __clone | for cloning a value|
+  | __panic | for handling panic situations|
+
+
+- enum
+
+```rust
+pub enum Animal {
+ Dog,
+ Cat,
+}
+
+fn main() {
+   println!(Animal.Dog);
+
+}
+
+```
+
+- struct
+
+```rust
+pub struct Point {
+  x >> i64,
+  y >> i64
+}
+
+fn main() {
+ var p = Point {
+  x = 10,
+  y = 20
+ };
+
+println!(p.x); # prints 10
+println!(p.y); # prints 20
+}
+```
 
 - Control flow
-```sprs
+```rust
 if x > 5 then {
-  println("x is greater than 5");
+  println!("x is greater than 5");
 } else {
- println("x is 5 or less");
+ println!("x is 5 or less");
 }
 
 while x < 10 {
@@ -97,13 +170,52 @@ while x < 10 {
 * Range creation: `..`(e.g., `1..10`)
 * indexing: `list[index]`
 
-####  **Built-in functions**
-* `println(value)`: Print value to the console
+####  **Built-in macros**
+* `println!(value)`: Print value to the console
 examples:
 ```rust
-println(y[1]);
+println!(y[1]);
 ```
-* `list_push(list)`: Push value to the end of the list
+* `list_push!(list, value)`: Push value to the end of the list
+examples:
+```rust
+list_push!(y, z);
+```
+
+* `clone!(value)`: Clone the value
+examples:
+```rust
+var a = "hello";
+println!(clone!(a));
+
+```
+
+* `cast!(value, type)`: Cast the value to the specified type
+examples:
+```rust
+var a = 100; # default is i64
+var b = cast!(a, i8); # cast to i8
+println!(b); # prints 100 as i8
+```
+
+**Note:** cast! macro is more faster then normal int type, because it use i8 and u8 llvm type directly.
+examples:
+```rust
+var i = 0; # default is i64
+while i < 5 {
+  println!(i); ## this is too slow for embedded and system programming environment, because it use dynamic type checking.
+ i = i + 1;
+}
+```
+
+ but with cast! macro
+```rust
+var i = cast!(0, i8); # i is i8 type
+while i < cast!(5, i8) {
+ println!(i); ## this is faster for embedded system, because it use i8 llvm type directly.
+i = i + cast!(1, i8);
+}
+```
 
 ####  **module and preprocessor**
 
@@ -114,52 +226,46 @@ Currently this language has
 * 'import' for module importing
 
 examples:
-```sprs
+```rust
 
 import test;
 #define Windows
 
        fn main() {
-          # access to module function
-          x = test.test();
-          y = [];
-          z = 20;
-          alpha = "test";
-          beta = true;
-          println(x);
-          list_push(y, z);
-          list_push(y, alpha);
-          println(y[1]);
-          # println(x + alpha);
+          var x = test.test();
+          var y = [];
+          var z = 20;
+          var alpha = "test";
+          var beta = true;
+          println!(x);
+          list_push!(y, z);
+          list_push!(y, alpha);
+          println!(y[1]);
 
-           # test calc
-             result = (x + 10) * 2;
-             println(result);
-           # test while
-             i = 0;
+             var result = (x + 10) * 2;
+             println!(result);
+             var i = cast!(0, i8);
                while i <= 5 {
-                   println(i);
+                   println!(i);
                    i = i + 1;
                }
 
-           # test mod
-             m = 10 % 3;
-             println(m);
+             var m = 10 % 3;
+             println!(m);
        }
 
 ```
 
-```sprs
+```rust
 
 pkg test;
 
  fn test() {
-           a = 5 - 1;
-           b = 10;
-           c = "hello" + " world";
-           println(c);
+           var a = 5 - 1;
+           var b = 10;
+           var c = "hello" + " world";
+           println!(c);
 
-           # test equality
            if a == 3 then {
                return a;
            }
@@ -184,12 +290,30 @@ sprs build
 sprs run
 ```
 
-//! ## Project Initialization
+### Project Initialization
 To initialize a new Sprs project, use the following command:
 ```bash
 sprs init --name <project_name>
 ```
 This command creates a new directory structure with a default `sprs.toml` configuration file and a sample `main.sprs` source file.
 
+### Memory Management
+
+The Sprs has a simple runtime move system.
+
+**Example:**
+```rust
+fn main() {
+   test();
+}
+
+fn test() {
+  var test = "Hello, Sprs!"; # set a string to variable
+  var a = test; # move the value from test to a, test is now invalid
+  return println!(a); # function call with a, a is now invalid after this line
+  println!(clone!(a)); # a is still valid after this line
+}
+
+```
 
 <!-- cargo-rdme end -->

@@ -1,5 +1,8 @@
-use crate::ast;
-use crate::type_helper::Type;
+// interpreter currently not support yet, for now this file set a allowed unused
+#![allow(unused)]
+
+use crate::front::ast;
+use crate::interpreter::type_helper::Type;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
@@ -42,6 +45,8 @@ pub fn collect_signatures(items: &[ast::Item]) -> Vec<ItemSig> {
             ast::Item::Preprocessor(_) => None,
             ast::Item::Import(_) => None,
             ast::Item::Package(_) => None,
+            ast::Item::EnumItem(_) => None,
+            ast::Item::StructItem(_) => None,
         })
         .collect();
 
@@ -107,6 +112,8 @@ pub fn collect_vardecls_in_block<'a>(
                 collect_vardecls_in_block(body, item_name, out);
             }
             ast::Stmt::Return(_) => {}
+            ast::Stmt::EnumItem(_) => {}
+            &ast::Stmt::Assign(_) => {}
         }
     }
 }
@@ -129,7 +136,8 @@ fn collect_varinfo_in_block<'a>(stmts: &'a [ast::Stmt], table: &mut Vec<VarInfo<
         match stmt {
             ast::Stmt::Var(var) => table.push(VarInfo {
                 decl: var,
-                ty_hint: infer_type_hint(&var.expr, &[]).unwrap_or(Type::Any),
+                ty_hint: infer_type_hint(&var.expr.as_ref().unwrap_or(&ast::Expr::Number(0)), &[])
+                    .unwrap_or(Type::Any),
             }),
             ast::Stmt::Expr(_) => {}
             ast::Stmt::If {
@@ -146,6 +154,8 @@ fn collect_varinfo_in_block<'a>(stmts: &'a [ast::Stmt], table: &mut Vec<VarInfo<
                 collect_varinfo_in_block(body, table);
             }
             ast::Stmt::Return(_) => {}
+            ast::Stmt::EnumItem(_) => {}
+            ast::Stmt::Assign(_) => {}
         }
     }
 }
@@ -180,6 +190,18 @@ fn infer_type_hint(expr: &ast::Expr, sigs: &[ItemSig]) -> Option<Type> {
     use ast::Expr::*;
     match expr {
         Number(_) => Some(Type::Int),
+        Float(_) => Some(Type::Float),
+        TypeI8 => Some(Type::TypeI8),
+        TypeU8 => Some(Type::TypeU8),
+        TypeI16 => Some(Type::TypeI16),
+        TypeU16 => Some(Type::TypeU16),
+        TypeI32 => Some(Type::TypeI32),
+        TypeU32 => Some(Type::TypeU32),
+        TypeI64 => Some(Type::TypeI64),
+        TypeU64 => Some(Type::TypeU64),
+        TypeF16 => Some(Type::TypeF16),
+        TypeF32 => Some(Type::TypeF32),
+        TypeF64 => Some(Type::TypeF64),
         Bool(_) => Some(Type::Bool),
         Str(_) => Some(Type::Str),
         Var(_) => Some(Type::Any),
@@ -219,5 +241,8 @@ fn infer_type_hint(expr: &ast::Expr, sigs: &[ItemSig]) -> Option<Type> {
         Range(_, _) => Some(Type::Any),
         Index(_, _) => Some(Type::Any),
         ModuleAccess(_, _, _) => Some(Type::Any), // !TODO Implement module access type inference
+        FieldAccess(_, _) => Some(Type::Any),     // !TODO Implement field access type inference
+        Unit() => Some(Type::Unit),
+        StructInit(_, _) => Some(Type::Any), // !TODO Implement struct init type inference
     }
 }
