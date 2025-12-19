@@ -734,19 +734,36 @@ fn box_return_value<'ctx>(
     let result_ptr = create_entry_block_alloca(self_compiler, "compile_expr_call_res_alloc");
 
     if return_type.is_int_type() {
+        let int_type = return_type.into_int_type();
         let int_val = result_val.into_int_value();
 
-        let val_i64 = self_compiler
-            .builder
-            .build_int_s_extend(int_val, self_compiler.context.i64_type(), "int_to_i64")
-            .unwrap();
+        // boolean case
+        if int_type.get_bit_width() == 1 {
+            let bool_as_i64 = self_compiler
+                .builder
+                .build_int_z_extend(int_val, self_compiler.context.i64_type(), "bool_to_i64")
+                .unwrap();
 
-        self_compiler.build_runtime_value_store(
-            result_ptr,
-            StoreTag::Int(Tag::Integer as u64),
-            StoreValue::Int(val_i64),
-            "res_integer",
-        );
+            self_compiler.build_runtime_value_store(
+                result_ptr,
+                StoreTag::Int(Tag::Boolean as u64),
+                StoreValue::Int(bool_as_i64),
+                "res_boolean",
+            );
+            return Ok(result_ptr.into());
+        } else {
+            let val_i64 = self_compiler
+                .builder
+                .build_int_s_extend(int_val, self_compiler.context.i64_type(), "int_to_i64")
+                .unwrap();
+
+            self_compiler.build_runtime_value_store(
+                result_ptr,
+                StoreTag::Int(Tag::Integer as u64),
+                StoreValue::Int(val_i64),
+                "res_integer",
+            );
+        }
     } else if return_type.is_float_type() {
         let float_val = result_val.into_float_value();
 
@@ -3348,78 +3365,76 @@ pub fn create_field_access<'ctx>(
         .unwrap();
 
     if let Some(ty) = &field_def.ty {
-        if crate::interpreter::type_helper::is_int_type_in_llvm().contains(ty) {
-            match ty {
-                crate::interpreter::type_helper::Type::Int
-                | crate::interpreter::type_helper::Type::TypeI64
-                | crate::interpreter::type_helper::Type::TypeU64 => {
-                    let val = self_compiler
-                        .builder
-                        .build_load(self_compiler.context.i64_type(), field_ptr, "field_val")
-                        .unwrap()
-                        .into_int_value();
+        match ty {
+            crate::interpreter::type_helper::Type::Int
+            | crate::interpreter::type_helper::Type::TypeI64
+            | crate::interpreter::type_helper::Type::TypeU64 => {
+                let val = self_compiler
+                    .builder
+                    .build_load(self_compiler.context.i64_type(), field_ptr, "field_val")
+                    .unwrap()
+                    .into_int_value();
 
-                    let res_ptr =
-                        create_entry_block_alloca(self_compiler, "int_field_access_res_alloc");
-                    self_compiler.build_runtime_value_store(
-                        res_ptr,
-                        StoreTag::Int(Tag::Integer as u64),
-                        StoreValue::Int(val),
-                        "int_field_access_res",
-                    );
-                    return Ok(res_ptr.into());
-                }
-                crate::interpreter::type_helper::Type::Bool => {
-                    let val = self_compiler
-                        .builder
-                        .build_load(
-                            self_compiler.context.i64_type(),
-                            field_ptr,
-                            "bool_field_val",
-                        )
-                        .unwrap()
-                        .into_int_value();
-
-                    let res_ptr =
-                        create_entry_block_alloca(self_compiler, "bool_field_access_res_alloc");
-                    self_compiler.build_runtime_value_store(
-                        res_ptr,
-                        StoreTag::Int(Tag::Boolean as u64),
-                        StoreValue::Bool(val),
-                        "bool_field_access_res",
-                    );
-                    return Ok(res_ptr.into());
-                }
-                crate::interpreter::type_helper::Type::Str => {
-                    let val = self_compiler
-                        .builder
-                        .build_load(
-                            self_compiler.context.ptr_type(AddressSpace::default()),
-                            field_ptr,
-                            "str_field_ptr_load",
-                        )
-                        .unwrap()
-                        .into_pointer_value();
-                    let var_int = self_compiler
-                        .builder
-                        .build_ptr_to_int(
-                            val,
-                            self_compiler.context.i64_type(),
-                            "str_field_ptr_as_int",
-                        )
-                        .unwrap();
-                    let res_ptr =
-                        create_entry_block_alloca(self_compiler, "str_field_access_res_alloc");
-                    self_compiler.build_runtime_value_store(
-                        res_ptr,
-                        StoreTag::Int(Tag::String as u64),
-                        StoreValue::Int(var_int),
-                        "str_field_access_res",
-                    );
-                    return Ok(res_ptr.into());
-                }
-                _ => { /* Fallback to generic field access */ }
+                let res_ptr =
+                    create_entry_block_alloca(self_compiler, "int_field_access_res_alloc");
+                self_compiler.build_runtime_value_store(
+                    res_ptr,
+                    StoreTag::Int(Tag::Integer as u64),
+                    StoreValue::Int(val),
+                    "int_field_access_res",
+                );
+                return Ok(res_ptr.into());
             }
+            crate::interpreter::type_helper::Type::Bool => {
+                let val = self_compiler
+                    .builder
+                    .build_load(
+                        self_compiler.context.i64_type(),
+                        field_ptr,
+                        "bool_field_val",
+                    )
+                    .unwrap()
+                    .into_int_value();
+
+                let res_ptr =
+                    create_entry_block_alloca(self_compiler, "bool_field_access_res_alloc");
+                self_compiler.build_runtime_value_store(
+                    res_ptr,
+                    StoreTag::Int(Tag::Boolean as u64),
+                    StoreValue::Bool(val),
+                    "bool_field_access_res",
+                );
+                return Ok(res_ptr.into());
+            }
+            crate::interpreter::type_helper::Type::Str => {
+                let val = self_compiler
+                    .builder
+                    .build_load(
+                        self_compiler.context.ptr_type(AddressSpace::default()),
+                        field_ptr,
+                        "str_field_ptr_load",
+                    )
+                    .unwrap()
+                    .into_pointer_value();
+                let var_int = self_compiler
+                    .builder
+                    .build_ptr_to_int(
+                        val,
+                        self_compiler.context.i64_type(),
+                        "str_field_ptr_as_int",
+                    )
+                    .unwrap();
+                let res_ptr =
+                    create_entry_block_alloca(self_compiler, "str_field_access_res_alloc");
+                self_compiler.build_runtime_value_store(
+                    res_ptr,
+                    StoreTag::Int(Tag::String as u64),
+                    StoreValue::Int(var_int),
+                    "str_field_access_res",
+                );
+                return Ok(res_ptr.into());
+            }
+            _ => { /* Fallback to generic field access */ }
         }
     }
 
@@ -3492,69 +3507,67 @@ pub fn create_struct_init<'ctx>(
             .map_err(|e| e.to_string())?;
 
         if let Some(ty) = &field_def.ty {
-            if crate::interpreter::type_helper::is_int_type_in_llvm().contains(ty) {
-                match ty {
-                    crate::interpreter::type_helper::Type::Int
-                    | crate::interpreter::type_helper::Type::TypeI64
-                    | crate::interpreter::type_helper::Type::TypeU64
-                    | crate::interpreter::type_helper::Type::Bool => {
-                        let val_ptr = value.into_pointer_value();
-                        let data_ptr = self_compiler
-                            .builder
-                            .build_struct_gep(
-                                self_compiler.runtime_value_type,
-                                val_ptr,
-                                1,
-                                "int_field_data_ptr",
-                            )
-                            .unwrap();
-                        let int_val = self_compiler
-                            .builder
-                            .build_load(self_compiler.context.i64_type(), data_ptr, "int_field_val")
-                            .unwrap()
-                            .into_int_value();
-                        self_compiler
-                            .builder
-                            .build_store(field_ptr, int_val)
-                            .unwrap();
-                        continue;
-                    }
-                    crate::interpreter::type_helper::Type::Str => {
-                        let val_ptr = value.into_pointer_value();
-                        let data_ptr = self_compiler
-                            .builder
-                            .build_struct_gep(
-                                self_compiler.runtime_value_type,
-                                val_ptr,
-                                1,
-                                "str_field_data_ptr",
-                            )
-                            .unwrap();
-                        let str_ptr_int = self_compiler
-                            .builder
-                            .build_load(
-                                self_compiler.context.i64_type(),
-                                data_ptr,
-                                "str_field_ptr_int",
-                            )
-                            .unwrap()
-                            .into_int_value();
-                        let str_ptr = self_compiler
-                            .builder
-                            .build_int_to_ptr(
-                                str_ptr_int,
-                                self_compiler.context.ptr_type(AddressSpace::default()),
-                                "str_field_ptr",
-                            )
-                            .unwrap();
-                        self_compiler
-                            .builder
-                            .build_store(field_ptr, str_ptr)
-                            .unwrap();
-                        continue;
-                    }
-                    _ => { /* Fallback to generic field store */ }
+            match ty {
+                crate::interpreter::type_helper::Type::Int
+                | crate::interpreter::type_helper::Type::TypeI64
+                | crate::interpreter::type_helper::Type::TypeU64
+                | crate::interpreter::type_helper::Type::Bool => {
+                    let val_ptr = value.into_pointer_value();
+                    let data_ptr = self_compiler
+                        .builder
+                        .build_struct_gep(
+                            self_compiler.runtime_value_type,
+                            val_ptr,
+                            1,
+                            "int_field_data_ptr",
+                        )
+                        .unwrap();
+                    let int_val = self_compiler
+                        .builder
+                        .build_load(self_compiler.context.i64_type(), data_ptr, "int_field_val")
+                        .unwrap()
+                        .into_int_value();
+                    self_compiler
+                        .builder
+                        .build_store(field_ptr, int_val)
+                        .unwrap();
+                    continue;
                 }
+                crate::interpreter::type_helper::Type::Str => {
+                    let val_ptr = value.into_pointer_value();
+                    let data_ptr = self_compiler
+                        .builder
+                        .build_struct_gep(
+                            self_compiler.runtime_value_type,
+                            val_ptr,
+                            1,
+                            "str_field_data_ptr",
+                        )
+                        .unwrap();
+                    let str_ptr_int = self_compiler
+                        .builder
+                        .build_load(
+                            self_compiler.context.i64_type(),
+                            data_ptr,
+                            "str_field_ptr_int",
+                        )
+                        .unwrap()
+                        .into_int_value();
+                    let str_ptr = self_compiler
+                        .builder
+                        .build_int_to_ptr(
+                            str_ptr_int,
+                            self_compiler.context.ptr_type(AddressSpace::default()),
+                            "str_field_ptr",
+                        )
+                        .unwrap();
+                    self_compiler
+                        .builder
+                        .build_store(field_ptr, str_ptr)
+                        .unwrap();
+                    continue;
+                }
+                _ => { /* Fallback to generic field store */ }
             }
         }
 
