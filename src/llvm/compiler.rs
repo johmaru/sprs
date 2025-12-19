@@ -17,6 +17,7 @@ use inkwell::module::Module;
 use inkwell::types::BasicTypeEnum;
 use inkwell::types::{BasicMetadataTypeEnum, StructType};
 use inkwell::values::FloatValue;
+use inkwell::values::GlobalValue;
 use inkwell::values::IntValue;
 use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue, ValueKind};
 use serde::de::value;
@@ -58,6 +59,21 @@ pub enum StoreValue<'ctx> {
     Float(f64),
     Ptr(PointerValue<'ctx>),
     Bool(IntValue<'ctx>),
+}
+
+pub enum StrConstantAction {
+    Get,
+    Set,
+}
+
+pub enum StrConstantResult<'ctx> {
+    Global(GlobalValue<'ctx>),
+    Pointer(PointerValue<'ctx>),
+}
+
+pub enum StrValue<'ctx> {
+    Get(&'ctx str),
+    Set(GlobalValue<'ctx>),
 }
 
 // Support builder_helper.rs for LLVM instuctions of execution.
@@ -190,6 +206,77 @@ impl<'ctx> Compiler<'ctx> {
         self.builder
             .build_call(func, &args, &format!("call_{}", name))
             .unwrap();
+    }
+
+    pub fn set_global_constant_str(
+        &mut self,
+        module: &Module<'ctx>,
+        str_value: StrValue<'ctx>,
+        action: StrConstantAction,
+        is_global: bool,
+        is_const: bool,
+    ) -> Option<StrConstantResult<'ctx>> {
+        match action {
+            StrConstantAction::Get => {
+                if let Some(global) = self.string_constants.get(match str_value {
+                    StrValue::Get(s) => s,
+                    _ => return None,
+                }) {
+                    return Some(StrConstantResult::Global(*global));
+                } else {
+                    let global_name = if is_global {
+                        format!("str_const_global_{}", self.string_constants.len())
+                    } else {
+                        format!("str_const_const_{}", self.string_constants.len())
+                    };
+                    let str_const = self.context.const_string(
+                        match str_value {
+                            StrValue::Get(s) => s.as_bytes(),
+                            _ => return None,
+                        },
+                        true,
+                    );
+                    let global_str = module.add_global(
+                        str_const.get_type(),
+                        Some(AddressSpace::default()),
+                        &global_name,
+                    );
+                    global_str.set_initializer(&str_const);
+                    if is_const {
+                        global_str.set_constant(true);
+                    }
+
+                    match if is_global {
+                        Linkage::External
+                    } else {
+                        Linkage::Internal
+                    } {
+                        Linkage::External => global_str.set_linkage(Linkage::External),
+                        Linkage::Internal => global_str.set_linkage(Linkage::Internal),
+                        _ => {}
+                    }
+
+                    self.string_constants.insert(
+                        match str_value {
+                            StrValue::Get(s) => s.to_string(),
+                            _ => "".to_string(),
+                        },
+                        global_str,
+                    );
+                    return Some(StrConstantResult::Global(global_str));
+                }
+            }
+            StrConstantAction::Set => {
+                let name_ptr = match str_value {
+                    StrValue::Set(g) => g,
+                    _ => return None,
+                };
+
+                let str_ptr = name_ptr.as_pointer_value();
+
+                return Some(StrConstantResult::Pointer(str_ptr));
+            }
+        }
     }
 }
 

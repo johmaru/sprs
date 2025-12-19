@@ -9,7 +9,9 @@ use inkwell::{
 
 use crate::{
     front::ast,
-    llvm::compiler::{Compiler, StoreTag, StoreValue, Tag},
+    llvm::compiler::{
+        Compiler, StoreTag, StoreValue, StrConstantAction, StrConstantResult, StrValue, Tag,
+    },
 };
 
 // !support functions
@@ -23,31 +25,20 @@ pub fn create_panic_err<'ctx>(
     module: &inkwell::module::Module<'ctx>,
     settings: PanicErrorSettings,
 ) -> Result<(), String> {
-    let global = if let Some(existing) = self_compiler.string_constants.get(message) {
-        *existing
-    } else {
-        let str_val = self_compiler.context.const_string(message.as_bytes(), true);
-        let global = module.add_global(
-            str_val.get_type(),
-            Some(AddressSpace::default()),
-            &format!("panic_err_{}", self_compiler.string_constants.len()),
-        );
-        global.set_initializer(&str_val);
-        if settings.is_const {
-            global.set_constant(true);
-        }
-        if settings.is_global {
-            global.set_linkage(Linkage::External);
-        } else {
-            global.set_linkage(Linkage::Internal);
-        }
-        self_compiler
-            .string_constants
-            .insert(message.to_string(), global);
-        global
+    let global = self_compiler.set_global_constant_str(
+        module,
+        StrValue::Get(message),
+        StrConstantAction::Get,
+        settings.is_global,
+        settings.is_const,
+    );
+
+    let str_ptr = match global {
+        Some(StrConstantResult::Global(g)) => g.as_pointer_value(),
+        Some(StrConstantResult::Pointer(p)) => p,
+        _ => return Err("Failed to get panic error string constant".to_string()),
     };
 
-    let str_ptr = global.as_pointer_value();
     let str_ptr_i8 = self_compiler.builder.build_bit_cast(
         str_ptr,
         self_compiler.context.ptr_type(AddressSpace::default()),
