@@ -42,7 +42,6 @@ pub fn is_int_type_in_llvm() -> Vec<Type> {
         Type::TypeF16,
         Type::TypeF32,
         Type::TypeF64,
-        Type::Bool,
     ]
 }
 
@@ -52,8 +51,8 @@ pub fn not_int_type_in_llvm() -> Vec<Type> {
         Type::TypeF32,
         Type::TypeF64,
         Type::Str,
-        Type::Bool,
         Type::Unit,
+        Type::Bool,
     ]
 }
 

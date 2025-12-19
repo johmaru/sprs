@@ -3369,6 +3369,27 @@ pub fn create_field_access<'ctx>(
                     );
                     return Ok(res_ptr.into());
                 }
+                crate::interpreter::type_helper::Type::Bool => {
+                    let val = self_compiler
+                        .builder
+                        .build_load(
+                            self_compiler.context.i64_type(),
+                            field_ptr,
+                            "bool_field_val",
+                        )
+                        .unwrap()
+                        .into_int_value();
+
+                    let res_ptr =
+                        create_entry_block_alloca(self_compiler, "bool_field_access_res_alloc");
+                    self_compiler.build_runtime_value_store(
+                        res_ptr,
+                        StoreTag::Int(Tag::Boolean as u64),
+                        StoreValue::Bool(val),
+                        "bool_field_access_res",
+                    );
+                    return Ok(res_ptr.into());
+                }
                 crate::interpreter::type_helper::Type::Str => {
                     let val = self_compiler
                         .builder
@@ -3475,7 +3496,8 @@ pub fn create_struct_init<'ctx>(
                 match ty {
                     crate::interpreter::type_helper::Type::Int
                     | crate::interpreter::type_helper::Type::TypeI64
-                    | crate::interpreter::type_helper::Type::TypeU64 => {
+                    | crate::interpreter::type_helper::Type::TypeU64
+                    | crate::interpreter::type_helper::Type::Bool => {
                         let val_ptr = value.into_pointer_value();
                         let data_ptr = self_compiler
                             .builder
