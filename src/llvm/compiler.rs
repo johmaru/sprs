@@ -1,13 +1,10 @@
-use crate::command_helper;
 use crate::front::ast;
 use crate::interpreter::runner::parse_only;
 use crate::interpreter::type_helper;
 use crate::interpreter::type_helper::Type;
-use crate::llvm;
 use crate::llvm::builder_helper;
 use crate::llvm::builder_helper::Comparison;
 use crate::llvm::builder_helper::EqNeq;
-use crate::llvm::builder_helper::TagOptionsInst;
 use crate::llvm::builder_helper::UpDown;
 use inkwell::AddressSpace;
 use inkwell::builder::Builder;
@@ -16,17 +13,11 @@ use inkwell::module::Linkage;
 use inkwell::module::Module;
 use inkwell::types::BasicTypeEnum;
 use inkwell::types::{BasicMetadataTypeEnum, StructType};
-use inkwell::values::FloatValue;
 use inkwell::values::GlobalValue;
 use inkwell::values::IntValue;
-use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue, ValueKind};
-use serde::de::value;
-use std::any::Any;
+use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::f32::consts::E;
-use std::ptr;
-use std::result;
 
 pub struct StructDef<'ctx> {
     pub fields: Vec<ast::StructField>,

@@ -1,8 +1,5 @@
-use core::error;
-
 use inkwell::{
     AddressSpace,
-    builder::Builder,
     module::Linkage,
     values::{BasicValueEnum, FunctionValue, IntValue, PointerValue, ValueKind},
 };
@@ -21,7 +18,7 @@ pub struct PanicErrorSettings {
 }
 pub fn create_panic_err<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    message: &str,
+    message: &'ctx str,
     module: &inkwell::module::Module<'ctx>,
     settings: PanicErrorSettings,
 ) -> Result<(), String> {
@@ -76,20 +73,6 @@ fn create_entry_block_alloca<'ctx>(
 
     builder.position_at_end(current_block);
     alloca
-}
-
-pub enum TagOptionsInst {
-    None,
-    BoolAsI64,
-}
-
-impl TagOptionsInst {
-    pub fn to_string(&self) -> String {
-        match self {
-            TagOptionsInst::None => "none".to_string(),
-            TagOptionsInst::BoolAsI64 => "bool_as_i64".to_string(),
-        }
-    }
 }
 
 // !normal functions
@@ -1107,7 +1090,12 @@ pub fn create_add_expr<'ctx>(
         is_global: true,
     };
 
-    let _ = create_panic_err(self_compiler, &error_message, module, settings)?;
+    let _ = create_panic_err(
+        self_compiler,
+        Box::leak(error_message.into_boxed_str()), // error message has memory leak but it's acceptable for now
+        module,
+        settings,
+    )?;
 
     let _ = self_compiler.builder.build_unreachable();
 
