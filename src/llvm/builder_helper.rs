@@ -1,7 +1,8 @@
 use inkwell::{
     AddressSpace,
     module::Linkage,
-    values::{BasicValueEnum, FunctionValue, IntValue, PointerValue, ValueKind},
+    types::StructType,
+    values::{BasicValueEnum, FunctionValue, InstructionValue, IntValue, PointerValue, ValueKind},
 };
 
 use crate::{
@@ -10,6 +11,128 @@ use crate::{
         Compiler, StoreTag, StoreValue, StrConstantAction, StrConstantResult, StrValue, Tag,
     },
 };
+
+// !Builder overrides Extensions
+
+trait BuilderExt<'ctx> {
+    // runtime gep helpers
+    fn build_tag_gep(&self, ptr: PointerValue<'ctx>, name: &str) -> PointerValue<'ctx>;
+    fn build_data_gep(&self, ptr: PointerValue<'ctx>, name: &str) -> PointerValue<'ctx>;
+
+    // BasicBlock helpers
+    fn get_current_function(&self) -> FunctionValue<'ctx>;
+
+    // runtime tag helpers
+    fn build_load_tag(&self, ptr: PointerValue<'ctx>, name: &str) -> IntValue<'ctx>;
+
+    fn build_tag_store(&self, tag: Tag, ptr: PointerValue<'ctx>) -> InstructionValue<'ctx>;
+
+    fn build_load(
+        &self,
+        pointee_ty: StructType<'ctx>,
+        ptr: PointerValue<'ctx>,
+        name: &str,
+    ) -> BasicValueEnum<'ctx>;
+
+    // bitwise or
+    fn or(&self, lhs: IntValue<'ctx>, rhs: IntValue<'ctx>, name: &str) -> IntValue<'ctx>;
+}
+
+impl<'ctx> BuilderExt<'ctx> for Compiler<'ctx> {
+    fn build_tag_gep(&self, ptr: PointerValue<'ctx>, name: &str) -> PointerValue<'ctx> {
+        self.builder
+            .build_struct_gep(
+                self.runtime_value_type,
+                ptr,
+                0,
+                &format!("{}_tag_ptr", name),
+            )
+            .unwrap()
+    }
+
+    fn build_data_gep(&self, ptr: PointerValue<'ctx>, name: &str) -> PointerValue<'ctx> {
+        self.builder
+            .build_struct_gep(
+                self.runtime_value_type,
+                ptr,
+                1,
+                &format!("{}_data_ptr", name),
+            )
+            .unwrap()
+    }
+
+    fn or(&self, lhs: IntValue<'ctx>, rhs: IntValue<'ctx>, name: &str) -> IntValue<'ctx> {
+        self.builder
+            .build_or(lhs, rhs, &format!("{}_or", name))
+            .unwrap()
+    }
+
+    fn get_current_function(&self) -> FunctionValue<'ctx> {
+        self.builder
+            .get_insert_block()
+            .unwrap()
+            .get_parent()
+            .unwrap()
+    }
+
+    fn build_load_tag(&self, tag_ptr: PointerValue<'ctx>, name: &str) -> IntValue<'ctx> {
+        self.builder
+            .build_load(
+                self.context.i32_type(),
+                tag_ptr,
+                &format!("{}_loaded_tag", name),
+            )
+            .unwrap()
+            .into_int_value()
+    }
+
+    fn build_tag_store(&self, tag: Tag, ptr: PointerValue<'ctx>) -> InstructionValue<'ctx> {
+        self.builder
+            .build_store(ptr, self.context.i32_type().const_int(tag as u64, false))
+            .unwrap()
+    }
+
+    fn build_load(
+        &self,
+        pointee_ty: StructType<'ctx>,
+        ptr: PointerValue<'ctx>,
+        name: &str,
+    ) -> BasicValueEnum<'ctx> {
+        self.builder.build_load(pointee_ty, ptr, name).unwrap()
+    }
+}
+
+// !Context overrides extensions
+
+trait ContextExt<'ctx> {
+    // tag helpers
+    fn get_tag_from_tag_enum(&self, tag: Tag) -> IntValue<'ctx>;
+    fn tag_cmp(
+        &self,
+        op: inkwell::IntPredicate,
+        lhs: IntValue<'ctx>,
+        rhs: IntValue<'ctx>,
+        name: &str,
+    ) -> IntValue<'ctx>;
+}
+
+impl<'ctx> ContextExt<'ctx> for Compiler<'ctx> {
+    fn get_tag_from_tag_enum(&self, tag: Tag) -> IntValue<'ctx> {
+        self.context.i32_type().const_int(tag as u64, false)
+    }
+
+    fn tag_cmp(
+        &self,
+        op: inkwell::IntPredicate,
+        lhs: IntValue<'ctx>,
+        rhs: IntValue<'ctx>,
+        name: &str,
+    ) -> IntValue<'ctx> {
+        self.builder
+            .build_int_compare(op, lhs, rhs, &format!("{}_tag_cmp", name))
+            .unwrap()
+    }
+}
 
 // !support functions
 pub struct PanicErrorSettings {
@@ -128,81 +251,20 @@ pub fn move_variable<'ctx>(
 ) {
     let src_ptr = src_enum_ptr.into_pointer_value();
 
-    let tag_ptr = self_compiler
-        .builder
-        .build_struct_gep(
-            self_compiler.runtime_value_type,
-            src_ptr,
-            0,
-            &format!("{}_tag_ptr", name),
-        )
-        .unwrap();
+    let tag_ptr = self_compiler.build_tag_gep(src_ptr, name);
 
-    let current_tag = self_compiler
-        .builder
-        .build_load(
-            self_compiler.context.i32_type(),
-            tag_ptr,
-            &format!("{}_current_tag", name),
-        )
-        .unwrap()
-        .into_int_value();
+    let current_tag = self_compiler.build_load_tag(tag_ptr, name);
 
-    let tag_string = self_compiler
-        .context
-        .i32_type()
-        .const_int(Tag::String as u64, false);
-    let tag_list = self_compiler
-        .context
-        .i32_type()
-        .const_int(Tag::List as u64, false);
-    let tag_range = self_compiler
-        .context
-        .i32_type()
-        .const_int(Tag::Range as u64, false);
-    let is_string = self_compiler
-        .builder
-        .build_int_compare(
-            inkwell::IntPredicate::EQ,
-            current_tag,
-            tag_string,
-            &format!("{}_is_string", name),
-        )
-        .unwrap();
-    let is_list = self_compiler
-        .builder
-        .build_int_compare(
-            inkwell::IntPredicate::EQ,
-            current_tag,
-            tag_list,
-            &format!("{}_is_list", name),
-        )
-        .unwrap();
-    let is_range = self_compiler
-        .builder
-        .build_int_compare(
-            inkwell::IntPredicate::EQ,
-            current_tag,
-            tag_range,
-            &format!("{}_is_range", name),
-        )
-        .unwrap();
+    let tag_string = self_compiler.get_tag_from_tag_enum(Tag::String);
+    let tag_list = self_compiler.get_tag_from_tag_enum(Tag::List);
+    let tag_range = self_compiler.get_tag_from_tag_enum(Tag::Range);
+    let is_string = self_compiler.tag_cmp(inkwell::IntPredicate::EQ, current_tag, tag_string, name);
+    let is_list = self_compiler.tag_cmp(inkwell::IntPredicate::EQ, current_tag, tag_list, name);
+    let is_range = self_compiler.tag_cmp(inkwell::IntPredicate::EQ, current_tag, tag_range, name);
 
-    let is_heap_1 = self_compiler
-        .builder
-        .build_or(is_string, is_list, &format!("{}_is_heap_1", name))
-        .unwrap();
-    let should_move = self_compiler
-        .builder
-        .build_or(is_heap_1, is_range, &format!("{}_should_move", name))
-        .unwrap();
-
-    let parent_bb = self_compiler
-        .builder
-        .get_insert_block()
-        .unwrap()
-        .get_parent()
-        .unwrap();
+    let is_heap_1 = self_compiler.or(is_string, is_list, name);
+    let should_move = self_compiler.or(is_heap_1, is_range, name);
+    let parent_bb = self_compiler.get_current_function();
     let move_bb = self_compiler
         .context
         .append_basic_block(parent_bb, &format!("{}_move_bb", name));
@@ -215,16 +277,7 @@ pub fn move_variable<'ctx>(
         .build_conditional_branch(should_move, move_bb, cont_bb);
 
     self_compiler.builder.position_at_end(move_bb);
-    self_compiler
-        .builder
-        .build_store(
-            tag_ptr,
-            self_compiler
-                .context
-                .i32_type()
-                .const_int(Tag::Unit as u64, false),
-        )
-        .unwrap();
+    self_compiler.build_tag_store(Tag::Unit, tag_ptr);
     self_compiler
         .builder
         .build_unconditional_branch(cont_bb)
@@ -239,14 +292,7 @@ pub fn var_load_at_init_variable<'ctx>(
 ) -> PointerValue<'ctx> {
     let ptr = create_entry_block_alloca(self_compiler, name);
 
-    let val = self_compiler
-        .builder
-        .build_load(
-            self_compiler.runtime_value_type,
-            init_value,
-            &format!("{}_var_load", name),
-        )
-        .unwrap();
+    let val = self_compiler.build_load(self_compiler.runtime_value_type, init_value, name);
     let _ = self_compiler.builder.build_store(ptr, val).unwrap();
     ptr
 }
