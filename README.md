@@ -19,7 +19,7 @@ The compiler is dynamic type checking and easy to use and clear for the base of 
 
 ## sprs Language Specification
 
-attention: This is still under development and may change in the future and currently didn't work interpreter system.
+attention: This is still under development and may change in the future.
 
 ### For the developers tutorial
 For this language development environment setup is WSL2(Ubuntu) + VSCode is recommended.

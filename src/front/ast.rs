@@ -1,4 +1,4 @@
-use crate::interpreter::type_helper::Type;
+use crate::front::type_helper::Type;
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum Expr {

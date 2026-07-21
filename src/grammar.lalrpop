@@ -14,7 +14,7 @@ use crate::front::ast::{
     Suffix,
 };
 use crate::front::lexer::Token;
-use crate::interpreter::type_helper::Type;
+use crate::front::type_helper::Type;
 use lalrpop_util::ParseError;
 use half::f16;
 
