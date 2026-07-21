@@ -20,7 +20,7 @@ pub enum ExecuteMode {
     Debug,
 }
 
-pub fn build_and_run(_full_path: String, mode: ExecuteMode) {
+pub fn build_and_run(_full_path: String, mode: ExecuteMode) -> Result<(), Box<dyn std::error::Error>> {
     let context = Context::create();
     let builder = context.create_builder();
 
@@ -57,15 +57,14 @@ pub fn build_and_run(_full_path: String, mode: ExecuteMode) {
         .unwrap_or_else(|| "build".to_string());
 
     if !Path::new(&out_dir).exists() {
-        std::fs::create_dir_all(&out_dir).expect("Failed to create output directory");
+        std::fs::create_dir_all(&out_dir)?;
     }
 
     if let Err(e) = compiler.load_and_compile_module("main", Some(&path)) {
-        eprintln!("Compile Error: {}", e);
-        return;
-    };
+        return Err(format!("Compile Error: {}", e).into());
+    }
 
-    Target::initialize_all(&InitializationConfig::default());
+    Target::initialize_x86(&InitializationConfig::default());
 
     let target_triple = if compiler.target_os == compiler::OS::Unknown {
         TargetMachine::get_default_triple()
@@ -75,9 +74,7 @@ pub fn build_and_run(_full_path: String, mode: ExecuteMode) {
         TargetTriple::create("x86_64-pc-linux-gnu")
     };
     let target = Target::from_triple(&target_triple)
-        .map_err(|e| format!("Target error: {}", e))
-        .unwrap();
-
+        .map_err(|e| format!("Target error: {}", e))?;
     let target_machine = target
         .create_target_machine(
             &target_triple,
@@ -87,7 +84,7 @@ pub fn build_and_run(_full_path: String, mode: ExecuteMode) {
             inkwell::targets::RelocMode::PIC,
             inkwell::targets::CodeModel::Default,
         )
-        .unwrap();
+        .ok_or("Failed to create target machine")?;
 
     let mut object_files = Vec::new();
 
@@ -110,8 +107,7 @@ pub fn build_and_run(_full_path: String, mode: ExecuteMode) {
 
         target_machine
             .write_to_file(module, inkwell::targets::FileType::Object, obj_path)
-            .map_err(|e| format!("Failed to write object file: {}", e))
-            .unwrap();
+            .map_err(|e| format!("Failed to write object file: {}", e))?;
         println!("Generated: {}", filename);
         object_files.push(filename);
     }
@@ -119,15 +115,12 @@ pub fn build_and_run(_full_path: String, mode: ExecuteMode) {
     println!("Compile runtime...");
 
     let runtime_src_path = format!("{}/runtime.rs", out_dir);
-    if let Err(e) = std::fs::write(&runtime_src_path, RUNTIME_SOURCE) {
-        eprintln!("Failed to write runtime source: {}", e);
-        return;
-    }
+    std::fs::write(&runtime_src_path, RUNTIME_SOURCE)?;
 
     let runtime_lib_path = format!("{}/libruntime.a", out_dir);
 
     let status_runtime = Command::new("rustc")
-        .args(&[
+        .args([
             &runtime_src_path,
             "--crate-type",
             "staticlib",
@@ -135,11 +128,10 @@ pub fn build_and_run(_full_path: String, mode: ExecuteMode) {
             &runtime_lib_path,
         ])
         .status()
-        .expect("Failed to compile runtime");
+        .map_err(|e| format!("Failed to invoke rustc: {}", e))?;
 
     if !status_runtime.success() {
-        eprintln!("Failed to compile runtime");
-        return;
+        return Err("Failed to compile runtime (rustc returned non-zero status)".into());
     }
 
     println!("Linking...");
@@ -182,21 +174,25 @@ pub fn build_and_run(_full_path: String, mode: ExecuteMode) {
     let status_link = Command::new("clang")
         .args(&args)
         .status()
-        .expect("Failed to link");
+        .map_err(|e| format!("Failed to invoke clang: {}", e))?;
 
     if status_link.success() {
         println!("Successfully created executable: ./{}", exec_filename);
-        if (mode == ExecuteMode::Run) || (mode == ExecuteMode::Build && false) {
+        if mode == ExecuteMode::Run {
             println!("--- Running ---");
             if compiler.target_os == OS::Linux
                 || (compiler.target_os == OS::Unknown || cfg!(target_os = "linux"))
             {
-                let _ = Command::new(format!("./{}/{}", out_dir, exec_filename))
+                let status = Command::new(format!("./{}/{}", out_dir, exec_filename))
                     .status()
-                    .expect("Failed to run executable");
+                    .map_err(|e| format!("Failed to run executable: {}", e))?;
+                if !status.success() {
+                    return Err("Executable returned non-zero status".into());
+                }
             }
         }
     } else {
-        println!("--- Skipped ---");
+        return Err("Linker (clang) returned non-zero status".into());
     }
+    Ok(())
 }

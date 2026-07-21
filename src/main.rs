@@ -15,7 +15,7 @@
 //!
 //! # sprs Language Specification
 //!
-//! attention: This is still under development and may change in the future and currently didn't work interpreter system.
+//! attention: This is still under development and may change in the future.
 //!
 //! ## For the developers tutorial
 //! For this language development environment setup is WSL2(Ubuntu) + VSCode is recommended.
@@ -321,6 +321,8 @@
 //!
 //! ```
 
+use std::error::Error;
+
 use crate::command_helper::HelpCommand;
 use crate::command_helper::get_all_arguments;
 use crate::command_helper::help_print;
@@ -329,149 +331,90 @@ use crate::llvm::llvm_executer;
 mod command_helper;
 mod front;
 mod grammar;
-mod interpreter;
 mod llvm;
 mod runtime;
 
-fn main() {
+fn main() -> Result<(), Box<dyn Error>> {
     let argv: Vec<String> = std::env::args().collect();
-
     let argc = argv.len();
 
     if argc <= 1 {
         eprintln!("Usage: sprs help --all");
-        return;
+        return Err("invalid command".into());
     }
 
-    if argc > 1 {
-        let _path = argv[0].clone();
-        let command = argv[1].clone();
+    let _path = argv[0].clone();
+    let command = argv[1].clone();
 
-        if command == "init" {
+    match command.as_str() {
+        "init" => {
             if argc > 2 {
                 let args = &argv[2..];
-
                 let mut iter = args.iter();
                 while let Some(arg) = iter.next() {
                     if arg == "--name" {
                         if let Some(proj_name) = iter.next() {
-                            command_helper::init_project(Some(proj_name));
-                            return;
+                            command_helper::init_project(Some(proj_name))?;
+                            return Ok(());
+                        } else {
+                            eprintln!("Usage: sprs init --name <project_name>");
+                            return Err("missing value for --name".into());
                         }
                     } else {
                         eprintln!("Usage: sprs init --name <project_name>");
-                        return;
+                        return Err("invalid argument for init".into());
                     }
                 }
             } else {
                 println!("Initializing project without arguments.");
-                command_helper::init_project(None);
+                command_helper::init_project(None)?;
+                return Ok(());
             }
-            eprintln!("Unknown error during project initialization.");
-            return;
+            Ok(())
         }
-
-        if command == "build" {
+        "build" => {
             if argc > 2 {
-                println!("not supported yet with arguments.");
-            } else {
-                llvm_executer::build_and_run(argv[0].clone(), llvm_executer::ExecuteMode::Build);
+                eprintln!("not supported yet with arguments.");
+                return Err("wrong arguments".into());
             }
-            return;
+            llvm_executer::build_and_run(argv[0].clone(), llvm_executer::ExecuteMode::Build)?;
+            Ok(())
         }
-
-        if command == "run" {
+        "run" => {
             if argc > 2 {
-                println!("not supported yet with arguments.");
-            } else {
-                llvm_executer::build_and_run(argv[0].clone(), llvm_executer::ExecuteMode::Run);
+                eprintln!("not supported yet with arguments.");
+                return Err("wrong arguments".into());
             }
-            return;
+            llvm_executer::build_and_run(argv[0].clone(), llvm_executer::ExecuteMode::Run)?;
+            Ok(())
         }
-
-        if command == "debug" {
+        "debug" => {
             if argc > 2 {
-                println!("not supported yet with arguments.");
-            } else {
-                println!("interpreter currently not support yet.");
-                llvm_executer::build_and_run(argv[0].clone(), llvm_executer::ExecuteMode::Debug);
+                eprintln!("not supported yet with arguments.");
+                return Err("wrong arguments".into());
             }
-            return;
+            llvm_executer::build_and_run(argv[0].clone(), llvm_executer::ExecuteMode::Debug)?;
+            Ok(())
         }
-
-        if command == "help" {
+        "help" => {
             let args = get_all_arguments(argv.clone());
-
             if args.is_empty() {
                 help_print(HelpCommand::NoArg);
-                return;
+            } else if args.contains(&"--all".to_string()) {
+                help_print(HelpCommand::All);
             } else {
-                if args.contains(&"--all".to_string()) {
-                    help_print(HelpCommand::All);
-                    return;
-                }
+                eprintln!("Unknown help argument. Use --all.");
+                return Err("invalid help argument".into());
             }
+            Ok(())
         }
-        if command == "version" {
+        "version" => {
             println!("sprs version: {}", env!("CARGO_PKG_VERSION"));
-            return;
+            Ok(())
         }
-    };
-
-    // interprinter
-    /*
-    // Example input
-    let input = r#"
-        #define Windows
-
-        fn test() {
-            a = 5 - 1;
-            b = 10;
-            c = "hello" + " world";
-            println(c);
-
-            # test equality
-            if a == 3 then {
-                return a;
-            }
-
-            if a != 3 then {
-                return a++;
-            } else {
-                return a + 2;
-            }
-
-            return b;
+        other => {
+            eprintln!("Unknown command: {}", other);
+            Err(format!("unknown command: {}", other).into())
         }
-
-        fn main() {
-           x = test();
-           y = [];
-           z = 20;
-           alpha = "test";
-           beta = true;
-           println(x);
-           vec_push!(y, z);
-           vec_push!(y, alpha);
-           println(y[1]);
-           # println(x + alpha);
-
-           # test calc
-              result = (x + 10) * 2;
-              println(result);
-           # test while
-              i = 0;
-                while i <= 5 {
-                    println(i);
-                    i = i + 1;
-                }
-        }
-    "#; */
-
-    // debug_run(input);
-
-    /*  match parse_run(input) {
-        Ok(_) => println!("Parsing and analysis completed successfully."),
-        Err(e) => eprintln!("Error: {}", e),
-    } */
+    }
 }

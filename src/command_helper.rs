@@ -28,64 +28,40 @@ pub fn get_all_arguments(args: Vec<String>) -> Vec<String> {
     all_args
 }
 
-pub fn init_project(mut name: Option<&str>) {
+pub fn init_project(mut name: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::Write;
 
-        if name.is_none() {
-            name = Some("sprs_project");
-        }
-    
-        println!("Initializing project with name: {}", name.unwrap());
+    if name.is_none() {
+        name = Some("sprs_project");
+    }
 
-        let config = ProjectConfig {
-            name: name.unwrap().to_string(),
-            version: "0.1.0".to_string(),
-            src_dir: "src".to_string(),
-            out_dir: "out".to_string(),
-        };
+    let name = name.unwrap();
+    println!("Initializing project with name: {}", name);
 
-        match toml::to_string_pretty(&config) {
-            Ok(toml_str) => {
-                match File::create("sprs.toml") {
-                    Ok(mut file) => {
-                        if let Err(e) = std::io::Write::write_all(&mut file, toml_str.as_bytes()) {
-                            eprintln!("Failed to write to sprs.toml: {}", e);
-                        } else {
-                            println!("Project initialized successfully with sprs.toml");
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("Failed to create sprs.toml: {}", e);
-                    }
-                }
-            }
-            Err(e) => {
-                eprintln!("Failed to serialize project config: {}", e);
-            }
-        }
+    let config = ProjectConfig {
+        name: name.to_string(),
+        version: "0.1.0".to_string(),
+        src_dir: "src".to_string(),
+        out_dir: "out".to_string(),
+    };
 
-        if let Err(e) = std::fs::create_dir_all("src") {
-            eprintln!("Failed to create src directory: {}", e);
-            return;
-        }
+    let toml_str = toml::to_string_pretty(&config)?;
+    let mut file = File::create("sprs.toml")?;
+    file.write_all(toml_str.as_bytes())?;
+    println!("Project initialized successfully with sprs.toml");
 
-        match File::create("src/main.sprs") {
-            Ok(mut file) => {
-                let default_code =r#"fn main() {
+    std::fs::create_dir_all("src")?;
+
+    let default_code = r#"fn main() {
     println("Hello, Sprs!");
 }
 "#;
-                if let Err(e) = std::io::Write::write_all(&mut file, default_code.as_bytes()) {
-                    eprintln!("Failed to write to src/main.sprs: {}", e);
-                } else {
-                    println!("Created src/main.sprs with default code.");
-                }
-            }
-            Err(e) => {
-                eprintln!("Failed to create src/main.sprs: {}", e);
-            }
-        }
+    let mut src_file = File::create("src/main.sprs")?;
+    src_file.write_all(default_code.as_bytes())?;
+    println!("Created src/main.sprs with default code.");
 
-    }
+    Ok(())
+}
 
 pub enum HelpCommand {
     All,
