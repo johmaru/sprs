@@ -204,24 +204,25 @@ pub fn create_list_from_expr<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
     elements: &[ast::Expr],
     module: &inkwell::module::Module<'ctx>,
-) -> Result<PointerValue<'ctx>, String> {
+) -> Result<IntValue<'ctx>, String> {
     let len = elements.len();
     let i64_type = self_compiler.context.i64_type();
 
     let list_new_fn = self_compiler.get_runtime_fn(module, "__list_new");
 
-    let list_ptr = self_compiler
+    let list_call = self_compiler
         .builder
         .build_call(
             list_new_fn,
             &[i64_type.const_int(len as u64, false).into()],
-            "list_ptr",
+            "list_new_call",
         )
         .unwrap();
 
-    let list_ptr_val = match list_ptr.try_as_basic_value() {
-        ValueKind::Basic(val) => val.into_pointer_value(),
-        _ => return Err("Expected a basic value".to_string()),
+    // `__list_new` returns an i64 handle (not a pointer).
+    let list_handle = match list_call.try_as_basic_value() {
+        ValueKind::Basic(val) => val.into_int_value(),
+        _ => return Err("Expected i64 handle from __list_new".to_string()),
     };
 
     let list_push_fn = self_compiler.get_runtime_fn(module, "__list_push");
@@ -230,15 +231,17 @@ pub fn create_list_from_expr<'ctx>(
             .compile_expr(elem, module)?
             .into_pointer_value();
 
+        // `__list_push(list_handle: i64, tag: i32, data: i64)` — pass the
+        // handle as the first arg, with tag/data extracted from the value.
         self_compiler.build_sprs_value_call_func(
             val_ptr,
             list_push_fn,
             "list_push",
-            &[list_ptr_val.into()],
+            &[list_handle.into()],
             true,
         );
     }
-    Ok(list_ptr_val)
+    Ok(list_handle)
 }
 
 // A runtime move system for variables that hold heap data (strings, lists, ranges)
@@ -258,12 +261,21 @@ pub fn move_variable<'ctx>(
     let tag_string = self_compiler.get_tag_from_tag_enum(Tag::String);
     let tag_list = self_compiler.get_tag_from_tag_enum(Tag::List);
     let tag_range = self_compiler.get_tag_from_tag_enum(Tag::Range);
+    let tag_struct = self_compiler.get_tag_from_tag_enum(Tag::Struct);
+    let tag_enum = self_compiler.get_tag_from_tag_enum(Tag::Enum);
     let is_string = self_compiler.tag_cmp(inkwell::IntPredicate::EQ, current_tag, tag_string, name);
     let is_list = self_compiler.tag_cmp(inkwell::IntPredicate::EQ, current_tag, tag_list, name);
     let is_range = self_compiler.tag_cmp(inkwell::IntPredicate::EQ, current_tag, tag_range, name);
+    let is_struct = self_compiler.tag_cmp(inkwell::IntPredicate::EQ, current_tag, tag_struct, name);
+    let is_enum = self_compiler.tag_cmp(inkwell::IntPredicate::EQ, current_tag, tag_enum, name);
 
+    // With slab, all heap tags (String/List/Range/Struct/Enum) carry a slot
+    // handle in `data` and must be moved (tag reset to Unit) so the original
+    // binding doesn't release the slot a second time on scope exit.
     let is_heap_1 = self_compiler.or(is_string, is_list, name);
-    let should_move = self_compiler.or(is_heap_1, is_range, name);
+    let is_heap_2 = self_compiler.or(is_heap_1, is_range, name);
+    let is_heap_3 = self_compiler.or(is_heap_2, is_struct, name);
+    let should_move = self_compiler.or(is_heap_3, is_enum, name);
     let parent_bb = self_compiler.get_current_function();
     let move_bb = self_compiler
         .context
@@ -532,6 +544,9 @@ pub fn create_string<'ctx>(
     str: &String,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
+    // Deduplicate the LLVM global string constant (NUL-terminated) — the
+    // runtime copies these bytes into an owned Rust `String` slot, so the
+    // global itself is read-only and can be shared across all uses.
     let global = if let Some(existing) = self_compiler.string_constants.get(str) {
         *existing
     } else {
@@ -548,14 +563,51 @@ pub fn create_string<'ctx>(
         global
     };
 
+    // Build a runtime String slot that owns a proper Rust `String` (with
+    // length tracking — no NUL-termination assumption). The slot is freed
+    // by `__drop` on scope exit, fixing BUG-R04 (String leak) and BUG-R05
+    // (NUL-terminated buffer over-read in `__clone`).
+    let string_from_cstr_fn = self_compiler.get_runtime_fn(module, "__string_from_cstr");
+    let cstr_ptr = global.as_pointer_value();
+    let string_call = self_compiler
+        .builder
+        .build_call(
+            string_from_cstr_fn,
+            &[cstr_ptr.into()],
+            "string_from_cstr_call",
+        )
+        .unwrap();
+    let string_handle = match string_call.try_as_basic_value() {
+        ValueKind::Basic(val) => val.into_int_value(),
+        _ => return Err("Expected i64 handle from __string_from_cstr".to_string()),
+    };
+
     let ptr = create_entry_block_alloca(self_compiler, "str_alloc");
 
-    self_compiler.build_runtime_value_store(
-        ptr,
-        StoreTag::Int(Tag::String as u64),
-        StoreValue::Ptr(global.as_pointer_value()),
-        "string",
-    );
+    let tag_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, ptr, 0, "str_tag_ptr")
+        .unwrap();
+    self_compiler
+        .builder
+        .build_store(
+            tag_ptr,
+            self_compiler
+                .context
+                .i32_type()
+                .const_int(Tag::String as u64, false),
+        )
+        .unwrap();
+
+    let data_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, ptr, 1, "str_data_ptr")
+        .unwrap();
+    // `string_handle` is already an i64 — no ptr_to_int needed.
+    self_compiler
+        .builder
+        .build_store(data_ptr, string_handle)
+        .unwrap();
 
     Ok(ptr.into())
 }
@@ -748,6 +800,7 @@ pub fn create_float64<'ctx>(
 
 fn box_return_value<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
+    module: &inkwell::module::Module<'ctx>,
     return_type: inkwell::types::BasicTypeEnum<'ctx>,
     result_val: BasicValueEnum<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
@@ -810,16 +863,27 @@ fn box_return_value<'ctx>(
             .build_store(result_ptr, result_val)
             .unwrap();
     } else if return_type.is_pointer_type() {
+        // Extern function returning `i8*` (a C string). Register the pointer
+        // in a slab String slot so the runtime owns it properly.
         let ptr_val = result_val.into_pointer_value();
-        let ptr_as_i64 = self_compiler
+        let string_from_cstr_fn = self_compiler.get_runtime_fn(module, "__string_from_cstr");
+        let string_call = self_compiler
             .builder
-            .build_ptr_to_int(ptr_val, self_compiler.context.i64_type(), "ptr_to_i64")
+            .build_call(
+                string_from_cstr_fn,
+                &[ptr_val.into()],
+                "string_from_cstr_call",
+            )
             .unwrap();
+        let string_handle = match string_call.try_as_basic_value() {
+            ValueKind::Basic(val) => val.into_int_value(),
+            _ => return Err("Expected i64 handle from __string_from_cstr".to_string()),
+        };
 
         self_compiler.build_runtime_value_store(
             result_ptr,
             StoreTag::Int(Tag::String as u64),
-            StoreValue::Int(ptr_as_i64),
+            StoreValue::Int(string_handle),
             "res_string",
         );
     } else {
@@ -1024,8 +1088,7 @@ pub fn create_call_expr<'ctx>(
             return Err("Expected basic value from function call".to_string());
         }
     };
-
-    box_return_value(self_compiler, return_type, result_val)
+    box_return_value(self_compiler, module, return_type, result_val)
 }
 
 pub fn create_add_expr<'ctx>(
@@ -1754,172 +1817,61 @@ fn create_add_expr_build_string_branch<'ctx>(
     r_ptr: PointerValue<'ctx>,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<PointerValue<'ctx>, String> {
+    // Load the slab handles from both operands' `data` fields. With the slab
+    // ABI, `data` is an i64 handle into the slot pool, not a raw pointer.
     let l_str_data_ptr = self_compiler
         .builder
         .build_struct_gep(self_compiler.runtime_value_type, l_ptr, 1, "l_str_data_ptr")
         .unwrap();
-    let l_str_ptr_int = self_compiler
+    let l_str_handle = self_compiler
         .builder
         .build_load(
             self_compiler.context.i64_type(),
             l_str_data_ptr,
-            "l_str_ptr_int",
+            "l_str_handle",
         )
         .unwrap()
         .into_int_value();
-    let l_str_ptr = self_compiler
-        .builder
-        .build_int_to_ptr(
-            l_str_ptr_int,
-            self_compiler.context.ptr_type(AddressSpace::default()),
-            "l_str_ptr",
-        )
-        .unwrap();
+
     let r_str_data_ptr = self_compiler
         .builder
         .build_struct_gep(self_compiler.runtime_value_type, r_ptr, 1, "r_str_data_ptr")
         .unwrap();
-    let r_str_ptr_int = self_compiler
+    let r_str_handle = self_compiler
         .builder
         .build_load(
             self_compiler.context.i64_type(),
             r_str_data_ptr,
-            "r_str_ptr_int",
+            "r_str_handle",
         )
         .unwrap()
         .into_int_value();
-    let r_str_ptr = self_compiler
+
+    // Delegate the concatenation to the runtime, which does it in safe Rust
+    // (no `l_len + r_len` overflow, no manual memcpy). This eliminates
+    // BUG-L02 (heap buffer overflow in string concat) entirely.
+    let concat_fn = self_compiler.get_runtime_fn(module, "__string_concat");
+    let concat_call = self_compiler
         .builder
-        .build_int_to_ptr(
-            r_str_ptr_int,
-            self_compiler.context.ptr_type(AddressSpace::default()),
-            "r_str_ptr",
+        .build_call(
+            concat_fn,
+            &[l_str_handle.into(), r_str_handle.into()],
+            "string_concat_call",
         )
         .unwrap();
-
-    let strlen_fn = self_compiler.get_runtime_fn(module, "__strlen");
-    let malloc_fn = self_compiler.get_runtime_fn(module, "__malloc");
-
-    let l_len = self_compiler
-        .builder
-        .build_call(strlen_fn, &[l_str_ptr.into()], "l_strlen_call")
-        .unwrap();
-
-    let l_len_val = match l_len.try_as_basic_value() {
+    let result_handle = match concat_call.try_as_basic_value() {
         ValueKind::Basic(val) => val.into_int_value(),
-        _ => return Err("Expected basic value from strlen".to_string()),
+        _ => return Err("Expected i64 handle from __string_concat".to_string()),
     };
 
-    let r_len = self_compiler
-        .builder
-        .build_call(strlen_fn, &[r_str_ptr.into()], "r_strlen_call")
-        .unwrap();
-
-    let r_len_val = match r_len.try_as_basic_value() {
-        ValueKind::Basic(val) => val.into_int_value(),
-        _ => return Err("Expected basic value from strlen".to_string()),
-    };
-
-    let total_len = self_compiler
-        .builder
-        .build_int_add(l_len_val, r_len_val, "total_str_len")
-        .unwrap();
-    let one = self_compiler.context.i64_type().const_int(1, false); // for null terminator
-    let alloc_size = self_compiler
-        .builder
-        .build_int_add(total_len, one, "alloc_size")
-        .unwrap();
-
-    let malloc_call = self_compiler
-        .builder
-        .build_call(malloc_fn, &[alloc_size.into()], "malloc_call")
-        .unwrap();
-
-    let malloc_ptr = match malloc_call.try_as_basic_value() {
-        ValueKind::Basic(val) => val.into_pointer_value(),
-        _ => return Err("Expected basic value from malloc".to_string()),
-    };
-
-    self_compiler
-        .builder
-        .build_memcpy(malloc_ptr, 1, l_str_ptr, 1, l_len_val)
-        .unwrap();
-
-    let dest_ptr = unsafe {
-        self_compiler
-            .builder
-            .build_gep(
-                self_compiler.context.i8_type(),
-                malloc_ptr,
-                &[l_len_val],
-                "dest_ptr",
-            )
-            .unwrap()
-    };
-    self_compiler
-        .builder
-        .build_memcpy(dest_ptr, 1, r_str_ptr, 1, r_len_val)
-        .unwrap();
-
-    let end_ptr = unsafe {
-        self_compiler
-            .builder
-            .build_gep(
-                self_compiler.context.i8_type(),
-                malloc_ptr,
-                &[total_len],
-                "end_ptr",
-            )
-            .unwrap()
-    };
-    self_compiler
-        .builder
-        .build_store(end_ptr, self_compiler.context.i8_type().const_int(0, false))
-        .unwrap();
-
+    // Pack the new handle into a fresh runtime value of tag String.
     let str_res_ptr = create_entry_block_alloca(self_compiler, "str_res_alloc");
-
-    let str_res_tag_ptr = self_compiler
-        .builder
-        .build_struct_gep(
-            self_compiler.runtime_value_type,
-            str_res_ptr,
-            0,
-            "str_res_tag_ptr",
-        )
-        .unwrap();
-
-    let check_string = self_compiler
-        .context
-        .i32_type()
-        .const_int(Tag::String as u64, false);
-
-    self_compiler
-        .builder
-        .build_store(str_res_tag_ptr, check_string)
-        .unwrap();
-
-    let str_res_data_ptr = self_compiler
-        .builder
-        .build_struct_gep(
-            self_compiler.runtime_value_type,
-            str_res_ptr,
-            1,
-            "str_res_data_ptr",
-        )
-        .unwrap();
-    let malloc_ptr_as_i64 = self_compiler
-        .builder
-        .build_ptr_to_int(
-            malloc_ptr,
-            self_compiler.context.i64_type(),
-            "malloc_ptr_as_i64",
-        )
-        .unwrap();
-    self_compiler
-        .builder
-        .build_store(str_res_data_ptr, malloc_ptr_as_i64)
-        .unwrap();
+    self_compiler.build_runtime_value_store(
+        str_res_ptr,
+        StoreTag::Int(Tag::String as u64),
+        StoreValue::Int(result_handle),
+        "str_concat_res",
+    );
 
     Ok(str_res_ptr)
 }
@@ -3069,8 +3021,7 @@ pub fn create_list<'ctx>(
     elements: &Vec<ast::Expr>,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
-    let list_ptr = self_compiler.build_list_from_exprs(elements, module)?;
-    let i64_type = self_compiler.context.i64_type();
+    let list_handle = self_compiler.build_list_from_exprs(elements, module)?;
 
     let res_ptr = create_entry_block_alloca(self_compiler, "list_res_alloc");
     let res_tag_ptr = self_compiler
@@ -3092,13 +3043,10 @@ pub fn create_list<'ctx>(
         .builder
         .build_struct_gep(self_compiler.runtime_value_type, res_ptr, 1, "res_data_ptr")
         .unwrap();
-    let list_ptr_as_int = self_compiler
-        .builder
-        .build_ptr_to_int(list_ptr, i64_type, "list_ptr_as_int")
-        .unwrap();
+    // `list_handle` is already an i64 (slab handle) — no ptr_to_int needed.
     self_compiler
         .builder
-        .build_store(res_data_ptr, list_ptr_as_int)
+        .build_store(res_data_ptr, list_handle)
         .unwrap();
 
     Ok(res_ptr.into())
@@ -3135,14 +3083,6 @@ pub fn create_index<'ctx>(
         .unwrap()
         .into_int_value();
 
-    let list_ptr = self_compiler
-        .builder
-        .build_int_to_ptr(
-            list_ptr_int,
-            self_compiler.context.ptr_type(AddressSpace::default()),
-            "list_ptr",
-        )
-        .unwrap();
 
     let index_val_ptr = self_compiler
         .compile_expr(index_expr, module)?
@@ -3171,7 +3111,7 @@ pub fn create_index<'ctx>(
         .builder
         .build_call(
             get_fn,
-            &[list_ptr.into(), index_int.into()],
+            &[list_ptr_int.into(), index_int.into()],
             "list_get_call",
         )
         .unwrap();
@@ -3233,10 +3173,10 @@ pub fn create_range<'ctx>(
         .builder
         .build_call(range_fn, &[start_int.into(), end_int.into()], "range_call")
         .unwrap();
-    let range_ptr = match range_call.try_as_basic_value() {
-        ValueKind::Basic(val) => val.into_pointer_value(),
+    let range_handle = match range_call.try_as_basic_value() {
+        ValueKind::Basic(val) => val.into_int_value(),
         ValueKind::Instruction(_) => {
-            return Err("Expected basic value from __range_new".to_string());
+            return Err("Expected i64 handle from __range_new".to_string());
         }
     };
 
@@ -3261,17 +3201,10 @@ pub fn create_range<'ctx>(
         .builder
         .build_struct_gep(self_compiler.runtime_value_type, res_ptr, 1, "res_data_ptr")
         .unwrap();
-    let range_ptr_as_int = self_compiler
-        .builder
-        .build_ptr_to_int(
-            range_ptr,
-            self_compiler.context.i64_type(),
-            "range_ptr_as_int",
-        )
-        .unwrap();
+    // `range_handle` is already an i64 — no ptr_to_int needed.
     self_compiler
         .builder
-        .build_store(res_data_ptr, range_ptr_as_int)
+        .build_store(res_data_ptr, range_handle)
         .unwrap();
     Ok(res_ptr.into())
 }
@@ -3325,7 +3258,7 @@ pub fn create_module_access<'ctx>(
         }
     };
 
-    box_return_value(self_compiler, return_type, result_val)
+    box_return_value(self_compiler, module, return_type, result_val)
 }
 
 pub fn create_field_access<'ctx>(
@@ -3359,14 +3292,21 @@ pub fn create_field_access<'ctx>(
         .unwrap()
         .into_int_value();
 
-    let heap_ptr = self_compiler
+    // `data` is an i64 slab handle — call `__struct_borrow(handle)` to get the
+    // raw pointer for field access.
+    let struct_borrow_fn = self_compiler.get_runtime_fn(module, "__struct_borrow");
+    let borrow_call = self_compiler
         .builder
-        .build_int_to_ptr(
-            heap_ptr_int,
-            self_compiler.context.ptr_type(AddressSpace::default()),
-            "heap_ptr",
+        .build_call(
+            struct_borrow_fn,
+            &[heap_ptr_int.into()],
+            "struct_borrow_call",
         )
         .unwrap();
+    let heap_ptr = match borrow_call.try_as_basic_value() {
+        ValueKind::Basic(val) => val.into_pointer_value(),
+        _ => return Err("Expected pointer from __struct_borrow".to_string()),
+    };
 
     let struct_def = self_compiler
         .struct_defs
@@ -3391,9 +3331,9 @@ pub fn create_field_access<'ctx>(
 
     if let Some(ty) = &field_def.ty {
         match ty {
-            crate::interpreter::type_helper::Type::Int
-            | crate::interpreter::type_helper::Type::TypeI64
-            | crate::interpreter::type_helper::Type::TypeU64 => {
+            crate::front::type_helper::Type::Int
+            | crate::front::type_helper::Type::TypeI64
+            | crate::front::type_helper::Type::TypeU64 => {
                 let val = self_compiler
                     .builder
                     .build_load(self_compiler.context.i64_type(), field_ptr, "field_val")
@@ -3410,7 +3350,7 @@ pub fn create_field_access<'ctx>(
                 );
                 return Ok(res_ptr.into());
             }
-            crate::interpreter::type_helper::Type::Bool => {
+            crate::front::type_helper::Type::Bool => {
                 let val = self_compiler
                     .builder
                     .build_load(
@@ -3431,30 +3371,24 @@ pub fn create_field_access<'ctx>(
                 );
                 return Ok(res_ptr.into());
             }
-            crate::interpreter::type_helper::Type::Str => {
-                let val = self_compiler
+            crate::front::type_helper::Type::Str => {
+                // `data` is an i64 slab handle stored directly in the struct
+                // field — load as i64, no pointer conversion.
+                let str_handle = self_compiler
                     .builder
                     .build_load(
-                        self_compiler.context.ptr_type(AddressSpace::default()),
+                        self_compiler.context.i64_type(),
                         field_ptr,
-                        "str_field_ptr_load",
+                        "str_field_handle_load",
                     )
                     .unwrap()
-                    .into_pointer_value();
-                let var_int = self_compiler
-                    .builder
-                    .build_ptr_to_int(
-                        val,
-                        self_compiler.context.i64_type(),
-                        "str_field_ptr_as_int",
-                    )
-                    .unwrap();
+                    .into_int_value();
                 let res_ptr =
                     create_entry_block_alloca(self_compiler, "str_field_access_res_alloc");
                 self_compiler.build_runtime_value_store(
                     res_ptr,
                     StoreTag::Int(Tag::String as u64),
-                    StoreValue::Int(var_int),
+                    StoreValue::Int(str_handle),
                     "str_field_access_res",
                 );
                 return Ok(res_ptr.into());
@@ -3501,10 +3435,47 @@ pub fn create_struct_init<'ctx>(
     let field_indices = struct_def.field_indices.clone();
     let def_fields = struct_def.fields.clone();
 
+    // Allocate the struct through the slab runtime so `__drop`/`__clone`
+    // recognize it as a slab-owned Struct (not a raw malloc pointer).
+    let struct_size = llvm_type
+        .size_of()
+        .ok_or_else(|| "struct type has no size".to_string())?;
+    let struct_new_fn = self_compiler.get_runtime_fn(module, "__struct_new");
+    let struct_new_call = self_compiler
+        .builder
+        .build_call(
+            struct_new_fn,
+            &[struct_size.into()],
+            "struct_new_call",
+        )
+        .unwrap();
+    let struct_handle = match struct_new_call.try_as_basic_value() {
+        ValueKind::Basic(val) => val.into_int_value(),
+        _ => return Err("Expected i64 handle from __struct_new".to_string()),
+    };
+    let struct_borrow_fn = self_compiler.get_runtime_fn(module, "__struct_borrow");
+    let borrow_call = self_compiler
+        .builder
+        .build_call(
+            struct_borrow_fn,
+            &[struct_handle.into()],
+            "struct_borrow_call",
+        )
+        .unwrap();
+    let struct_ptr = match borrow_call.try_as_basic_value() {
+        ValueKind::Basic(val) => val.into_pointer_value(),
+        _ => return Err("Expected pointer from __struct_borrow".to_string()),
+    };
+    // `__struct_borrow` returns `*mut u8`; cast to the struct's typed pointer
+    // so `build_struct_gep` can index fields.
     let struct_ptr = self_compiler
         .builder
-        .build_malloc(llvm_type, &format!("{}_struct_alloc", struct_name))
-        .map_err(|e| e.to_string())?;
+        .build_pointer_cast(
+            struct_ptr,
+            llvm_type.ptr_type(AddressSpace::default()),
+            "struct_ptr_typed",
+        )
+        .unwrap();
 
     for (field_name, field_expr) in field_exprs {
         let index = field_indices.get(field_name).ok_or_else(|| {
@@ -3533,10 +3504,10 @@ pub fn create_struct_init<'ctx>(
 
         if let Some(ty) = &field_def.ty {
             match ty {
-                crate::interpreter::type_helper::Type::Int
-                | crate::interpreter::type_helper::Type::TypeI64
-                | crate::interpreter::type_helper::Type::TypeU64
-                | crate::interpreter::type_helper::Type::Bool => {
+                crate::front::type_helper::Type::Int
+                | crate::front::type_helper::Type::TypeI64
+                | crate::front::type_helper::Type::TypeU64
+                | crate::front::type_helper::Type::Bool => {
                     let val_ptr = value.into_pointer_value();
                     let data_ptr = self_compiler
                         .builder
@@ -3558,7 +3529,7 @@ pub fn create_struct_init<'ctx>(
                         .unwrap();
                     continue;
                 }
-                crate::interpreter::type_helper::Type::Str => {
+                crate::front::type_helper::Type::Str => {
                     let val_ptr = value.into_pointer_value();
                     let data_ptr = self_compiler
                         .builder
@@ -3569,26 +3540,20 @@ pub fn create_struct_init<'ctx>(
                             "str_field_data_ptr",
                         )
                         .unwrap();
-                    let str_ptr_int = self_compiler
+                    // `data` is an i64 slab handle — store it directly in the
+                    // struct field (no pointer conversion).
+                    let str_handle = self_compiler
                         .builder
                         .build_load(
                             self_compiler.context.i64_type(),
                             data_ptr,
-                            "str_field_ptr_int",
+                            "str_field_handle",
                         )
                         .unwrap()
                         .into_int_value();
-                    let str_ptr = self_compiler
-                        .builder
-                        .build_int_to_ptr(
-                            str_ptr_int,
-                            self_compiler.context.ptr_type(AddressSpace::default()),
-                            "str_field_ptr",
-                        )
-                        .unwrap();
                     self_compiler
                         .builder
-                        .build_store(field_ptr, str_ptr)
+                        .build_store(field_ptr, str_handle)
                         .unwrap();
                     continue;
                 }
@@ -3629,21 +3594,15 @@ pub fn create_struct_init<'ctx>(
         .unwrap();
     self_compiler.builder.build_store(tag_ptr, tag).unwrap();
 
-    let data_int = self_compiler
-        .builder
-        .build_ptr_to_int(
-            struct_ptr,
-            self_compiler.context.i64_type(),
-            "struct_ptr_as_int",
-        )
-        .unwrap();
     let data_ptr = self_compiler
         .builder
         .build_struct_gep(self_compiler.runtime_value_type, allloca, 1, "data_ptr")
         .unwrap();
+    // Store the slab handle (not the raw pointer) so `__drop`/`__clone`
+    // recognize this as a slab-owned Struct.
     self_compiler
         .builder
-        .build_store(data_ptr, data_int)
+        .build_store(data_ptr, struct_handle)
         .unwrap();
 
     Ok(allloca.into())
@@ -3704,14 +3663,9 @@ pub fn call_builtin_macro_list_push<'ctx>(
         )
         .unwrap()
         .into_int_value();
-    let list_vec_ptr = self_compiler
-        .builder
-        .build_int_to_ptr(
-            list_vec_int,
-            self_compiler.context.ptr_type(AddressSpace::default()),
-            "list_vec_ptr",
-        )
-        .unwrap();
+    // `list_vec_int` is already an i64 slab handle — `__list_push` takes it
+    // directly, no pointer conversion needed.
+    let list_handle = list_vec_int;
 
     let target_ptr = self_compiler
         .builder
@@ -3738,7 +3692,7 @@ pub fn call_builtin_macro_list_push<'ctx>(
         .builder
         .build_call(
             list_push_fn,
-            &[list_vec_ptr.into(), val_tag.into(), val_data.into()],
+            &[list_handle.into(), val_tag.into(), val_data.into()],
             "list_push_call",
         )
         .unwrap();

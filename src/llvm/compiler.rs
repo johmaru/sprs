@@ -1,7 +1,7 @@
 use crate::front::ast;
-use crate::interpreter::runner::parse_only;
-use crate::interpreter::type_helper;
-use crate::interpreter::type_helper::Type;
+use crate::front::type_helper;
+use crate::front::type_helper::Type;
+use crate::llvm::parser::parse_only;
 use crate::llvm::builder_helper;
 use crate::llvm::builder_helper::Comparison;
 use crate::llvm::builder_helper::EqNeq;
@@ -484,7 +484,7 @@ impl<'ctx> Compiler<'ctx> {
         &mut self,
         elements: &[ast::Expr],
         module: &Module<'ctx>,
-    ) -> Result<PointerValue<'ctx>, String> {
+    ) -> Result<IntValue<'ctx>, String> {
         let create = builder_helper::create_list_from_expr(self, elements, module);
         create
     }
@@ -500,31 +500,36 @@ impl<'ctx> Compiler<'ctx> {
         let void_type = self.context.void_type();
 
         let fn_type = match name {
-            "__list_new" => i8_ptr_type.fn_type(&[i64_type.into()], false),
+            // slab (handle-based) runtime ABI:
+            //   list/range/string/struct/enum values are addressed by a u64
+            //   handle packed as (index:u32 | generation:u32). Primitives
+            //   (Integer/Float/Bool/cast! types) carry their value inline in
+            //   `data` and are not slab-backed.
+            "__list_new" => i64_type.fn_type(&[i64_type.into()], false),
             "__list_push" => void_type.fn_type(
                 &[
-                    i8_ptr_type.into(), // list ptr
-                    i32_type.into(),    // value tag
-                    i64_type.into(),    // value data
+                    i64_type.into(), // list handle
+                    i32_type.into(), // value tag
+                    i64_type.into(), // value data (handle or immediate)
                 ],
                 false,
             ),
-            "__list_get" => i8_ptr_type.fn_type(
+            "__list_get" => self.runtime_value_type.fn_type(
                 &[
-                    i8_ptr_type.into(), // list ptr
-                    i64_type.into(),    // index
+                    i64_type.into(), // list handle
+                    i64_type.into(), // index
                 ],
                 false,
             ),
-            "__range_new" => i8_ptr_type.fn_type(
+            "__range_new" => i64_type.fn_type(
                 &[
                     i64_type.into(), // start
                     i64_type.into(), // end
                 ],
                 false,
             ),
-            "__println" => void_type.fn_type(&[i8_ptr_type.into()], false),
-            "__strlen" => i64_type.fn_type(&[i8_ptr_type.into()], false),
+            "__println" => void_type.fn_type(&[i64_type.into()], false),
+            "__strlen" => i64_type.fn_type(&[i64_type.into()], false),
             "__malloc" => i8_ptr_type.fn_type(&[i64_type.into()], false),
             "__drop" => void_type.fn_type(&[i32_type.into(), i64_type.into()], false),
             "__clone" => self.runtime_value_type.fn_type(
@@ -535,6 +540,35 @@ impl<'ctx> Compiler<'ctx> {
                 false,
             ),
             "__panic" => void_type.fn_type(&[i8_ptr_type.into()], false),
+            // String slot construction (replaces inline global-pointer storage
+            // so the slot owns a proper Rust String with length tracking).
+            "__string_new" => i64_type.fn_type(
+                &[
+                    i8_ptr_type.into(), // bytes pointer
+                    i64_type.into(),    // length
+                ],
+                false,
+            ),
+            "__string_from_cstr" => i64_type.fn_type(&[i8_ptr_type.into()], false),
+            "__string_concat" => i64_type.fn_type(
+                &[
+                    i64_type.into(), // left handle
+                    i64_type.into(), // right handle
+                ],
+                false,
+            ),
+            // Struct slot construction (runtime owns the allocation).
+            "__struct_new" => i64_type.fn_type(&[i64_type.into()], false),
+            "__struct_borrow" => i8_ptr_type.fn_type(&[i64_type.into()], false),
+            // Enum slot construction.
+            "__enum_new" => i64_type.fn_type(
+                &[
+                    i8_ptr_type.into(), // variant name bytes
+                    i64_type.into(),    // name length
+                    i64_type.into(),    // variant index
+                ],
+                false,
+            ),
             _ => panic!("Unknown runtime function: {}", name),
         };
 
