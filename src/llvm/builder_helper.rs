@@ -3709,7 +3709,7 @@ pub fn call_builtin_macro_clone<'ctx>(
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
     if args.len() != 1 {
-        return Err("clone! expects 1 argument".to_string());
+        return Err("`clone expects 1 argument".to_string());
     }
     let arg_ptr = self_compiler
         .compile_expr(&args[0], module)?
@@ -3771,7 +3771,7 @@ pub fn call_builtin_macro_cast<'ctx>(
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
     if args.len() != 2 {
-        return Err("cast! expects 2 arguments".to_string());
+        return Err("`cast expects 2 arguments".to_string());
     }
 
     let value_ptr = self_compiler
@@ -3795,7 +3795,7 @@ pub fn call_builtin_macro_cast<'ctx>(
         ast::Expr::TypeF64 => "fp64",
         _ => {
             return Err(format!(
-                "cast! second argument must be a type identifier : {:?}",
+                "`cast second argument must be a type identifier : {:?}",
                 target_type_expr
             ));
         }
@@ -4195,7 +4195,7 @@ pub fn call_builtin_macro_cast<'ctx>(
         }
         _ => {
             return Err(format!(
-                "Unsupported target type for cast!: {:?}",
+                "Unsupported target type for `cast: {:?}",
                 target_type
             ));
         }
@@ -4209,4 +4209,200 @@ pub fn call_builtin_macro_cast<'ctx>(
         "cast_res",
     );
     return Ok(result_ptr.into());
+}
+
+pub fn call_builtin_macro_lshift<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+    args: &Vec<ast::Expr>,
+    module: &inkwell::module::Module<'ctx>,
+) -> Result<BasicValueEnum<'ctx>, String> {
+    if args.len() != 2 {
+        return Err("`lshift expects 2 arguments (value, shift_amount)".to_string());
+    }
+    shift_impl(self_compiler, args, module, ShiftDir::Left)
+}
+
+pub fn call_builtin_macro_rshift<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+    args: &Vec<ast::Expr>,
+    module: &inkwell::module::Module<'ctx>,
+) -> Result<BasicValueEnum<'ctx>, String> {
+    if args.len() != 2 {
+        return Err("`rshift expects 2 arguments (value, shift_amount)".to_string());
+    }
+    shift_impl(self_compiler, args, module, ShiftDir::Right)
+}
+
+enum ShiftDir {
+    Left,
+    Right,
+}
+
+fn shift_impl<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+    args: &Vec<ast::Expr>,
+    module: &inkwell::module::Module<'ctx>,
+    dir: ShiftDir,
+) -> Result<BasicValueEnum<'ctx>, String> {
+    let value_ptr = self_compiler
+        .compile_expr(&args[0], module)?
+        .into_pointer_value();
+    let shift_ptr = self_compiler
+        .compile_expr(&args[1], module)?
+        .into_pointer_value();
+
+    let rvt = self_compiler.runtime_value_type;
+    let i64_type = self_compiler.context.i64_type();
+
+    // Load value tag + data
+    let value_tag_ptr = self_compiler
+        .builder
+        .build_struct_gep(rvt, value_ptr, 0, "lshift_val_tag_ptr")
+        .unwrap();
+    let value_tag = self_compiler
+        .builder
+        .build_load(self_compiler.context.i32_type(), value_tag_ptr, "lshift_val_tag")
+        .unwrap()
+        .into_int_value();
+    let value_data_ptr = self_compiler
+        .builder
+        .build_struct_gep(rvt, value_ptr, 1, "lshift_val_data_ptr")
+        .unwrap();
+    let value_data = self_compiler
+        .builder
+        .build_load(i64_type, value_data_ptr, "lshift_val_data")
+        .unwrap()
+        .into_int_value();
+
+    // Load shift amount data (only the data, tag ignored)
+    let shift_data_ptr = self_compiler
+        .builder
+        .build_struct_gep(rvt, shift_ptr, 1, "lshift_amt_data_ptr")
+        .unwrap();
+    let shift_amt = self_compiler
+        .builder
+        .build_load(i64_type, shift_data_ptr, "lshift_amt_data")
+        .unwrap()
+        .into_int_value();
+
+    let shifted = {
+        let parent = self_compiler
+            .builder
+            .get_insert_block()
+            .unwrap()
+            .get_parent()
+            .unwrap();
+        let bb_signed = self_compiler
+            .context
+            .append_basic_block(parent, "shift_signed_bb");
+        let bb_unsigned = self_compiler
+            .context
+            .append_basic_block(parent, "shift_unsigned_bb");
+        let bb_err = self_compiler
+            .context
+            .append_basic_block(parent, "shift_err_bb");
+        let marge = self_compiler
+            .context
+            .append_basic_block(parent, "shift_merge_bb");
+
+        let i32_type = self_compiler.context.i32_type();
+        // Signed integer tags: Integer, Int8, Int16, Int32, Int64
+        let signed_cases = vec![
+            (i32_type.const_int(Tag::Integer as u64, false), bb_signed),
+            (i32_type.const_int(Tag::Int8 as u64, false), bb_signed),
+            (i32_type.const_int(Tag::Int16 as u64, false), bb_signed),
+            (i32_type.const_int(Tag::Int32 as u64, false), bb_signed),
+            (i32_type.const_int(Tag::Int64 as u64, false), bb_signed),
+        ];
+        // Unsigned integer tags: Uint8, Uint16, Uint32, Uint64
+        let unsigned_cases = vec![
+            (i32_type.const_int(Tag::Uint8 as u64, false), bb_unsigned),
+            (i32_type.const_int(Tag::Uint16 as u64, false), bb_unsigned),
+            (i32_type.const_int(Tag::Uint32 as u64, false), bb_unsigned),
+            (i32_type.const_int(Tag::Uint64 as u64, false), bb_unsigned),
+        ];
+        let mut all_cases = signed_cases.clone();
+        all_cases.extend(unsigned_cases.clone());
+
+        // Default -> error (non-integer tag)
+        self_compiler
+            .builder
+            .build_switch(value_tag, bb_err, &all_cases)
+            .unwrap();
+
+        // Signed: for lshift use shl, for rshift use ashr (sign-fill)
+        self_compiler.builder.position_at_end(bb_signed);
+        let signed_result = match dir {
+            ShiftDir::Left => self_compiler
+                .builder
+                .build_left_shift(value_data, shift_amt, "lshift_signed")
+                .unwrap(),
+            ShiftDir::Right => self_compiler
+                .builder
+                .build_right_shift(value_data, shift_amt, true, "rshift_signed")
+                .unwrap(),
+        };
+        self_compiler
+            .builder
+            .build_unconditional_branch(marge)
+            .unwrap();
+
+        // Unsigned: for lshift use shl, for rshift use lshr (zero-fill)
+        self_compiler.builder.position_at_end(bb_unsigned);
+        let unsigned_result = match dir {
+            ShiftDir::Left => self_compiler
+                .builder
+                .build_left_shift(value_data, shift_amt, "lshift_unsigned")
+                .unwrap(),
+            ShiftDir::Right => self_compiler
+                .builder
+                .build_right_shift(value_data, shift_amt, false, "rshift_unsigned")
+                .unwrap(),
+        };
+        self_compiler
+            .builder
+            .build_unconditional_branch(marge)
+            .unwrap();
+
+        // Error: non-integer tag — call __panic
+        self_compiler.builder.position_at_end(bb_err);
+        let err_msg: &'static str = match dir {
+            ShiftDir::Left => "`lshift expects an integer value",
+            ShiftDir::Right => "`rshift expects an integer value",
+        };
+        let settings = PanicErrorSettings {
+            is_const: true,
+            is_global: true,
+        };
+        let _ = create_panic_err(
+            self_compiler,
+            err_msg,
+            module,
+            settings,
+        )?;
+        self_compiler
+            .builder
+            .build_unreachable()
+            .unwrap();
+
+        self_compiler.builder.position_at_end(marge);
+        let phi = self_compiler
+            .builder
+            .build_phi(i64_type, "shift_phi")
+            .unwrap();
+        phi.add_incoming(&[
+            (&signed_result, bb_signed),
+            (&unsigned_result, bb_unsigned),
+        ]);
+        phi.as_basic_value().into_int_value()
+    };
+
+    let result_ptr = create_entry_block_alloca(self_compiler, "shift_res");
+    self_compiler.build_runtime_value_store(
+        result_ptr,
+        StoreTag::Dynamic(value_tag),
+        StoreValue::Int(shifted),
+        "shift_res_store",
+    );
+    Ok(result_ptr.into())
 }

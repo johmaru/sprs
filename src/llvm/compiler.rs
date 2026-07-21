@@ -1,11 +1,11 @@
 use crate::front::ast;
 use crate::front::type_helper;
 use crate::front::type_helper::Type;
-use crate::llvm::parser::parse_only;
 use crate::llvm::builder_helper;
 use crate::llvm::builder_helper::Comparison;
 use crate::llvm::builder_helper::EqNeq;
 use crate::llvm::builder_helper::UpDown;
+use crate::llvm::parser::parse_only;
 use inkwell::AddressSpace;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
@@ -468,6 +468,11 @@ impl<'ctx> Compiler<'ctx> {
         );
     }
 
+    /// Returns the index of a field in a struct definition.
+    ///
+    /// rust-analyzer may report `Result<u32, ()>` (E0308) on this function due to
+    /// incomplete type resolution of `inkwell`'s FFI types (see `analysis-stats`:
+    /// `??ty` unresolved types). `cargo check` passes, so this is a false positive.
     pub fn get_field_index(&self, struct_name: &str, field_name: &str) -> Result<u32, String> {
         self.struct_defs
             .get(struct_name)
@@ -876,10 +881,7 @@ impl<'ctx> Compiler<'ctx> {
             match ret_ty {
                 Type::Any => self.runtime_value_type.fn_type(&arg_types, false),
                 Type::Int => self.context.i64_type().fn_type(&arg_types, false),
-                Type::Str => self
-                    .context
-                    .ptr_type(AddressSpace::default())
-                    .fn_type(&arg_types, false),
+                Type::Str => self.runtime_value_type.fn_type(&arg_types, false),
                 Type::Float => self.context.f64_type().fn_type(&arg_types, false),
                 Type::Bool => self.context.bool_type().fn_type(&arg_types, false),
                 Type::Unit => self.context.void_type().fn_type(&arg_types, false),
@@ -995,6 +997,23 @@ impl<'ctx> Compiler<'ctx> {
                     Type::Any
                 }
             }
+            ast::Expr::Macro(ident, args) => match ident.as_str() {
+                "cast" => {
+                    if args.len() >= 2 {
+                        self.infer_type(&args[1])
+                    } else {
+                        Type::Any
+                    }
+                }
+                "lshift" | "rshift" => {
+                    if !args.is_empty() {
+                        self.infer_type(&args[0])
+                    } else {
+                        Type::Any
+                    }
+                }
+                _ => Type::Any,
+            },
             ast::Expr::StructInit(name, _) => Type::Struct(name.clone()),
             _ => Type::Any,
         }
@@ -1359,28 +1378,19 @@ impl<'ctx> Compiler<'ctx> {
                 }
             }
             ast::Expr::Call(ident, args, _) => {
-                if ident == "println!" {
-                    let result = builder_helper::call_builtin_macro_println(self, args, module);
-                    return result;
-                }
-
-                if ident == "list_push!" {
-                    let result = builder_helper::call_builtin_macro_list_push(self, args, module);
-                    return result;
-                }
-
-                if ident == "clone!" {
-                    let result = builder_helper::call_builtin_macro_clone(self, args, module);
-                    return result;
-                }
-
-                if ident == "cast!" {
-                    let result = builder_helper::call_builtin_macro_cast(self, args, module);
-                    return result;
-                }
-
                 let result = builder_helper::create_call_expr(self, ident, args, module);
                 result
+            }
+            ast::Expr::Macro(ident, args) => {
+                match ident.as_str() {
+                    "println" => builder_helper::call_builtin_macro_println(self, args, module),
+                    "list_push" => builder_helper::call_builtin_macro_list_push(self, args, module),
+                    "clone" => builder_helper::call_builtin_macro_clone(self, args, module),
+                    "cast" => builder_helper::call_builtin_macro_cast(self, args, module),
+                    "lshift" => builder_helper::call_builtin_macro_lshift(self, args, module),
+                    "rshift" => builder_helper::call_builtin_macro_rshift(self, args, module),
+                    _ => Err(format!("Unknown macro: {}", ident)),
+                }
             }
             ast::Expr::FieldAccess(lhs, rhs) => {
                 if let ast::Expr::Var(name) = lhs.as_ref() {

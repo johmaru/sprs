@@ -1,7 +1,7 @@
 # sprs コンパイラ バグレポート (未対応分)
 
 **対象リポジトリ**: `C:/Users/Johma_sub/sprs_new/sprs`
-**最終更新**: 2026-07-21
+**最終更新**: 2026-07-22
 **注記**: slab ベースのランタイム移行、M01 リファクタリング、F01/F02 修正で解消されたバグは本レポートから削除済み。以下は未対応のバグ。
 
 ---
@@ -33,9 +33,6 @@
 - **ファイル**: `src/front/ast.rs:49-51`
 - **推奨修正**: `ty: Option<Type>` フィールドを追加。
 
-#### BUG-F07: `>>` トークンが戻り値型の矢印としてのみ使われ、シフト演算子が未実装 【Medium】
-- **ファイル**: `src/front/lexer.rs:149`, `src/grammar.lalrpop:155,236`, `src/front/ast.rs:1-46`
-- **推奨修正**: 戻り値型矢印を `->` に変更。
 
 #### BUG-F08: `Num` / `Float` の正規表現が指数表記・16 進・`1.` 形式に未対応 【Medium】
 - **ファイル**: `src/front/lexer.rs:135-138`
@@ -181,10 +178,10 @@
 |--------|------|--------|
 | **Critical** | 0 | — |
 | **High** | 12 | F03, F05, F10, L01, L03, L07, L08, L14, L15, L21, M03, M04 |
-| **Medium** | 12 | F04, F06, F07, F08, F09, L04, L06, L09, L13, L16, L17, M12 |
+| **Medium** | 11 | F04, F06, F08, F09, L04, L06, L09, L13, L16, L17, M12 |
 | **Low** | 13 | F11, F12, F13, F14, F15, L05, L24, M05, M06, M08, M09, M10, M11 |
 
-合計: 37 件 (ユニーク)。
+合計: 36 件 (ユニーク)。
 
 ---
 
@@ -225,6 +222,124 @@
 - **BUG-F01**: 数値リテラル `parse().unwrap()` で panic → `map_err` でエラー伝播
 - **BUG-F02**: 文字列リテラルのエスケープ未対応 → `unescape_sprs_string` で `\n`/`\t`/`\"`/`\\`/`\0`/`\u{XXXX}` に対応
 
+### X02 Critical バグ修正で解消
+
+- **BUG-X02**: `Type::Str` の戻り値型が `ptr` でコード生成され segfault → `declare_fn_prototype` で `Type::Str` を `runtime_value_type` に変更。`register_struct` 側は `create_field_access`/`create_struct_init` が i64 slab handle として扱うため `ptr` のまま維持。`main.sprs` に `>> str` 関数の呼び出しテスト (`get_greeting`, `get_static_str`, `call_str_fn`) を追加し segfault 解消を確認
+
+### バッククォート・マクロ構文導入で解消
+
+- **BUG-F07**: `>>` トークンが戻り値型の矢印としてのみ使われ、シフト演算子が未実装 → バッククォート前置マクロ構文 `lshift(x, 4)` / `rshift(x, 4)` を導入。`RawTok::MacroIdent` + `Token::Macro(String)` + `Expr::Macro(String, Vec<Expr>)` を追加。符号付きタグ (Integer/Int8/16/32/64) は `ashr`、符号なしタグ (Uint8/16/32/64) は `lshr`、非整数タグは `__panic` で実行時エラー。`>>` (GtGt) トークンは戻り値型矢印として維持。既存マクロ (println!/list_push!/clone!/cast!) も `println` 等のバッククォート構文に統一移行
+- **BUG-X09 (部分解消)**: `cast` マクロの戻り値型推論を `infer_type` の `Expr::Macro` 分岐に追加。第2引数の型から戻り値型を推論。`lshift`/`rshift` は第1引数の型を返す
+
+---
+
+## 6. 詳細テストスイートで発見されたバグ (XFAIL)
+
+LLVM 22.1.8 移行後のスモークテスト実装中に発見されたバグ群。
+いずれも既存コードの問題であり、LLVM 22 移行とは無関係。
+テストスイート (`main.sprs`) では該当機能を XFAIL (expected failure) としてスキップ。
+
+### X01: `create_index` が `StructValue` を直接返す 【High】
+
+- **ファイル**: `src/llvm/builder_helper.rs:3119-3122`
+- **症状**: `list[index]` アクセスで `Found StructValue ... but expected PointerValue variant` で panic
+- **原因**: `__list_get` が `{ i32, i64 }` 構造体を値で返すが、`create_index` が `compile_expr` の契約 (`PointerValue` を返す) に違反し、生の `StructValue` をそのまま返している
+- **影響**: リストのインデックスアクセスが一切使用不可
+- **推奨修正**: `call_builtin_macro_clone` (3758-3765) と同様に alloca に spill してから `PointerValue` を返す
+  ```rust
+  let res_ptr = create_entry_block_alloca(self_compiler, "list_get_res");
+  self_compiler.builder.build_store(res_ptr, val).unwrap();
+  Ok(res_ptr.into())
+  ```
+
+
+### X03: `Return(Var)` の move セマンティクスでタグが Unit になる 【High】
+
+- **ファイル**: `src/llvm/compiler.rs:1103-1109` (var_return_store 呼び出し), `src/llvm/builder_helper.rs:312-320` (var_return_store)
+- **症状**: `return var_name` で変数を返した際、戻り値のタグが `Unit` (6) になり、呼び出し側で正しい型として扱えない
+- **原因**: `var_return_store` が move セマンティクスで変数のタグを `Unit` にリセットした後に、同じポインタから値をロードして返している
+- **影響**: 変数をそのまま return するパターンが使用不可（リテラルや式の return は正常）
+- **推奨修正**: move 前に値をロードして退避し、退避した値を返す
+  ```rust
+  let pre_loaded = self.builder.build_load(
+      self.runtime_value_type, ptr, "return_pre_load"
+  ).unwrap();
+  // var_return_store の後に pre_loaded を返す
+  ```
+
+### X04: `infer_type` が比較演算・Call・ModuleAccess を処理しない 【Medium】
+
+- **ファイル**: `src/llvm/compiler.rs:956-1011` (infer_type)
+- **症状**: `>> bool` で `return 5 == 5` と書くと `Type mismatch: Function expects Bool but got Any` エラー。`>> i64` で `return test.test()` と書いても `Type::Any` になる
+- **原因**: `infer_type` に `Expr::Eq`/`Neq`/`Lt`/`Gt`/`Le`/`Ge` の分岐が無い（すべて `Type::Bool` を返すべき）。`Expr::Call` は `ret_ty_opt` が `None` の場合 `Type::Any` を返す（パーサーが常に `None` を渡すため）。`Expr::ModuleAccess` の分岐自体が存在しない
+- **影響**: 比較演算の結果を `>> bool` で返せない。モジュール関数の戻り値型が推論されない
+- **推奨修正**:
+  - 比較演算の分岐を追加: `Expr::Eq(_,_) | Expr::Neq(_,_) | ... => Type::Bool`
+  - `function_ret_types: HashMap<String, Type>` を追加し、`declare_fn_prototype` で関数シグネチャを保存
+  - `infer_type` の `Expr::Call`/`ModuleAccess` で `function_ret_types` を参照
+
+### X05: `create_dummy_for_no_return` が常に `runtime_value_type` を返す 【Medium】
+
+- **ファイル**: `src/llvm/builder_helper.rs:331-345`
+- **症状**: `>> i64` の関数で `if/else` 両分岐で return した後に末尾 return が無いと `Function return type does not match operand type of return inst!` エラー
+- **原因**: `create_dummy_for_no_return` が常に `runtime_value_type` (`{ i32, i64 }`) を返す。`>> i64` や `>> fp` など他の戻り値型の場合、型不一致で LLVM が関数を検証エラーにする
+- **影響**: `if/else` で両分岐 return する関数で末尾に `return 0;` のようなダミーが必要
+- **推奨修正**: 現在の関数 (`function_signatures`) の戻り値型に応じたゼロ値を返すよう分岐
+
+### X06: `string_constants` HashMap がモジュール非スコープ 【High】
+
+- **ファイル**: `src/llvm/compiler.rs:36` (string_constants フィールド), `src/llvm/builder_helper.rs:148-172` (create_panic_err)
+- **症状**: 複数モジュールを import すると `Referencing global in another module!` リンクエラー
+- **原因**: `create_panic_err` が `is_global: true` で `External` linkage の GlobalValue を生成し `self.string_constants` にキャッシュする。次のモジュールが同じエラーメッセージ文字列を生成すると、キャッシュから別モジュールの GlobalValue が返され、linker が別モジュールのグローバル参照として弾く
+- **影響**: 複数モジュールにまたがるプログラムで `Var + Var` 等の error_bb が生成されるとリンクエラー。単一ファイルなら発生しない
+- **推奨修正**: `string_constants` をモジュールごとに管理するか、`External` linkage ではなくモジュールローカルな `Internal` linkage を使用
+
+### X07: `Var + Var` 加算で実行時 error_bb に到達する 【High】
+
+- **ファイル**: `src/llvm/builder_helper.rs:1094-1251` (create_add_expr), `src/llvm/compiler.rs:925-947` (get_known_type_from_expr)
+- **症状**: 関数引数同士の加算 `return a + b` で実行時 `Panic: TypeError: type miss match` が発生
+- **原因**: `create_add_expr` の error_bb で `get_known_type_from_expr(Var)` を呼ぶが、`get_known_type_from_expr` は `Var` を処理せずエラーを返す。エラーメッセージがグローバル定数として埋め込まれ、実行時に error_bb に到達すると panic する。関数引数の実行時タグが `Integer` (0) になるはずだが、`can_add` チェックが失敗している可能性
+- **影響**: 関数引数を使った `Var + Var` 加算が使用不可。`var` 宣言された変数同士の加算は正常動作する
+- **推奨修正**: `get_known_type_from_expr` に `Var` の分岐を追加し、変数の型を `infer_type` から取得。関数引数のタグ受け渡し処理を検証
+
+### X08: `>> fp` 戻り値の表示が不正確 【Medium】
+
+- **ファイル**: `src/llvm/compiler.rs:1182-1216` (Return の ret_ty 分岐)
+- **症状**: `>> fp` で `return 1.5 + 2.5` と返すと、期待値 `4.0` に対して `4` と表示される。また一部の演算で `0.000...333e-262` のような異常値が出力される
+- **原因**: `Return` 処理の `ret_ty.is_float_type()` 分岐で、`data_val` を `bit_cast` して返す際の型変換に問題がある可能性。`>> fp` は `Type::Float` (`f64`) だが、戻り値の LLVM 型が `f64` として正しく処理されていない
+- **影響**: 浮動小数点を返す関数の結果が不正確
+- **推奨修正**: `Return` の `ret_ty.is_float_type()` 分岐の型変換を検証。`runtime_value_type` と `f64` の相互変換を確認
+
+### X09: `cast` の戻り値型推論 (部分解消) 【Low】
+
+- **ファイル**: `src/llvm/compiler.rs:993-1000` (infer_type Macro 分岐)
+- **症状**: `>> fp` で `return `cast(1.5, fp16)` と書くと `Type mismatch: Function expects Float type but got Any` エラー。`>> i64` で `` `cast(1, i8) + `cast(2, i16) `` の異型混合も panic
+- **原因**: `cast` が `Expr::Macro("cast", ...)` として処理されるが、`infer_type` に `Expr::Macro` 分岐が存在しなかった
+- **影響**: `cast` の結果を `>> fp` や異型混合で return できない。同じ型同士の cast 同士の演算は正常動作
+- **対応状況**: `infer_type` に `Expr::Macro` 分岐を追加し、`cast` は第2引数の型を推論するよう実装。ただし `>> fp` 戻り値自体の表示バグ (X08) が未解決のため、`cast` の `>> fp` return はまだ XFAIL。異型混合の加算は X07 (Var+Var) が未解決のため未検証
+
+---
+
+### テストスイートでのカバレッジ
+
+| カテゴリ | PASS | XFAIL | FAIL | 備考 |
+|---------|------|-------|------|------|
+| Arithmetic | 13/13 | 0 | 0 | 全演算子正常 |
+| Comparison | 12/12 | 0 | 0 | `>> i64` で 1/0 を返す形式で回避 |
+| Control Flow | 8/8 | 0 | 0 | if/else, while 正常 |
+| Variables | 6/6 | 0 | 0 | 代入, シャドウイング正常 |
+| Functions | 0/5 | 3 | 2 | `add` 関数は XFAIL, test_recursion/deep_recursion は結果不正 (期待120→実際107549842873449) |
+| Lists | 4/4 | 0 | 0 | `list_push のみ, index access は XFAIL |
+| Cast | 10/11 | 1 | 0 | 異型混合 `cast は XFAIL |
+| Float | 0/9 | 3 | 6 | `cast >> fp は XFAIL, 残り6は結果不正 (期待4.0→実際4, 異常値) |
+| Increment | 7/7 | 0 | 0 | ++, -- 正常 |
+| Shift | 12/12 | 0 | 0 | `lshift/`rshift 正常 (符号付き ashr / 符号なし lshr / 非整数 panic) |
+| Struct | 4/4 | 0 | 0 | フィールドアクセス正常 |
+| Enum | 3/3 | 0 | 0 | バリアントアクセス正常 |
+
+**合計**: 76 PASS / 7 XFAIL / 8 FAIL / 0 クラッシュ
+
 ---
 
 *レポート作成者: sprs バグ監査チーム*
+*LLVM 22.1.8 移行スモークテストより*

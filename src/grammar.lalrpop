@@ -53,6 +53,7 @@ extern {
         Else   => Token::Else,
         While  => Token::While,
         IDENT  => Token::Ident(String),
+        MACRO  => Token::Macro(String),
         NUM    => Token::Num(i64),
         FLOAT  => Token::Float(f64),
         TRUE  => Token::Bool(true),
@@ -341,6 +342,10 @@ VarDecl: VarDecl = {
 Ident: String = <tok:IDENT> => {
     match tok { Token::Ident(s) => s, _ => unreachable!() }
 };
+
+MacroName: String = <tok:MACRO> => {
+    match tok { Token::Macro(s) => s, _ => unreachable!() }
+};
 Num: i64     = <tok:NUM>   => {
     match tok { Token::Num(n) => n, _ => unreachable!() }
 };
@@ -526,6 +531,12 @@ Postfix: Expr = {
 }
 
 Atom: Expr = {
+    <m:MacroName> LParen RParen => Expr::Macro(m, vec![]),
+    <m:MacroName> LParen <first:Expr> <rest:(Comma <Expr>)*> RParen => {
+        let mut args = vec![first];
+        args.extend(rest);
+        Expr::Macro(m, args)
+    },
     <id:Ident> LParen RParen => Expr::Call(id, vec![], None),
     <id:Ident> LParen <first:Expr> <rest:(Comma <Expr>)*> RParen => {
         let mut args = vec![first];
@@ -626,6 +637,12 @@ PostfixNoStruct: Expr = {
 }
 
 AtomNoStruct: Expr = {
+    <m:MacroName> LParen RParen => Expr::Macro(m, vec![]),
+    <m:MacroName> LParen <first:Expr> <rest:(Comma <Expr>)*> RParen => {
+        let mut args = vec![first];
+        args.extend(rest);
+        Expr::Macro(m, args)
+    },
     <id:Ident> LParen RParen => Expr::Call(id, vec![], None),
     <id:Ident> LParen <first:Expr> <rest:(Comma <Expr>)*> RParen => {
         let mut args = vec![first];

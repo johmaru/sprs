@@ -27,6 +27,7 @@ pub enum Token {
     DotDot,
     Semi,
     Comma,
+    Macro(String),
     StrLiteral(String),
     Bool(bool),
     If,
@@ -132,6 +133,8 @@ enum RawTok {
     Else,
     #[token("while")]
     While,
+    #[regex(r"`[A-Za-z_][A-Za-z0-9_]*", |lex| lex.slice()[1..].to_string())]
+    MacroIdent(String),
     #[regex(r"[A-Za-z_][A-Za-z0-9_]*!?")]
     Ident,
     #[regex(r"[0-9]+\.[0-9]+")]
@@ -265,6 +268,7 @@ impl<'input> Iterator for Lexer<'input> {
             RawTok::Else => Token::Else,
             RawTok::While => Token::While,
             RawTok::Ident => Token::Ident(text.to_string()),
+            RawTok::MacroIdent(name) => Token::Macro(name),
             RawTok::Num => match text.parse::<i64>() {
                 Ok(n) => Token::Num(n),
                 Err(e) => return Some(Err(format!(
