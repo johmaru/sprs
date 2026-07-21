@@ -24,6 +24,12 @@
 - **症状**: `foo!` が識別子としてマッチする。`!` 単独 (`Not` / 論理否定) が `RawTok` に存在せず、`!flag` のような式が書けない。
 - **推奨修正**: `!?` を削除し、`Not` トークンと `Expr::Not` を追加。
 
+#### BUG-F04b: 単項マイナス (Unary Minus) が未実装 【Low】
+- **ファイル**: `src/grammar.lalrpop:499-501` (Unary 規則), `src/front/ast.rs:3-46` (Expr enum)
+- **症状**: `-5` や `-x` のような単項マイナスが書けない。現在は `0 - 5` で回避している。
+- **原因**: `Unary` 規則が `<p: Postfix> => p` のみで、前置 `-` (negation) の規則が無い。`Expr` にも `Neg(Box<Expr>)` バリアントが存在しない。
+- **推奨修正**: `Unary` 規則に `Minus <p:Unary> => Expr::Neg(Box::new(p))` を追加し、`Expr::Neg(Box<Expr>)` を追加。compiler では `build_int_neg` で実装。
+
 #### BUG-F05: `is_int_type_in_llvm()` に浮動小数点型が含まれ、`not_int_type_in_llvm()` と矛盾 【High】
 - **ファイル**: `src/front/type_helper.rs:27-54`
 - **症状**: `Type::Float`, `TypeF16/32/64` が `is_int_type_in_llvm()` と `not_int_type_in_llvm()` の**両方**に含まれる。
@@ -179,9 +185,9 @@
 | **Critical** | 0 | — |
 | **High** | 12 | F03, F05, F10, L01, L03, L07, L08, L14, L15, L21, M03, M04 |
 | **Medium** | 11 | F04, F06, F08, F09, L04, L06, L09, L13, L16, L17, M12 |
-| **Low** | 13 | F11, F12, F13, F14, F15, L05, L24, M05, M06, M08, M09, M10, M11 |
+| **Low** | 14 | F04b, F11, F12, F13, F14, F15, L05, L24, M05, M06, M08, M09, M10, M11 |
 
-合計: 36 件 (ユニーク)。
+合計: 37 件 (ユニーク)。
 
 ---
 
@@ -336,6 +342,7 @@ LLVM 22.1.8 移行後のスモークテスト実装中に発見されたバグ�
 | Shift | 12/12 | 0 | 0 | `lshift/`rshift 正常 (符号付き ashr / 符号なし lshr / 非整数 panic) |
 | Struct | 4/4 | 0 | 0 | フィールドアクセス正常 |
 | Enum | 3/3 | 0 | 0 | バリアントアクセス正常 |
+| String | 3/3 | 0 | 0 | `>> str` 関数の呼び出し・戻り値表示が正常 (X02 解消) |
 
 **合計**: 76 PASS / 7 XFAIL / 8 FAIL / 0 クラッシュ
 
