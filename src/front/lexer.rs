@@ -117,9 +117,11 @@ enum RawTok {
     Semi,
     #[token(",")]
     Comma,
-    #[regex(r#""[^"]*""#, |lex| {
+    #[regex(r#""(\\.|[^"\\])*""#, |lex| {
         let slice = lex.slice();
-        slice[1..slice.len()-1].to_string()
+        // Strip the surrounding quotes, then unescape the content.
+        let raw = &slice[1..slice.len() - 1];
+        unescape_sprs_string(raw)
     })]
     StrLiteral(String),
     #[token("if")]
@@ -138,7 +140,7 @@ enum RawTok {
     Num,
     #[regex(r"[ \t\r\n\f]+", logos::skip)]
     WS,
-    #[regex(r"# [^\n]*", logos::skip)]
+    #[regex(r"# [^\n]*", logos::skip, allow_greedy = true)]
     Comment,
     #[token("true")]
     True,
@@ -263,8 +265,20 @@ impl<'input> Iterator for Lexer<'input> {
             RawTok::Else => Token::Else,
             RawTok::While => Token::While,
             RawTok::Ident => Token::Ident(text.to_string()),
-            RawTok::Num => Token::Num(text.parse().unwrap()),
-            RawTok::Float => Token::Float(text.parse().unwrap()),
+            RawTok::Num => match text.parse::<i64>() {
+                Ok(n) => Token::Num(n),
+                Err(e) => return Some(Err(format!(
+                    "invalid integer literal '{}': {}",
+                    text, e
+                ))),
+            },
+            RawTok::Float => match text.parse::<f64>() {
+                Ok(f) => Token::Float(f),
+                Err(e) => return Some(Err(format!(
+                    "invalid float literal '{}': {}",
+                    text, e
+                ))),
+            },
             RawTok::True => Token::Bool(true),
             RawTok::False => Token::Bool(false),
             RawTok::WS => unreachable!(),
@@ -301,4 +315,67 @@ impl<'input> Iterator for Lexer<'input> {
         };
         Some(Ok((s, t, e)))
     }
+}
+
+/// Unescape a Sprs string literal body (the text between the enclosing `"`s).
+/// Supports: `\n`, `\t`, `\r`, `\0`, `\\`, `\"`, `\'`, and `\u{XXXX}`.
+/// An unknown escape or a dangling backslash is passed through literally so
+/// the user sees the raw characters rather than a panic.
+fn unescape_sprs_string(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut chars = raw.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        // Escape sequence.
+        match chars.next() {
+            Some('n') => out.push('\n'),
+            Some('t') => out.push('\t'),
+            Some('r') => out.push('\r'),
+            Some('0') => out.push('\0'),
+            Some('\\') => out.push('\\'),
+            Some('"') => out.push('"'),
+            Some('\'') => out.push('\''),
+            Some('u') => {
+                // Expect `{XXXX}` (1..6 hex digits).
+                if chars.next() != Some('{') {
+                    // Not a valid \u escape — emit verbatim.
+                    out.push_str("\\u");
+                    continue;
+                }
+                let mut hex = String::new();
+                let mut depth = 0;
+                for ch in chars.by_ref() {
+                    depth += 1;
+                    if depth > 6 {
+                        break;
+                    }
+                    if ch == '}' {
+                        break;
+                    }
+                    if ch.is_ascii_hexdigit() {
+                        hex.push(ch);
+                    } else {
+                        break;
+                    }
+                }
+                match u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
+                    Some(ch) => out.push(ch),
+                    None => out.push_str("\\u{"),
+                }
+            }
+            Some(other) => {
+                // Unknown escape: keep the backslash and the character.
+                out.push('\\');
+                out.push(other);
+            }
+            None => {
+                // Dangling backslash at end of string.
+                out.push('\\');
+            }
+        }
+    }
+    out
 }
