@@ -127,7 +127,7 @@ pub fn create_integer<'ctx>(
     self_compiler.build_runtime_value_store(
         ptr,
         StoreTag::Int(Tag::Integer as u64),
-        StoreValue::Int(self_compiler.context.i64_type().const_int(*n as u64, false)),
+        StoreValue::Int(self_compiler.context.i64_type().const_int(*n as u64, true)),
         "int",
     );
 

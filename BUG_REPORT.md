@@ -9,110 +9,99 @@
 ## 1. フロントエンド (lexer / parser / AST)
 
 
-
 #### BUG-F04b: 単項マイナス (Unary Minus) が未実装 【Low】
-- **ファイル**: `src/grammar.lalrpop:499-501` (Unary 規則), `src/front/ast.rs:3-46` (Expr enum)
+- **ファイル**: `src/grammar.lalrpop` (Unary 規則), `src/front/ast.rs` (Expr enum)
 - **症状**: `-5` や `-x` のような単項マイナスが書けない。現在は `0 - 5` で回避している。
 - **原因**: `Unary` 規則が `<p: Postfix> => p` のみで、前置 `-` (negation) の規則が無い。`Expr` にも `Neg(Box<Expr>)` バリアントが存在しない。
 - **推奨修正**: `Unary` 規則に `Minus <p:Unary> => Expr::Neg(Box::new(p))` を追加し、`Expr::Neg(Box<Expr>)` を追加。compiler では `build_int_neg` で実装。
 
 
 #### BUG-F06: `FunctionParam` に型フィールドがなく、関数パラメータの型注釈が不可能 【Medium】
-- **ファイル**: `src/front/ast.rs:49-51`
+- **ファイル**: `src/front/ast.rs`
 - **推奨修正**: `ty: Option<Type>` フィールドを追加。
 
 
 #### BUG-F08: `Num` / `Float` の正規表現が指数表記・16 進・`1.` 形式に未対応 【Medium】
-- **ファイル**: `src/front/lexer.rs:135-138`
+- **ファイル**: `src/front/lexer.rs`
 - **推奨修正**: Float に指数表記、Num に 16 進/2 進/8 進を追加。
 
 #### BUG-F09: `ModuleAccess` で `base` が `Expr::Var` 以外の場合に破棄される 【Medium】
-- **ファイル**: `src/grammar.lalrpop:453-470`
+- **ファイル**: `src/grammar.lalrpop`
 - **推奨修正**: `Expr::MethodCall(Box<Expr>, String, Vec<Expr>)` ノードを追加。
 
 
 #### BUG-F11: `Preprocessor` トークンが `#define` のみで他の指令がエラー 【Low】
-- **ファイル**: `src/front/lexer.rs:153-154`
+- **ファイル**: `src/front/lexer.rs`
 - **推奨修正**: `#[regex(r"#[a-z]+")]` で一般化。
 
 #### BUG-F12: `var x;` で未初期化変数が許可され、デフォルト値が未規定 【Low】
-- **ファイル**: `src/grammar.lalrpop:383-386`, `src/front/ast.rs:74-78`
+- **ファイル**: `src/grammar.lalrpop`, `src/front/ast.rs`
 - **推奨修正**: Unit 型でゼロ初期化するか、型注釈必須にする。
 
-#### BUG-F13: `MoreStructFields` が死んだ規則 【Low】
-- **ファイル**: `src/grammar.lalrpop:172-179`
-- **推奨修正**: 削除。
 
 #### BUG-F14: `ExprNoStruct` 系が `Expr` 系と重複定義 【Low】
-- **ファイル**: `src/grammar.lalrpop:520-604`
+- **ファイル**: `src/grammar.lalrpop`
 - **推奨修正**: LALRPOP の `precedence` 宣言に移行。
 
 #### BUG-F15: `Stmt` で連鎖代入 (`a = b = c;`) が不可 【Low】
-- **ファイル**: `src/grammar.lalrpop:327-340`
+- **ファイル**: `src/grammar.lalrpop`
 - **推奨修正**: `Assign` を `Expr` に昇格。
 
 ---
 
-## 2. LLVM コード生成 (`src/llvm/compiler.rs`, `src/llvm/builder_helper.rs`)
-
-#### BUG-L01: `create_integer` が負の i64 を `*n as u64` で符号付きビットパターンとして格納するが、tag を `Integer` とする意図が不明確 【High】
-- **ファイル**: `src/llvm/builder_helper.rs:498-512`
-- **推奨修正**: コメント追加または `const_int_signed` 系 API を検討。
+## 2. LLVM コード生成
 
 #### BUG-L03: `create_if_expr` の PHI incoming 判定が `then_bb_end == merge_bb` と同値で、return を含む then ブロックで PHI が不正 【High】
-- **ファイル**: `src/llvm/builder_helper.rs:3051-3062`
+- **ファイル**: `src/llvm/control_flow.rs`
 - **推奨修正**: `if then_bb_end.get_terminator().is_some() && then_bb_end != merge_bb` で判定。
 
 #### BUG-L04: `create_panic_err` が `build_call` のみで `build_unreachable` を生成しない 【Medium】
-- **ファイル**: `src/llvm/builder_helper.rs:166-172`
+- **ファイル**: `src/llvm/value.rs`
 - **推奨修正**: `create_panic_err` の最後に `build_unreachable` を追加。
 
 #### BUG-L05: `create_add_expr` のエラーメッセージが `Box::leak` でメモリリーク 【Low】
-- **ファイル**: `src/llvm/builder_helper.rs:1138-1146`
+- **ファイル**: `src/llvm/arithmetic.rs`
 - **推奨修正**: モジュールの global constant として登録。
 
 #### BUG-L06: 整数加算全般で `nsw`/`nuw` フラグ未使用、オーバーフロー時に wrap-around 【Medium】
-- **ファイル**: `src/llvm/builder_helper.rs:1517` (i64), `2296-2316` (i64_add_logic), 他多数
+- **ファイル**: `src/llvm/arithmetic.rs`
 - **推奨修正**: 仕様に応じてオーバーフローチェックまたはフラグ追加。
 
 #### BUG-L07: `create_div_expr` / `create_mod_expr` でゼロ除算チェックなし 【High】
-- **ファイル**: `src/llvm/builder_helper.rs:2660, 2676`
+- **ファイル**: `src/llvm/arithmetic.rs`
 - **推奨修正**: 除算前に `r_val == 0` のチェックを生成し `__panic` を呼ぶ。
 
-#### BUG-L08: `cast!` マクロの switch cases に `Int8/Int16/Int32/Int64/Uint8/...` が未登録 → 整数を cast! すると f64 として誤解釈 【High】
-- **ファイル**: `src/llvm/builder_helper.rs:3913-3918`
+#### BUG-L08: `cast` マクロの switch cases に `Int8/Int16/Int32/Int64/Uint8/...` が未登録 → 整数を cast すると f64 として誤解釈 【High】
+- **ファイル**: `src/llvm/macros.rs`
 - **推奨修正**: Int8/Int16/.../Uint64 のケースを追加。
 
 #### BUG-L09: `create_field_access` で `field_index` の境界チェックなし 【Medium】
-- **ファイル**: `src/llvm/builder_helper.rs:3376`
+- **ファイル**: `src/llvm/data_structures.rs`
 - **推奨修正**: `field_index` を検証し、範囲外なら `Err` を返す。
 
 #### BUG-L13: `create_entry_block_alloca` が `get_insert_block().unwrap()` で panic 【Medium】
-- **ファイル**: `src/llvm/builder_helper.rs:184-198`
+- **ファイル**: `src/llvm/value.rs`
 - **推奨修正**: `None` の場合は `Err` を返す。
 
 #### BUG-L14: `get_runtime_fn` が未知関数で `panic!` 【High】
-- **ファイル**: `src/llvm/builder_helper.rs`
+- **ファイル**: `src/llvm/compiler.rs`
 - **推奨修正**: `Result` でエラー伝播。
 
 #### BUG-L15: `compile_block` が early-return 時にスコープをリーク / `emit_drop_for_return` の drop 順序が逆 【High】
-- **ファイル**: `src/llvm/compiler.rs`
+- **ファイル**: `src/llvm/codegen.rs`, `src/llvm/compiler.rs`
 - **推奨修正**: early-return 時もスコープ退出を保証。drop 順序を内側→外側に修正。
 
-#### BUG-L16: `set_global_constant_str` のグローバル重複チェックが `Set` バリアントと不整合 / panic メッセージが `Box::leak` 【Medium】
-- **ファイル**: `src/llvm/compiler.rs`
-- **推奨修正**: 文字列プールで一元管理。
 
 #### BUG-L17: `create_add_expr_build_float_branch` の switch default が `bb_f64` 【Medium】
-- **ファイル**: `src/llvm/builder_helper.rs:1612, 1734-1738`
+- **ファイル**: `src/llvm/arithmetic.rs`
 - **推奨修正**: default を `error_bb` に変更。
 
 #### BUG-L21: `llvm_executer.rs` が `sprs.toml` の `out_dir` / `name` / `src_dir` をサニタイズせず、パストラバーサルで任意ファイル上書き 【High】
-- **ファイル**: `src/llvm/llvm_executer.rs:42-57, 121-127, 172-180`
+- **ファイル**: `src/llvm/llvm_executer.rs`
 - **推奨修正**: `out_dir` / `name` をバリデーション。
 
 #### BUG-L24: `PassBuilderOptions` の `run_passes` 結果を無視 【Low】
-- **ファイル**: `src/llvm/llvm_executer.rs:99-100`
+- **ファイル**: `src/llvm/llvm_executer.rs`
 - **推奨修正**: エラーをログ出力。
 
 ---
@@ -120,19 +109,15 @@
 ## 3. CLI / エントリポイント (`src/main.rs`, `src/command_helper.rs`, `build.rs`)
 
 #### BUG-M03: `init_project` が既存の `sprs.toml` / `src/main.sprs` を無条件で上書き 【High】
-- **ファイル**: `src/command_helper.rs:46-86`
+- **ファイル**: `src/command_helper.rs`
 - **推奨修正**: `Path::exists()` でチェックし `--force` フラグなしには上書きしない。
 
 #### BUG-M04: `init_project` が `name` をサニタイズせず、パストラバーサルで任意ディレクトリにファイル作成の可能性 【High】
-- **ファイル**: `src/command_helper.rs:31-88`
+- **ファイル**: `src/command_helper.rs`
 - **推奨修正**: `name` を `[A-Za-z0-9_-]+` にバリデーション。
 
-#### BUG-M05: `get_all_arguments` の `skip_next` が dead code 【Low】
-- **ファイル**: `src/command_helper.rs:13-29`
-- **推奨修正**: `skip_next` を削除または正しく実装。
-
 #### BUG-M06: `help` コマンドで `--all` 以外の引数を無視 【Low】
-- **ファイル**: `src/main.rs:400-412`
+- **ファイル**: `src/main.rs`
 - **推奨修正**: 不明な引数にエラーメッセージを表示。
 
 #### BUG-M08: `build.rs` が `expect` で panic 【Low】
@@ -140,19 +125,19 @@
 - **推奨修正**: `expect` に具体的なメッセージを追加。
 
 #### BUG-M09: `llvm_executer.rs` の `_full_path` パラメータが未使用 【Low】
-- **ファイル**: `src/llvm/llvm_executer.rs:23`
+- **ファイル**: `src/llvm/llvm_executer.rs`
 - **推奨修正**: パラメータを削除。
 
 #### BUG-M10: 一時ファイル (`.ll`, `.o`, `runtime.rs`) のクリーンアップがない 【Low】
-- **ファイル**: `src/llvm/llvm_executer.rs:102-116, 121-125`
+- **ファイル**: `src/llvm/llvm_executer.rs`
 - **推奨修正**: `.ll` と `.o` を `out_dir` に書き出すか、`Debug` モード以外で削除。
 
 #### BUG-M11: `sprs.toml` 読み込み失敗を黙殺 【Low】
-- **ファイル**: `src/llvm/llvm_executer.rs:27-28`
+- **ファイル**: `src/llvm/llvm_executer.rs`
 - **推奨修正**: エラーの種類に応じたログ出力。
 
 #### BUG-M12: Windows 上で Linux ターゲットの実行ファイルを実行しようとする可能性 【Medium】
-- **ファイル**: `src/llvm/llvm_executer.rs:189-198`
+- **ファイル**: `src/llvm/llvm_executer.rs`
 - **推奨修正**: ホストとターゲットが異なる場合は実行をスキップ。
 
 ---
@@ -162,11 +147,11 @@
 | 深刻度 | 件数 | バグ ID |
 |--------|------|--------|
 | **Critical** | 0 | — |
-| **High** | 9 | L01, L03, L07, L08, L14, L15, L21, M03, M04 |
-| **Medium** | 10 | F06, F08, F09, L04, L06, L09, L13, L16, L17, M12 |
-| **Low** | 14 | F04b, F11, F12, F13, F14, F15, L05, L24, M05, M06, M08, M09, M10, M11 |
+| **High** | 8 | L03, L07, L08, L14, L15, L21, M03, M04 |
+| **Medium** | 9 | F06, F08, F09, L04, L06, L09, L13, L17, M12 |
+| **Low** | 12 | F04b, F11, F12, F14, F15, L05, L24, M06, M08, M09, M10, M11 |
 
-合計: 33 件 (ユニーク)。
+合計: 29 件 (ユニーク)。
 
 ---
 
@@ -220,6 +205,13 @@
 - **BUG-X09 (部分解消)**: `cast` マクロの戻り値型推論を `infer_type` の `Expr::Macro` 分岐に追加。第2引数の型から戻り値型を推論。`lshift`/`rshift` は第1引数の型を返す
 - **BUG-F04 解消**: 論理否定を `not(x)` マクロで実装。0→1, 非0→0 の論理否定。Bool タグで結果を返す。`!` 単独トークン (`Not` / `Expr::Not`) は追加せず、バッククォート・マクロ方式で代替。`!?` 正規表現は既存マクロ構文のために維持
 
+### コード整理で解消
+
+- **BUG-L01**: `create_integer` が負の i64 を `*n as u64` で符号付きビットパターンとして格納するが、`const_int` の sign フラグが `false` (符号なし) → `const_int(*n as u64, true)` に変更し符号付きとして扱う。`src/llvm/value.rs`
+- **BUG-F13**: `MoreStructFields` が死んだ規則 → 削除済み。`src/grammar.lalrpop`
+- **BUG-L16**: `set_global_constant_str` の `Set` バリアントと不整合 → `StrConstantAction`/`StrValue` enum を削除し、`&str` 直接受け取りに簡略化。`src/llvm/compiler.rs`
+- **BUG-M05**: `get_all_arguments` の `skip_next` が dead code → `filter().collect()` に簡潔化
+
 ---
 
 ## 6. 詳細テストスイートで発見されたバグ (XFAIL)
@@ -230,11 +222,11 @@ LLVM 22.1.8 移行後のスモークテスト実装中に発見されたバグ�
 
 ### X01: `create_index` が `StructValue` を直接返す 【High】
 
-- **ファイル**: `src/llvm/builder_helper.rs:3119-3122`
+- **ファイル**: `src/llvm/data_structures.rs`
 - **症状**: `list[index]` アクセスで `Found StructValue ... but expected PointerValue variant` で panic
 - **原因**: `__list_get` が `{ i32, i64 }` 構造体を値で返すが、`create_index` が `compile_expr` の契約 (`PointerValue` を返す) に違反し、生の `StructValue` をそのまま返している
 - **影響**: リストのインデックスアクセスが一切使用不可
-- **推奨修正**: `call_builtin_macro_clone` (3758-3765) と同様に alloca に spill してから `PointerValue` を返す
+- **推奨修正**: `call_builtin_macro_clone` と同様に alloca に spill してから `PointerValue` を返す
   ```rust
   let res_ptr = create_entry_block_alloca(self_compiler, "list_get_res");
   self_compiler.builder.build_store(res_ptr, val).unwrap();
@@ -244,7 +236,7 @@ LLVM 22.1.8 移行後のスモークテスト実装中に発見されたバグ�
 
 ### X03: `Return(Var)` の move セマンティクスでタグが Unit になる 【High】
 
-- **ファイル**: `src/llvm/compiler.rs:1103-1109` (var_return_store 呼び出し), `src/llvm/builder_helper.rs:312-320` (var_return_store)
+- **ファイル**: `src/llvm/codegen.rs` (compile_return), `src/llvm/variable.rs` (var_return_store)
 - **症状**: `return var_name` で変数を返した際、戻り値のタグが `Unit` (6) になり、呼び出し側で正しい型として扱えない
 - **原因**: `var_return_store` が move セマンティクスで変数のタグを `Unit` にリセットした後に、同じポインタから値をロードして返している
 - **影響**: 変数をそのまま return するパターンが使用不可（リテラルや式の return は正常）
@@ -258,7 +250,7 @@ LLVM 22.1.8 移行後のスモークテスト実装中に発見されたバグ�
 
 ### X04: `infer_type` が比較演算・Call・ModuleAccess を処理しない 【Medium】
 
-- **ファイル**: `src/llvm/compiler.rs:956-1011` (infer_type)
+- **ファイル**: `src/llvm/codegen.rs` (infer_type)
 - **症状**: `>> bool` で `return 5 == 5` と書くと `Type mismatch: Function expects Bool but got Any` エラー。`>> i64` で `return test.test()` と書いても `Type::Any` になる
 - **原因**: `infer_type` に `Expr::Eq`/`Neq`/`Lt`/`Gt`/`Le`/`Ge` の分岐が無い（すべて `Type::Bool` を返すべき）。`Expr::Call` は `ret_ty_opt` が `None` の場合 `Type::Any` を返す（パーサーが常に `None` を渡すため）。`Expr::ModuleAccess` の分岐自体が存在しない
 - **影響**: 比較演算の結果を `>> bool` で返せない。モジュール関数の戻り値型が推論されない
@@ -269,7 +261,7 @@ LLVM 22.1.8 移行後のスモークテスト実装中に発見されたバグ�
 
 ### X05: `create_dummy_for_no_return` が常に `runtime_value_type` を返す 【Medium】
 
-- **ファイル**: `src/llvm/builder_helper.rs:331-345`
+- **ファイル**: `src/llvm/value.rs`
 - **症状**: `>> i64` の関数で `if/else` 両分岐で return した後に末尾 return が無いと `Function return type does not match operand type of return inst!` エラー
 - **原因**: `create_dummy_for_no_return` が常に `runtime_value_type` (`{ i32, i64 }`) を返す。`>> i64` や `>> fp` など他の戻り値型の場合、型不一致で LLVM が関数を検証エラーにする
 - **影響**: `if/else` で両分岐 return する関数で末尾に `return 0;` のようなダミーが必要
@@ -277,7 +269,7 @@ LLVM 22.1.8 移行後のスモークテスト実装中に発見されたバグ�
 
 ### X06: `string_constants` HashMap がモジュール非スコープ 【High】
 
-- **ファイル**: `src/llvm/compiler.rs:36` (string_constants フィールド), `src/llvm/builder_helper.rs:148-172` (create_panic_err)
+- **ファイル**: `src/llvm/compiler.rs` (string_constants フィールド), `src/llvm/value.rs` (create_panic_err)
 - **症状**: 複数モジュールを import すると `Referencing global in another module!` リンクエラー
 - **原因**: `create_panic_err` が `is_global: true` で `External` linkage の GlobalValue を生成し `self.string_constants` にキャッシュする。次のモジュールが同じエラーメッセージ文字列を生成すると、キャッシュから別モジュールの GlobalValue が返され、linker が別モジュールのグローバル参照として弾く
 - **影響**: 複数モジュールにまたがるプログラムで `Var + Var` 等の error_bb が生成されるとリンクエラー。単一ファイルなら発生しない
@@ -285,7 +277,7 @@ LLVM 22.1.8 移行後のスモークテスト実装中に発見されたバグ�
 
 ### X07: `Var + Var` 加算で実行時 error_bb に到達する 【High】
 
-- **ファイル**: `src/llvm/builder_helper.rs:1094-1251` (create_add_expr), `src/llvm/compiler.rs:925-947` (get_known_type_from_expr)
+- **ファイル**: `src/llvm/arithmetic.rs` (create_add_expr), `src/llvm/codegen.rs` (get_known_type_from_expr)
 - **症状**: 関数引数同士の加算 `return a + b` で実行時 `Panic: TypeError: type miss match` が発生
 - **原因**: `create_add_expr` の error_bb で `get_known_type_from_expr(Var)` を呼ぶが、`get_known_type_from_expr` は `Var` を処理せずエラーを返す。エラーメッセージがグローバル定数として埋め込まれ、実行時に error_bb に到達すると panic する。関数引数の実行時タグが `Integer` (0) になるはずだが、`can_add` チェックが失敗している可能性
 - **影響**: 関数引数を使った `Var + Var` 加算が使用不可。`var` 宣言された変数同士の加算は正常動作する
@@ -293,7 +285,7 @@ LLVM 22.1.8 移行後のスモークテスト実装中に発見されたバグ�
 
 ### X08: `>> fp` 戻り値の表示が不正確 【Medium】
 
-- **ファイル**: `src/llvm/compiler.rs:1182-1216` (Return の ret_ty 分岐)
+- **ファイル**: `src/llvm/codegen.rs` (compile_return)
 - **症状**: `>> fp` で `return 1.5 + 2.5` と返すと、期待値 `4.0` に対して `4` と表示される。また一部の演算で `0.000...333e-262` のような異常値が出力される
 - **原因**: `Return` 処理の `ret_ty.is_float_type()` 分岐で、`data_val` を `bit_cast` して返す際の型変換に問題がある可能性。`>> fp` は `Type::Float` (`f64`) だが、戻り値の LLVM 型が `f64` として正しく処理されていない
 - **影響**: 浮動小数点を返す関数の結果が不正確
@@ -301,7 +293,7 @@ LLVM 22.1.8 移行後のスモークテスト実装中に発見されたバグ�
 
 ### X09: `cast` の戻り値型推論 (部分解消) 【Low】
 
-- **ファイル**: `src/llvm/compiler.rs:993-1000` (infer_type Macro 分岐)
+- **ファイル**: `src/llvm/codegen.rs` (infer_type Macro 分岐)
 - **症状**: `>> fp` で `return `cast(1.5, fp16)` と書くと `Type mismatch: Function expects Float type but got Any` エラー。`>> i64` で `` `cast(1, i8) + `cast(2, i16) `` の異型混合も panic
 - **原因**: `cast` が `Expr::Macro("cast", ...)` として処理されるが、`infer_type` に `Expr::Macro` 分岐が存在しなかった
 - **影響**: `cast` の結果を `>> fp` や異型混合で return できない。同じ型同士の cast 同士の演算は正常動作
