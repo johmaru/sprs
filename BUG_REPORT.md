@@ -51,10 +51,6 @@
 
 ## 2. LLVM コード生成
 
-#### BUG-L03: `create_if_expr` の PHI incoming 判定が `then_bb_end == merge_bb` と同値で、return を含む then ブロックで PHI が不正 【High】
-- **ファイル**: `src/llvm/control_flow.rs`
-- **推奨修正**: `if then_bb_end.get_terminator().is_some() && then_bb_end != merge_bb` で判定。
-
 #### BUG-L04: `create_panic_err` が `build_call` のみで `build_unreachable` を生成しない 【Medium】
 - **ファイル**: `src/llvm/value.rs`
 - **推奨修正**: `create_panic_err` の最後に `build_unreachable` を追加。
@@ -147,11 +143,11 @@
 | 深刻度 | 件数 | バグ ID |
 |--------|------|--------|
 | **Critical** | 0 | — |
-| **High** | 8 | L03, L07, L08, L14, L15, L21, M03, M04 |
+| **High** | 7 | L07, L08, L14, L15, L21, M03, M04 |
 | **Medium** | 9 | F06, F08, F09, L04, L06, L09, L13, L17, M12 |
 | **Low** | 12 | F04b, F11, F12, F14, F15, L05, L24, M06, M08, M09, M10, M11 |
 
-合計: 29 件 (ユニーク)。
+合計: 28 件 (ユニーク)。
 
 ---
 
@@ -211,6 +207,7 @@
 - **BUG-F13**: `MoreStructFields` が死んだ規則 → 削除済み。`src/grammar.lalrpop`
 - **BUG-L16**: `set_global_constant_str` の `Set` バリアントと不整合 → `StrConstantAction`/`StrValue` enum を削除し、`&str` 直接受け取りに簡略化。`src/llvm/compiler.rs`
 - **BUG-M05**: `get_all_arguments` の `skip_next` が dead code → `filter().collect()` に簡潔化
+- **BUG-L03**: `create_if_expr` の PHI incoming 判定が `t.get_parent() == merge_bb` で常に false になる問題 → ターミネータの `opcode` が `Br` かどうかで判定するよう修正。`src/llvm/control_flow.rs`
 
 ---
 

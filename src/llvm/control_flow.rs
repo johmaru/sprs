@@ -260,17 +260,21 @@ pub fn create_if_expr<'ctx>(
         .build_phi(self_compiler.runtime_value_type, "if_phi")
         .unwrap();
 
-    if then_bb_end
-        .get_terminator()
-        .map_or(false, |t| t.get_parent().unwrap() == merge_bb)
-    {
-        phi.add_incoming(&[(&then_val, then_bb_end)]);
+    // Add PHI incoming only if the block branches to merge_bb
+    // (i.e. it does NOT end with a return/unreachable).
+    if then_bb_end != merge_bb {
+        if let Some(term) = then_bb_end.get_terminator() {
+            if term.get_opcode() == inkwell::values::InstructionOpcode::Br {
+                phi.add_incoming(&[(&then_val, then_bb_end)]);
+            }
+        }
     }
-    if else_bb_end
-        .get_terminator()
-        .map_or(false, |t| t.get_parent().unwrap() == merge_bb)
-    {
-        phi.add_incoming(&[(&else_val, else_bb_end)]);
+    if else_bb_end != merge_bb {
+        if let Some(term) = else_bb_end.get_terminator() {
+            if term.get_opcode() == inkwell::values::InstructionOpcode::Br {
+                phi.add_incoming(&[(&else_val, else_bb_end)]);
+            }
+        }
     }
 
     Ok(phi.as_basic_value())
