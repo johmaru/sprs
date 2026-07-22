@@ -1,5 +1,12 @@
+pub mod arithmetic;
 pub mod builder_helper;
+pub mod comparison;
 pub mod compiler;
+pub mod control_flow;
+pub mod data_structures;
 pub mod error_helper;
 pub mod llvm_executer;
+pub mod macros;
 pub mod parser;
+pub mod value;
+pub mod variable;
