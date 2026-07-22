@@ -1,7 +1,9 @@
 pub mod arithmetic;
 pub mod builder_helper;
 pub mod comparison;
+pub mod codegen;
 pub mod compiler;
+pub mod module_loader;
 pub mod control_flow;
 pub mod data_structures;
 pub mod error_helper;
