@@ -1,5 +1,5 @@
 // auto-generated: "lalrpop 0.23.1"
-// sha3: 744206ab2e6bb28b33a869a6f5d205fde0873499d75e3f146e367ca57e451c2a
+// sha3: e640768d491a5bb3df92a9be0c4e5ea89cdf3acc1fe9cdaba0cdd5ac7b882909
 use crate::front::ast::{
     Item, 
     VarDecl, 
@@ -3508,7 +3508,16 @@ mod __parse__Start {
                 __reduce110(__lookahead_start, __symbols, core::marker::PhantomData::<()>)
             }
             111 => {
-                __reduce111(__lookahead_start, __symbols, core::marker::PhantomData::<()>)
+                // Float = FLOAT => ActionFn(73);
+                let __sym0 = __pop_Variant0(__symbols);
+                let __start = __sym0.0.clone();
+                let __end = __sym0.2.clone();
+                let __nt = match super::__action73::<>(__sym0) {
+                    Ok(v) => v,
+                    Err(e) => return Some(Err(e)),
+                };
+                __symbols.push((__start, __Symbol::Variant15(__nt), __end));
+                (1, 28)
             }
             112 => {
                 __reduce112(__lookahead_start, __symbols, core::marker::PhantomData::<()>)
@@ -3520,7 +3529,16 @@ mod __parse__Start {
                 __reduce114(__lookahead_start, __symbols, core::marker::PhantomData::<()>)
             }
             115 => {
-                __reduce115(__lookahead_start, __symbols, core::marker::PhantomData::<()>)
+                // Ident = IDENT => ActionFn(70);
+                let __sym0 = __pop_Variant0(__symbols);
+                let __start = __sym0.0.clone();
+                let __end = __sym0.2.clone();
+                let __nt = match super::__action70::<>(__sym0) {
+                    Ok(v) => v,
+                    Err(e) => return Some(Err(e)),
+                };
+                __symbols.push((__start, __Symbol::Variant18(__nt), __end));
+                (1, 32)
             }
             116 => {
                 __reduce116(__lookahead_start, __symbols, core::marker::PhantomData::<()>)
@@ -3565,7 +3583,16 @@ mod __parse__Start {
                 __reduce129(__lookahead_start, __symbols, core::marker::PhantomData::<()>)
             }
             130 => {
-                __reduce130(__lookahead_start, __symbols, core::marker::PhantomData::<()>)
+                // MacroName = MACRO => ActionFn(71);
+                let __sym0 = __pop_Variant0(__symbols);
+                let __start = __sym0.0.clone();
+                let __end = __sym0.2.clone();
+                let __nt = match super::__action71::<>(__sym0) {
+                    Ok(v) => v,
+                    Err(e) => return Some(Err(e)),
+                };
+                __symbols.push((__start, __Symbol::Variant18(__nt), __end));
+                (1, 38)
             }
             131 => {
                 __reduce131(__lookahead_start, __symbols, core::marker::PhantomData::<()>)
@@ -3598,7 +3625,16 @@ mod __parse__Start {
                 __reduce140(__lookahead_start, __symbols, core::marker::PhantomData::<()>)
             }
             141 => {
-                __reduce141(__lookahead_start, __symbols, core::marker::PhantomData::<()>)
+                // Num = NUM => ActionFn(72);
+                let __sym0 = __pop_Variant0(__symbols);
+                let __start = __sym0.0.clone();
+                let __end = __sym0.2.clone();
+                let __nt = match super::__action72::<>(__sym0) {
+                    Ok(v) => v,
+                    Err(e) => return Some(Err(e)),
+                };
+                __symbols.push((__start, __Symbol::Variant21(__nt), __end));
+                (1, 42)
             }
             142 => {
                 __reduce142(__lookahead_start, __symbols, core::marker::PhantomData::<()>)
@@ -3738,7 +3774,16 @@ mod __parse__Start {
                 __reduce183(__lookahead_start, __symbols, core::marker::PhantomData::<()>)
             }
             184 => {
-                __reduce184(__lookahead_start, __symbols, core::marker::PhantomData::<()>)
+                // StringLiteral = StrLiteral => ActionFn(74);
+                let __sym0 = __pop_Variant0(__symbols);
+                let __start = __sym0.0.clone();
+                let __end = __sym0.2.clone();
+                let __nt = match super::__action74::<>(__sym0) {
+                    Ok(v) => v,
+                    Err(e) => return Some(Err(e)),
+                };
+                __symbols.push((__start, __Symbol::Variant18(__nt), __end));
+                (1, 56)
             }
             185 => {
                 __reduce185(__lookahead_start, __symbols, core::marker::PhantomData::<()>)
@@ -5982,21 +6027,6 @@ mod __parse__Start {
         __symbols.push((__start, __Symbol::Variant14(__nt), __end));
         (0, 27)
     }
-    fn __reduce111<
-    >(
-        __lookahead_start: Option<&usize>,
-        __symbols: &mut alloc::vec::Vec<(usize,__Symbol<>,usize)>,
-        _: core::marker::PhantomData<()>,
-    ) -> (usize, usize)
-    {
-        // Float = FLOAT => ActionFn(73);
-        let __sym0 = __pop_Variant0(__symbols);
-        let __start = __sym0.0.clone();
-        let __end = __sym0.2.clone();
-        let __nt = super::__action73::<>(__sym0);
-        __symbols.push((__start, __Symbol::Variant15(__nt), __end));
-        (1, 28)
-    }
     fn __reduce112<
     >(
         __lookahead_start: Option<&usize>,
@@ -6049,21 +6079,6 @@ mod __parse__Start {
         let __nt = super::__action31::<>(__sym0);
         __symbols.push((__start, __Symbol::Variant3(__nt), __end));
         (1, 31)
-    }
-    fn __reduce115<
-    >(
-        __lookahead_start: Option<&usize>,
-        __symbols: &mut alloc::vec::Vec<(usize,__Symbol<>,usize)>,
-        _: core::marker::PhantomData<()>,
-    ) -> (usize, usize)
-    {
-        // Ident = IDENT => ActionFn(70);
-        let __sym0 = __pop_Variant0(__symbols);
-        let __start = __sym0.0.clone();
-        let __end = __sym0.2.clone();
-        let __nt = super::__action70::<>(__sym0);
-        __symbols.push((__start, __Symbol::Variant18(__nt), __end));
-        (1, 32)
     }
     fn __reduce116<
     >(
@@ -6289,21 +6304,6 @@ mod __parse__Start {
         __symbols.push((__start, __Symbol::Variant20(__nt), __end));
         (2, 37)
     }
-    fn __reduce130<
-    >(
-        __lookahead_start: Option<&usize>,
-        __symbols: &mut alloc::vec::Vec<(usize,__Symbol<>,usize)>,
-        _: core::marker::PhantomData<()>,
-    ) -> (usize, usize)
-    {
-        // MacroName = MACRO => ActionFn(71);
-        let __sym0 = __pop_Variant0(__symbols);
-        let __start = __sym0.0.clone();
-        let __end = __sym0.2.clone();
-        let __nt = super::__action71::<>(__sym0);
-        __symbols.push((__start, __Symbol::Variant18(__nt), __end));
-        (1, 38)
-    }
     fn __reduce131<
     >(
         __lookahead_start: Option<&usize>,
@@ -6472,21 +6472,6 @@ mod __parse__Start {
         let __nt = super::__action143::<>(__sym0);
         __symbols.push((__start, __Symbol::Variant1(__nt), __end));
         (1, 41)
-    }
-    fn __reduce141<
-    >(
-        __lookahead_start: Option<&usize>,
-        __symbols: &mut alloc::vec::Vec<(usize,__Symbol<>,usize)>,
-        _: core::marker::PhantomData<()>,
-    ) -> (usize, usize)
-    {
-        // Num = NUM => ActionFn(72);
-        let __sym0 = __pop_Variant0(__symbols);
-        let __start = __sym0.0.clone();
-        let __end = __sym0.2.clone();
-        let __nt = super::__action72::<>(__sym0);
-        __symbols.push((__start, __Symbol::Variant21(__nt), __end));
-        (1, 42)
     }
     fn __reduce142<
     >(
@@ -7193,21 +7178,6 @@ mod __parse__Start {
         let __nt = super::__action57::<>(__sym0, __sym1);
         __symbols.push((__start, __Symbol::Variant8(__nt), __end));
         (2, 55)
-    }
-    fn __reduce184<
-    >(
-        __lookahead_start: Option<&usize>,
-        __symbols: &mut alloc::vec::Vec<(usize,__Symbol<>,usize)>,
-        _: core::marker::PhantomData<()>,
-    ) -> (usize, usize)
-    {
-        // StringLiteral = StrLiteral => ActionFn(74);
-        let __sym0 = __pop_Variant0(__symbols);
-        let __start = __sym0.0.clone();
-        let __end = __sym0.2.clone();
-        let __nt = super::__action74::<>(__sym0);
-        __symbols.push((__start, __Symbol::Variant18(__nt), __end));
-        (1, 56)
     }
     fn __reduce185<
     >(
@@ -8527,10 +8497,10 @@ fn __action69<
 fn __action70<
 >(
     (_, tok, _): (usize, Token, usize),
-) -> String
+) -> Result<String,__lalrpop_util::ParseError<usize,Token,String>>
 {
     {
-    match tok { Token::Ident(s) => s, _ => unreachable!() }
+    match tok { Token::Ident(s) => Ok(s), _ => Err(ParseError::User { error: "Expected IDENT token".to_string() }) }
 }
 }
 
@@ -8538,10 +8508,10 @@ fn __action70<
 fn __action71<
 >(
     (_, tok, _): (usize, Token, usize),
-) -> String
+) -> Result<String,__lalrpop_util::ParseError<usize,Token,String>>
 {
     {
-    match tok { Token::Macro(s) => s, _ => unreachable!() }
+    match tok { Token::Macro(s) => Ok(s), _ => Err(ParseError::User { error: "Expected MACRO token".to_string() }) }
 }
 }
 
@@ -8549,10 +8519,10 @@ fn __action71<
 fn __action72<
 >(
     (_, tok, _): (usize, Token, usize),
-) -> i64
+) -> Result<i64,__lalrpop_util::ParseError<usize,Token,String>>
 {
     {
-    match tok { Token::Num(n) => n, _ => unreachable!() }
+    match tok { Token::Num(n) => Ok(n), _ => Err(ParseError::User { error: "Expected NUM token".to_string() }) }
 }
 }
 
@@ -8560,10 +8530,10 @@ fn __action72<
 fn __action73<
 >(
     (_, tok, _): (usize, Token, usize),
-) -> f64
+) -> Result<f64,__lalrpop_util::ParseError<usize,Token,String>>
 {
     {
-    match tok { Token::Float(f) => f, _ => unreachable!() }
+    match tok { Token::Float(f) => Ok(f), _ => Err(ParseError::User { error: "Expected FLOAT token".to_string() }) }
 }
 }
 
@@ -8571,12 +8541,12 @@ fn __action73<
 fn __action74<
 >(
     (_, s, _): (usize, Token, usize),
-) -> String
+) -> Result<String,__lalrpop_util::ParseError<usize,Token,String>>
 {
     {
         match s {
-            Token::StrLiteral(str) => str,
-            _ => unreachable!(),
+            Token::StrLiteral(str) => Ok(str),
+            _ => Err(ParseError::User { error: "Expected StrLiteral token".to_string() }),
         }
     }
 }

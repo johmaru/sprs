@@ -319,26 +319,26 @@ VarDecl: VarDecl = {
  Var <id:Ident> Semi => VarDecl { ident: id, expr: None },
 };
 
-Ident: String = <tok:IDENT> => {
-    match tok { Token::Ident(s) => s, _ => unreachable!() }
+Ident: String = <tok:IDENT> =>? {
+    match tok { Token::Ident(s) => Ok(s), _ => Err(ParseError::User { error: "Expected IDENT token".to_string() }) }
 };
 
-MacroName: String = <tok:MACRO> => {
-    match tok { Token::Macro(s) => s, _ => unreachable!() }
+MacroName: String = <tok:MACRO> =>? {
+    match tok { Token::Macro(s) => Ok(s), _ => Err(ParseError::User { error: "Expected MACRO token".to_string() }) }
 };
-Num: i64     = <tok:NUM>   => {
-    match tok { Token::Num(n) => n, _ => unreachable!() }
+Num: i64     = <tok:NUM>   =>? {
+    match tok { Token::Num(n) => Ok(n), _ => Err(ParseError::User { error: "Expected NUM token".to_string() }) }
 };
 
-Float: f64     = <tok:FLOAT>   => {
-    match tok { Token::Float(f) => f, _ => unreachable!() }
+Float: f64     = <tok:FLOAT>   =>? {
+    match tok { Token::Float(f) => Ok(f), _ => Err(ParseError::User { error: "Expected FLOAT token".to_string() }) }
 };
 
 StringLiteral: String = {
-    <s:StrLiteral> => {
+    <s:StrLiteral> =>? {
         match s {
-            Token::StrLiteral(str) => str,
-            _ => unreachable!(),
+            Token::StrLiteral(str) => Ok(str),
+            _ => Err(ParseError::User { error: "Expected StrLiteral token".to_string() }),
         }
     }
 };

@@ -30,9 +30,6 @@
 - **ファイル**: `src/grammar.lalrpop:453-470`
 - **推奨修正**: `Expr::MethodCall(Box<Expr>, String, Vec<Expr>)` ノードを追加。
 
-#### BUG-F10: 文法の `unreachable!()` 多用と `I8Literal`〜`F64Literal` のプレースホルダ実装 【High】
-- **ファイル**: `src/grammar.lalrpop:373-515`
-- **推奨修正**: `unreachable!()` を `Err(ParseError::User { ... })` に置換。
 
 #### BUG-F11: `Preprocessor` トークンが `#define` のみで他の指令がエラー 【Low】
 - **ファイル**: `src/front/lexer.rs:153-154`
@@ -165,11 +162,11 @@
 | 深刻度 | 件数 | バグ ID |
 |--------|------|--------|
 | **Critical** | 0 | — |
-| **High** | 10 | F10, L01, L03, L07, L08, L14, L15, L21, M03, M04 |
+| **High** | 9 | L01, L03, L07, L08, L14, L15, L21, M03, M04 |
 | **Medium** | 10 | F06, F08, F09, L04, L06, L09, L13, L16, L17, M12 |
 | **Low** | 14 | F04b, F11, F12, F13, F14, F15, L05, L24, M05, M06, M08, M09, M10, M11 |
 
-合計: 34 件 (ユニーク)。
+合計: 33 件 (ユニーク)。
 
 ---
 
@@ -211,6 +208,7 @@
 - **BUG-F02**: 文字列リテラルのエスケープ未対応 → `unescape_sprs_string` で `\n`/`\t`/`\"`/`\\`/`\0`/`\u{XXXX}` に対応
 - **BUG-F03**: コメント正規表現 `# [^\n]*` が空白を必須にしていた → `#[^\n]*` に変更。`#comment`、`#` 単独、行末 `#` がスキップされることを確認
 - **BUG-F05**: `is_int_type_in_llvm()` に浮動小数点型が含まれ、`not_int_type_in_llvm()` と矛盾 → `is_int_type_in_llvm` から浮動小数点型を削除。`not_int_type_in_llvm` に欠落していた `Type::Float` を追加し、整数型でない全型を網羅
+- **BUG-F10**: 文法の `unreachable!()` 多用と `I8Literal`〜`F64Literal` のプレースホルダ実装 → `I8Literal`〜`F64Literal` (11個) は前回のコード整理で削除済み。残り5箇所の `unreachable!()` (Ident/MacroName/Num/Float/StringLiteral) を `=>?` 構文 + `Err(ParseError::User { ... })` に置換し、予期しないトークンで panic せずパースエラーとして伝播するよう修正
 
 ### X02 Critical バグ修正で解消
 
