@@ -1034,6 +1034,157 @@ impl<'ctx> Compiler<'ctx> {
         }
     }
 
+    /// Process a `return` statement: type-check the expression, convert it
+    /// to the function's return type, emit drops, and build the `ret` instr.
+    fn compile_return(
+        &mut self,
+        expr_opt: &Option<ast::Expr>,
+        module: &Module<'ctx>,
+    ) -> Result<(), String> {
+        let ret_val = if let Some(expr) = expr_opt {
+            let ptr = self.compile_expr(expr, module)?.into_pointer_value();
+
+            if let ast::Expr::Var(name) = expr {
+                let var_val = self.get_variables(name).map(|(v, _)| v);
+                if let Some(val) = var_val {
+                    let val_ptr = val.into_pointer_value();
+                    builder_helper::var_return_store(self, &val_ptr.into(), name);
+                }
+            }
+
+            let current_fn = self.function_signatures.unwrap();
+            let return_type = current_fn.get_type().get_return_type();
+            let expr_type = self.infer_type(expr);
+
+            self.validate_return_type(return_type, expr_type, expr)?;
+
+            self.convert_return_value(return_type, ptr)?
+        } else {
+            None
+        };
+
+        self.emit_drop_for_return(module);
+
+        if let Some(val) = ret_val {
+            self.builder.build_return(Some(&val)).unwrap();
+        } else {
+            builder_helper::create_dummy_for_no_return(self);
+        }
+        Ok(())
+    }
+
+    /// Validate that the expression type matches the function return type.
+    fn validate_return_type(
+        &self,
+        return_type: Option<BasicTypeEnum<'ctx>>,
+        expr_type: Type,
+        expr: &ast::Expr,
+    ) -> Result<(), String> {
+        if let Some(ret_ty) = return_type {
+            if ret_ty.is_pointer_type() {
+                let llvm_int_ty = type_helper::is_int_type_in_llvm();
+                if llvm_int_ty.contains(&expr_type) {
+                    return Err(format!(
+                        "Type mismatch: Function expects pointer type (e.g. str) but got {:?} from expression {:?}",
+                        expr_type, expr
+                    ));
+                }
+            } else if ret_ty.is_int_type() {
+                let width = ret_ty.into_int_type().get_bit_width();
+                if width == 1 {
+                    if expr_type != Type::Bool {
+                        return Err(format!(
+                            "Type mismatch: Function expects Bool but got {:?} from expression {:?}",
+                            expr_type, expr
+                        ));
+                    }
+                } else {
+                    let llvm_not_int = type_helper::not_int_type_in_llvm();
+                    if llvm_not_int.contains(&expr_type) {
+                        return Err(format!(
+                            "Type mismatch: Function expects Int type but got {:?} from expression {:?}",
+                            expr_type, expr
+                        ));
+                    }
+                }
+            } else if ret_ty.is_float_type() {
+                let llvm_float_ty = type_helper::is_float_type_in_llvm();
+                if !llvm_float_ty.contains(&expr_type) {
+                    return Err(format!(
+                        "Type mismatch: Function expects Float type but got {:?} from expression {:?}",
+                        expr_type, expr
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Convert the runtime value at `ptr` to the LLVM return type.
+    fn convert_return_value(
+        &mut self,
+        return_type: Option<BasicTypeEnum<'ctx>>,
+        ptr: PointerValue<'ctx>,
+    ) -> Result<Option<BasicValueEnum<'ctx>>, String> {
+        if let Some(ret_ty) = return_type {
+            if ret_ty == self.runtime_value_type.into() {
+                let val = self
+                    .builder
+                    .build_load(self.runtime_value_type, ptr, "return_load")
+                    .unwrap();
+                Ok(Some(val))
+            } else {
+                let data_ptr = self
+                    .builder
+                    .build_struct_gep(self.runtime_value_type, ptr, 1, "data_ptr")
+                    .unwrap();
+                let data_val = self
+                    .builder
+                    .build_load(self.context.i64_type(), data_ptr, "data_load")
+                    .unwrap()
+                    .into_int_value();
+
+                let casted_val: BasicValueEnum = if ret_ty.is_int_type() {
+                    let int_type = ret_ty.into_int_type();
+                    if int_type.get_bit_width() < 64 {
+                        self.builder
+                            .build_int_truncate(data_val, int_type, "truncated")
+                            .unwrap()
+                            .into()
+                    } else {
+                        data_val.into()
+                    }
+                } else if ret_ty.is_float_type() {
+                    let float_type = ret_ty.into_float_type();
+                    let f64_val = self
+                        .builder
+                        .build_bit_cast(data_val, self.context.f64_type(), "casted_float")
+                        .unwrap()
+                        .into_float_value();
+                    if float_type.get_bit_width() == 32 {
+                        self.builder
+                            .build_float_trunc(f64_val, float_type, "truncated_float")
+                            .unwrap()
+                            .into()
+                    } else {
+                        f64_val.into()
+                    }
+                } else if ret_ty.is_pointer_type() {
+                    let ptr_type = ret_ty.into_pointer_type();
+                    self.builder
+                        .build_int_to_ptr(data_val, ptr_type, "int_to_ptr")
+                        .unwrap()
+                        .into()
+                } else {
+                    return Err("Unsupported return type conversion".to_string());
+                };
+                Ok(Some(casted_val))
+            }
+        } else {
+            Ok(None)
+        }
+    }
+
     pub(crate) fn compile_block(
         &mut self,
         stmts: &Vec<ast::Stmt>,
@@ -1072,138 +1223,7 @@ impl<'ctx> Compiler<'ctx> {
                     self.add_variable(var.ident.clone(), init_val.into(), var_type);
                 }
                 ast::Stmt::Return(expr_opt) => {
-                    let ret_val = if let Some(expr) = expr_opt {
-                        let ptr = self.compile_expr(expr, module)?.into_pointer_value();
-
-                        if let ast::Expr::Var(name) = expr {
-                            let var_val = self.get_variables(name).map(|(v, _)| v);
-                            if let Some(val) = var_val {
-                                let val_ptr = val.into_pointer_value();
-                                builder_helper::var_return_store(self, &val_ptr.into(), name);
-                            }
-                        }
-
-                        let current_fn = self.function_signatures.unwrap();
-                        let return_type = current_fn.get_type().get_return_type();
-
-                        let expr_type = self.infer_type(expr);
-
-                        if let Some(ret_ty) = return_type {
-                            if ret_ty.is_pointer_type() {
-                                let llvm_int_ty = type_helper::is_int_type_in_llvm();
-                                if llvm_int_ty.contains(&expr_type) {
-                                    return Err(format!(
-                                        "Type mismatch: Function expects pointer type (e.g. str) but got {:?} from expression {:?}",
-                                        expr_type, expr
-                                    ));
-                                }
-                            } else if ret_ty.is_int_type() {
-                                let width = ret_ty.into_int_type().get_bit_width();
-                                if width == 1 {
-                                    if expr_type != Type::Bool {
-                                        return Err(format!(
-                                            "Type mismatch: Function expects Bool but got {:?} from expression {:?}",
-                                            expr_type, expr
-                                        ));
-                                    }
-                                } else {
-                                    let llvm_not_int = type_helper::not_int_type_in_llvm();
-                                    if llvm_not_int.contains(&expr_type) {
-                                        return Err(format!(
-                                            "Type mismatch: Function expects Int type but got {:?} from expression {:?}",
-                                            expr_type, expr
-                                        ));
-                                    }
-                                }
-                            } else if ret_ty.is_float_type() {
-                                let llvm_float_ty = type_helper::is_float_type_in_llvm();
-                                if !llvm_float_ty.contains(&expr_type) {
-                                    return Err(format!(
-                                        "Type mismatch: Function expects Float type but got {:?} from expression {:?}",
-                                        expr_type, expr
-                                    ));
-                                }
-                            }
-                        }
-
-                        if let Some(ret_ty) = return_type {
-                            if ret_ty == self.runtime_value_type.into() {
-                                let val = self
-                                    .builder
-                                    .build_load(self.runtime_value_type, ptr, "return_load")
-                                    .unwrap();
-                                Some(val)
-                            } else {
-                                let data_ptr = self
-                                    .builder
-                                    .build_struct_gep(self.runtime_value_type, ptr, 1, "data_ptr")
-                                    .unwrap();
-                                let data_val = self
-                                    .builder
-                                    .build_load(self.context.i64_type(), data_ptr, "data_load")
-                                    .unwrap()
-                                    .into_int_value();
-
-                                let casted_val: BasicValueEnum = if ret_ty.is_int_type() {
-                                    let int_type = ret_ty.into_int_type();
-                                    if int_type.get_bit_width() < 64 {
-                                        self.builder
-                                            .build_int_truncate(data_val, int_type, "truncated")
-                                            .unwrap()
-                                            .into()
-                                    } else {
-                                        data_val.into()
-                                    }
-                                } else if ret_ty.is_float_type() {
-                                    let float_type = ret_ty.into_float_type();
-                                    let f64_val = self
-                                        .builder
-                                        .build_bit_cast(
-                                            data_val,
-                                            self.context.f64_type(),
-                                            "casted_float",
-                                        )
-                                        .unwrap()
-                                        .into_float_value();
-
-                                    if float_type.get_bit_width() == 32 {
-                                        self.builder
-                                            .build_float_trunc(
-                                                f64_val,
-                                                float_type,
-                                                "truncated_float",
-                                            )
-                                            .unwrap()
-                                            .into()
-                                    } else {
-                                        f64_val.into()
-                                    }
-                                } else if ret_ty.is_pointer_type() {
-                                    let ptr_type = ret_ty.into_pointer_type();
-                                    let i8_ptr = self
-                                        .builder
-                                        .build_int_to_ptr(data_val, ptr_type, "int_to_ptr")
-                                        .unwrap()
-                                        .into();
-                                    i8_ptr
-                                } else {
-                                    return Err("Unsupported return type conversion".to_string());
-                                };
-                                Some(casted_val)
-                            }
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    };
-                    self.emit_drop_for_return(module);
-
-                    if let Some(val) = ret_val {
-                        self.builder.build_return(Some(&val)).unwrap();
-                    } else {
-                        builder_helper::create_dummy_for_no_return(self);
-                    }
+                    self.compile_return(expr_opt, module)?;
                 }
                 ast::Stmt::If {
                     cond,
