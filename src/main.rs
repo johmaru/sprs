@@ -196,7 +196,7 @@
 //! `println(b); # prints 100 as i8
 //! ```
 //!
-//! **Note:** `cast macro is more faster then normal int type, because it use i8 and u8 llvm type directly.
+//! **Note:** `cast macro is faster than normal int type, because it use i8 and u8 llvm type directly.
 //! examples:
 //! ```
 //! var i = 0; # default is i64

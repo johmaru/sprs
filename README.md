@@ -151,7 +151,7 @@ fn main() {
 
 - Control flow
 ```rust
-if x > 5 then {
+if x > 5 {
   `println("x is greater than 5");
 } else {
  `println("x is 5 or less");
@@ -198,7 +198,7 @@ var b = `cast(a, i8); # cast to i8
 `println(b); # prints 100 as i8
 ```
 
-**Note:** `cast macro is more faster then normal int type, because it use i8 and u8 llvm type directly.
+**Note:** `cast macro is faster than normal int type, because it use i8 and u8 llvm type directly.
 examples:
 ```rust
 var i = 0; # default is i64
@@ -266,11 +266,11 @@ pkg test;
            var c = "hello" + " world";
            `println(c);
 
-           if a == 3 then {
+           if a == 3 {
                return a;
            }
 
-           if a != 3 then {
+           if a != 3 {
                return a++;
            } else {
                return a + 2;
