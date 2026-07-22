@@ -1012,6 +1012,7 @@ impl<'ctx> Compiler<'ctx> {
                         Type::Any
                     }
                 }
+                "not" => Type::Bool,
                 _ => Type::Any,
             },
             ast::Expr::StructInit(name, _) => Type::Struct(name.clone()),
@@ -1389,6 +1390,7 @@ impl<'ctx> Compiler<'ctx> {
                     "cast" => builder_helper::call_builtin_macro_cast(self, args, module),
                     "lshift" => builder_helper::call_builtin_macro_lshift(self, args, module),
                     "rshift" => builder_helper::call_builtin_macro_rshift(self, args, module),
+                    "not" => builder_helper::call_builtin_macro_not(self, args, module),
                     _ => Err(format!("Unknown macro: {}", ident)),
                 }
             }

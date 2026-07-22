@@ -4406,3 +4406,55 @@ fn shift_impl<'ctx>(
     );
     Ok(result_ptr.into())
 }
+
+pub fn call_builtin_macro_not<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+    args: &Vec<ast::Expr>,
+    module: &inkwell::module::Module<'ctx>,
+) -> Result<BasicValueEnum<'ctx>, String> {
+    if args.len() != 1 {
+        return Err("`not expects 1 argument".to_string());
+    }
+
+    let value_ptr = self_compiler
+        .compile_expr(&args[0], module)?
+        .into_pointer_value();
+
+    let rvt = self_compiler.runtime_value_type;
+    let i64_type = self_compiler.context.i64_type();
+
+    let data_ptr = self_compiler
+        .builder
+        .build_struct_gep(rvt, value_ptr, 1, "not_data_ptr")
+        .unwrap();
+    let data = self_compiler
+        .builder
+        .build_load(i64_type, data_ptr, "not_data")
+        .unwrap()
+        .into_int_value();
+
+    let zero = i64_type.const_int(0, false);
+    let negated = self_compiler
+        .builder
+        .build_int_compare(
+            inkwell::IntPredicate::EQ,
+            data,
+            zero,
+            "not_result",
+        )
+        .unwrap();
+
+    let result_ptr = create_entry_block_alloca(self_compiler, "not_res");
+    self_compiler.build_runtime_value_store(
+        result_ptr,
+        StoreTag::Int(Tag::Boolean as u64),
+        StoreValue::Int(
+            self_compiler
+                .builder
+                .build_int_z_extend(negated, i64_type, "not_zext")
+                .unwrap(),
+        ),
+        "not_res_store",
+    );
+    Ok(result_ptr.into())
+}

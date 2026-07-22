@@ -227,6 +227,7 @@
 
 - **BUG-F07**: `>>` トークンが戻り値型の矢印としてのみ使われ、シフト演算子が未実装 → バッククォート前置マクロ構文 `lshift(x, 4)` / `rshift(x, 4)` を導入。`RawTok::MacroIdent` + `Token::Macro(String)` + `Expr::Macro(String, Vec<Expr>)` を追加。符号付きタグ (Integer/Int8/16/32/64) は `ashr`、符号なしタグ (Uint8/16/32/64) は `lshr`、非整数タグは `__panic` で実行時エラー。`>>` (GtGt) トークンは戻り値型矢印として維持。既存マクロ (println!/list_push!/clone!/cast!) も `println` 等のバッククォート構文に統一移行
 - **BUG-X09 (部分解消)**: `cast` マクロの戻り値型推論を `infer_type` の `Expr::Macro` 分岐に追加。第2引数の型から戻り値型を推論。`lshift`/`rshift` は第1引数の型を返す
+- **`not マクロ追加**: 論理否定マクロ `not(x)` を実装。0→1, 非0→0 の論理否定。Bool タグで結果を返す。BUG-F04 の `!` 単独トークン追加不要 (バッククォート・マクロ方式で代替)
 
 ---
 
@@ -325,17 +326,16 @@ LLVM 22.1.8 移行後のスモークテスト実装中に発見されたバグ�
 | Comparison | 12/12 | 0 | 0 | `>> i64` で 1/0 を返す形式で回避 |
 | Control Flow | 8/8 | 0 | 0 | if/else, while 正常 |
 | Variables | 6/6 | 0 | 0 | 代入, シャドウイング正常 |
-| Functions | 0/5 | 3 | 2 | `add` 関数は XFAIL, test_recursion/deep_recursion は結果不正 (期待120→実際107549842873449) |
-| Lists | 4/4 | 0 | 0 | `list_push のみ, index access は XFAIL |
-| Cast | 10/11 | 1 | 0 | 異型混合 `cast は XFAIL |
-| Float | 0/9 | 3 | 6 | `cast >> fp は XFAIL, 残り6は結果不正 (期待4.0→実際4, 異常値) |
+| Functions | 0/5 | 3 | 2 | `` `add `` 関数は XFAIL, test_recursion/deep_recursion は結果不正 (期待120→実際107549842873449) |
+| Lists | 4/4 | 0 | 0 | `` `list_push `` のみ, index access は XFAIL |
+| Cast | 10/11 | 1 | 0 | 異型混合 `` `cast `` は XFAIL |
+| Float | 0/9 | 3 | 6 | `` `cast `` >> fp は XFAIL, 残り6は結果不正 (期待4.0→実際4, 異常値) |
 | Increment | 7/7 | 0 | 0 | ++, -- 正常 |
-| Shift | 12/12 | 0 | 0 | `lshift/`rshift 正常 (符号付き ashr / 符号なし lshr / 非整数 panic) |
+| Shift | 12/12 | 0 | 0 | `` `lshift `` / `` `rshift `` 正常 (符号付き ashr / 符号なし lshr / 非整数 panic) |
+| Not | 5/5 | 0 | 0 | `` `not `` 正常 (0→1, 非0→0) |
 | Struct | 4/4 | 0 | 0 | フィールドアクセス正常 |
 | Enum | 3/3 | 0 | 0 | バリアントアクセス正常 |
-| String | 3/3 | 0 | 0 | `>> str` 関数の呼び出し・戻り値表示が正常 (X02 解消) |
-
-**合計**: 76 PASS / 7 XFAIL / 8 FAIL / 0 クラッシュ
+**合計**: 81 PASS / 7 XFAIL / 8 FAIL / 0 クラッシュ
 
 ---
 

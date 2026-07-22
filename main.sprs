@@ -468,6 +468,38 @@ fn rshift_all_bits() >> i64 {
     var v = 0 - 1;
     return `rshift(v, 63);
 }
+
+# === Not (`not macro) ===
+
+fn not_zero() >> i64 {
+    if `not(0) then { return 1; } else { return 0; }
+    return 0;
+}
+
+fn not_nonzero() >> i64 {
+    if `not(5) then { return 1; } else { return 0; }
+    return 0;
+}
+
+fn not_negative() >> i64 {
+    var v = 0 - 3;
+    if `not(v) then { return 1; } else { return 0; }
+    return 0;
+}
+
+fn not_expr() >> i64 {
+    if `not(1 + 1) then { return 1; } else { return 0; }
+    return 0;
+}
+
+fn not_in_if() >> i64 {
+    if `not(0) then {
+        return 42;
+    } else {
+        return 0;
+    }
+    return 0;
+}
 # === Float ===
 
 fn float_add() >> fp {
@@ -755,6 +787,12 @@ fn main() {
     `println(lshift_then_rshift());
     `println(shift_chain());
     `println(rshift_all_bits());
+    `println("=== Not ===");
+    `println(not_zero());
+    `println(not_nonzero());
+    `println(not_negative());
+    `println(not_expr());
+    `println(not_in_if());
     `println("=== Float ===");
     `println(float_add());
     `println(float_sub());
