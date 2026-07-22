@@ -143,7 +143,7 @@ enum RawTok {
     Num,
     #[regex(r"[ \t\r\n\f]+", logos::skip)]
     WS,
-    #[regex(r"# [^\n]*", logos::skip, allow_greedy = true)]
+    #[regex(r"#[^\n]*", logos::skip, allow_greedy = true)]
     Comment,
     #[token("true")]
     True,
