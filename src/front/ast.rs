@@ -28,7 +28,7 @@ pub enum Expr {
     ModuleAccess(String, String, Vec<Expr>), // Module, functionName, args e.g. module.ident
     FieldAccess(Box<Expr>, String),          // e.g. struct.field
     Unit(),
-    Macro(String, Vec<Expr>),                   // Ident, Args e.g. `lshift(x, 4)
+    Macro(String, Vec<Expr>),                   // Ident, Args e.g. @lshift(x, 4)
     StructInit(String, Vec<(String, Expr)>), // StructName, Fields
 
     // System types

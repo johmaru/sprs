@@ -593,7 +593,7 @@ pub fn call_builtin_macro_cast<'ctx>(
         }
         _ => {
             return Err(format!(
-                "Unsupported target type for `cast: {:?}",
+                "Unsupported target type for @cast: {:?}",
                 target_type
             ));
         }
