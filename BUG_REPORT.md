@@ -16,10 +16,6 @@
 - **原因**: `Unary` 規則が `<p: Postfix> => p` のみで、前置 `-` (negation) の規則が無い。`Expr` にも `Neg(Box<Expr>)` バリアントが存在しない。
 - **推奨修正**: `Unary` 規則に `Minus <p:Unary> => Expr::Neg(Box::new(p))` を追加し、`Expr::Neg(Box<Expr>)` を追加。compiler では `build_int_neg` で実装。
 
-#### BUG-F05: `is_int_type_in_llvm()` に浮動小数点型が含まれ、`not_int_type_in_llvm()` と矛盾 【High】
-- **ファイル**: `src/front/type_helper.rs:27-54`
-- **症状**: `Type::Float`, `TypeF16/32/64` が `is_int_type_in_llvm()` と `not_int_type_in_llvm()` の**両方**に含まれる。
-- **推奨修正**: `is_int_type_in_llvm` から浮動小数点を削除。
 
 #### BUG-F06: `FunctionParam` に型フィールドがなく、関数パラメータの型注釈が不可能 【Medium】
 - **ファイル**: `src/front/ast.rs:49-51`
@@ -169,11 +165,11 @@
 | 深刻度 | 件数 | バグ ID |
 |--------|------|--------|
 | **Critical** | 0 | — |
-| **High** | 11 | F05, F10, L01, L03, L07, L08, L14, L15, L21, M03, M04 |
+| **High** | 10 | F10, L01, L03, L07, L08, L14, L15, L21, M03, M04 |
 | **Medium** | 10 | F06, F08, F09, L04, L06, L09, L13, L16, L17, M12 |
 | **Low** | 14 | F04b, F11, F12, F13, F14, F15, L05, L24, M05, M06, M08, M09, M10, M11 |
 
-合計: 35 件 (ユニーク)。
+合計: 34 件 (ユニーク)。
 
 ---
 
@@ -214,6 +210,7 @@
 - **BUG-F01**: 数値リテラル `parse().unwrap()` で panic → `map_err` でエラー伝播
 - **BUG-F02**: 文字列リテラルのエスケープ未対応 → `unescape_sprs_string` で `\n`/`\t`/`\"`/`\\`/`\0`/`\u{XXXX}` に対応
 - **BUG-F03**: コメント正規表現 `# [^\n]*` が空白を必須にしていた → `#[^\n]*` に変更。`#comment`、`#` 単独、行末 `#` がスキップされることを確認
+- **BUG-F05**: `is_int_type_in_llvm()` に浮動小数点型が含まれ、`not_int_type_in_llvm()` と矛盾 → `is_int_type_in_llvm` から浮動小数点型を削除。`not_int_type_in_llvm` に欠落していた `Type::Float` を追加し、整数型でない全型を網羅
 
 ### X02 Critical バグ修正で解消
 

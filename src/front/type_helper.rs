@@ -35,15 +35,12 @@ pub fn is_int_type_in_llvm() -> Vec<Type> {
         Type::TypeU32,
         Type::TypeI64,
         Type::TypeU64,
-        Type::Float,
-        Type::TypeF16,
-        Type::TypeF32,
-        Type::TypeF64,
     ]
 }
 
 pub fn not_int_type_in_llvm() -> Vec<Type> {
     vec![
+        Type::Float,
         Type::TypeF16,
         Type::TypeF32,
         Type::TypeF64,
