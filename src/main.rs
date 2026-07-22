@@ -41,17 +41,17 @@
 //!  * Unit
 //!  * Enum
 //!  * Struct
-//!  * i8 (only for `cast macro)
-//!  * u8 (only for `cast macro)
-//!  * i16 (only for `cast macro)
-//!  * u16 (only for `cast macro)
-//!  * i32 (only for `cast macro)
-//!  * u32 (only for `cast macro)
-//!  * i64 (only for `cast macro)
-//!  * u64 (only for `cast macro)
-//!  * f16 (only for `cast macro)
-//!  * f32 (only for `cast macro)
-//!  * f64 (only for `cast macro)
+//!  * i8 (only for @cast macro)
+//!  * u8 (only for @cast macro)
+//!  * i16 (only for @cast macro)
+//!  * u16 (only for @cast macro)
+//!  * i32 (only for @cast macro)
+//!  * u32 (only for @cast macro)
+//!  * i64 (only for @cast macro)
+//!  * u64 (only for @cast macro)
+//!  * f16 (only for @cast macro)
+//!  * f32 (only for @cast macro)
+//!  * f64 (only for @cast macro)
 //!
 //! - Variables and assignments
 //! ```sprs
@@ -81,7 +81,7 @@
 //!
 //! fn main() {
 //!  result = add(5, 10);
-//!  `println(result);
+//!  @println(result);
 //! }
 //! ```
 //!
@@ -121,7 +121,7 @@
 //!
 //!fn main() {
 //!    # test enum
-//!    `println(Animal.Dog);
+//!    @println(Animal.Dog);
 //!
 //!    #  Will be print out from a runtime "Value[Animal.Dog]: <enum variant index 1>"
 //! }
@@ -142,17 +142,17 @@
 //!   y = 20
 //!  };
 //!
-//! `println(p.x); # prints 10
-//! `println(p.y); # prints 20
+//! @println(p.x); # prints 10
+//! @println(p.y); # prints 20
 //! }
 //! ```
 //!
 //! - Control flow
 //! ```
 //! if x > 5 {
-//!   `println("x is greater than 5");
+//!   @println("x is greater than 5");
 //! } else {
-//!  `println("x is 5 or less");
+//!  @println("x is 5 or less");
 //! }
 //!
 //! while x < 10 {
@@ -169,49 +169,49 @@
 //! * indexing: `list[index]`
 //!
 //! ###  **Built-in macros**
-//! * ``println(value)`: Print value to the console
+//! * `@println(value)`: Print value to the console
 //! examples:
 //! ```
-//! `println(y[1]);
+//! @println(y[1]);
 //! ```
-//! * ``list_push(list, value)`: Push value to the end of the list
+//! * `@list_push(list, value)`: Push value to the end of the list
 //! examples:
 //! ```
-//! `list_push(y, z);
+//! @list_push(y, z);
 //! ```
 //!
-//! * ``clone(value)`: Clone the value
+//! * `@clone(value)`: Clone the value
 //! examples:
 //! ```
 //! var a = "hello";
-//! `println(`clone(a));
+//! @println(@clone(a));
 //!
 //! ```
 //!
-//! * ``cast(value, type)`: Cast the value to the specified type
+//! * `@cast(value, type)`: Cast the value to the specified type
 //! examples:
 //! ```
 //! var a = 100; # default is i64
-//! var b = `cast(a, i8); # cast to i8
-//! `println(b); # prints 100 as i8
+//! var b = @cast(a, i8); # cast to i8
+//! @println(b); # prints 100 as i8
 //! ```
 //!
-//! **Note:** `cast macro is faster than normal int type, because it use i8 and u8 llvm type directly.
+//! **Note:** @cast macro is faster than normal int type, because it use i8 and u8 llvm type directly.
 //! examples:
 //! ```
 //! var i = 0; # default is i64
 //! while i < 5 {
-//!   `println(i); ## this is too slow for embedded and system programming environment, because it use dynamic type checking.
+//!   @println(i); ## this is too slow for embedded and system programming environment, because it use dynamic type checking.
 //!  i = i + 1;
 //! }
 //! ```
 //!
-//!  but with `cast macro
+//!  but with @cast macro
 //!```
-//! var i = `cast(0, i8); # i is i8 type
-//! while i < `cast(5, i8) {
-//!  `println(i); ## this is faster for embedded system, because it use i8 llvm type directly.
-//! i = i + `cast(1, i8);
+//! var i = @cast(0, i8); # i is i8 type
+//! while i < @cast(5, i8) {
+//!  @println(i); ## this is faster for embedded system, because it use i8 llvm type directly.
+//! i = i + @cast(1, i8);
 //! }
 //! ```
 //!
@@ -236,25 +236,25 @@
 //!           var z = 20;
 //!           var alpha = "test";
 //!           var beta = true;
-//!           `println(x);
-//!           `list_push(y, z);
-//!           `list_push(y, alpha);
-//!           `println(y[1]);
+//!           @println(x);
+//!           @list_push(y, z);
+//!           @list_push(y, alpha);
+//!           @println(y[1]);
 //!           # println(x + alpha);
 //!
 //!            # test calc
 //!              var result = (x + 10) * 2;
-//!              `println(result);
+//!              @println(result);
 //!            # test while
-//!              var i = `cast(0, i8);
+//!              var i = @cast(0, i8);
 //!                while i <= 5 {
-//!                    `println(i);
+//!                    @println(i);
 //!                    i = i + 1;
 //!                }
 //!
 //!            # test mod
 //!              var m = 10 % 3;
-//!              `println(m);
+//!              @println(m);
 //!        }
 //!
 //! ```
@@ -267,7 +267,7 @@
 //!            var a = 5 - 1;
 //!            var b = 10;
 //!            var c = "hello" + " world";
-//!            `println(c);
+//!            @println(c);
 //!
 //!            # test equality
 //!            if a == 3 {
@@ -314,9 +314,9 @@
 //!fn test() {
 //!   var test = "Hello, Sprs!"; # set a string to variable
 //!   var a = test; # move the value from test to a, test is now invalid
-//!   return `println(a); # function call with a, a is now invalid after this line
-//!   # if you don't want to move a 'a' variable, use `clone macro
-//!   `println(`clone(a)); # a is still valid after this line
+//!   return @println(a); # function call with a, a is now invalid after this line
+//!   # if you don't want to move a 'a' variable, use @clone macro
+//!   @println(@clone(a)); # a is still valid after this line
 //!}
 //!
 //! ```

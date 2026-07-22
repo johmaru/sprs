@@ -332,18 +332,18 @@ fn deep_recursion() >> i64 {
 
 fn list_push_and_print() >> i64 {
     var y = [];
-    `list_push(y, 42);
-    `list_push(y, 100);
-    `list_push(y, 200);
+    @list_push(y, 42);
+    @list_push(y, 100);
+    @list_push(y, 200);
     return 1;
 }
 
 fn list_with_vars() >> i64 {
     var y = [];
     var z = 20;
-    `list_push(y, z);
+    @list_push(y, z);
     var w = 30;
-    `list_push(y, w);
+    @list_push(y, w);
     return 1;
 }
 
@@ -351,7 +351,7 @@ fn list_build_loop() >> i64 {
     var y = [];
     var i = 0;
     while i < 5 {
-        `list_push(y, i);
+        @list_push(y, i);
         i = i + 1;
     }
     return 1;
@@ -365,135 +365,135 @@ fn list_empty() >> i64 {
 # === Cast ===
 
 fn cast_i8() >> i64 {
-    return `cast(100, i8);
+    return @cast(100, i8);
 }
 
 fn cast_u8() >> i64 {
-    return `cast(200, u8);
+    return @cast(200, u8);
 }
 
 fn cast_i16() >> i64 {
-    return `cast(1000, i16);
+    return @cast(1000, i16);
 }
 
 fn cast_u16() >> i64 {
-    return `cast(50000, u16);
+    return @cast(50000, u16);
 }
 
 fn cast_i32() >> i64 {
-    return `cast(100000, i32);
+    return @cast(100000, i32);
 }
 
 fn cast_u32() >> i64 {
-    return `cast(3000000000, u32);
+    return @cast(3000000000, u32);
 }
 
 fn cast_i64() >> i64 {
-    return `cast(999999999999, i64);
+    return @cast(999999999999, i64);
 }
 
 fn cast_u64() >> i64 {
-    return `cast(99999999999, u64);
+    return @cast(99999999999, u64);
 }
 
 fn cast_arithmetic() >> i64 {
-    return `cast(10, i32) + `cast(5, i32);
+    return @cast(10, i32) + @cast(5, i32);
 }
 
 fn cast_loop() >> i64 {
-    var i = `cast(0, i8);
+    var i = @cast(0, i8);
     var count = 0;
-    while i < `cast(5, i8) {
+    while i < @cast(5, i8) {
         count = count + 1;
-        i = i + `cast(1, i8);
+        i = i + @cast(1, i8);
     }
     return count;
 }
 
-# XFAIL: `cast + `cast with different types (infer_type Call bug)
-# fn cast_mixed() >> i64 { return `cast(1, i8) + `cast(2, i16) + `cast(3, i32); }
+# XFAIL: @cast + @cast with different types (infer_type Call bug)
+# fn cast_mixed() >> i64 { return @cast(1, i8) + @cast(2, i16) + @cast(3, i32); }
 
 
 # === Shift (lshift/rshift macros) ===
 
 fn lshift_basic() >> i64 {
-    return `lshift(1, 4);
+    return @lshift(1, 4);
 }
 
 fn lshift_zero() >> i64 {
-    return `lshift(100, 0);
+    return @lshift(100, 0);
 }
 
 fn lshift_large() >> i64 {
-    return `lshift(1, 20);
+    return @lshift(1, 20);
 }
 
 fn rshift_basic() >> i64 {
-    return `rshift(256, 4);
+    return @rshift(256, 4);
 }
 
 fn rshift_zero() >> i64 {
-    return `rshift(100, 0);
+    return @rshift(100, 0);
 }
 
 fn rshift_to_zero() >> i64 {
-    return `rshift(1, 4);
+    return @rshift(1, 4);
 }
 
 fn shift_with_vars() >> i64 {
     var v = 16;
     var n = 2;
-    return `lshift(v, n);
+    return @lshift(v, n);
 }
 
 fn shift_in_expr() >> i64 {
-    return `lshift(1, 4) + `rshift(256, 4);
+    return @lshift(1, 4) + @rshift(256, 4);
 }
 
 fn rshift_signed_negative() >> i64 {
     var neg = 0 - 8;
-    return `rshift(neg, 2);
+    return @rshift(neg, 2);
 }
 
 fn lshift_then_rshift() >> i64 {
     var x = 3;
-    return `rshift(`lshift(x, 4), 2);
+    return @rshift(@lshift(x, 4), 2);
 }
 
 fn shift_chain() >> i64 {
-    return `lshift(`rshift(`lshift(255, 8), 4), 2);
+    return @lshift(@rshift(@lshift(255, 8), 4), 2);
 }
 
 fn rshift_all_bits() >> i64 {
     var v = 0 - 1;
-    return `rshift(v, 63);
+    return @rshift(v, 63);
 }
 
-# === Not (`not macro) ===
+# === Not (@not macro) ===
 
 fn not_zero() >> i64 {
-    if `not(0) { return 1; } else { return 0; }
+    if @not(0) { return 1; } else { return 0; }
     return 0;
 }
 
 fn not_nonzero() >> i64 {
-    if `not(5) { return 1; } else { return 0; }
+    if @not(5) { return 1; } else { return 0; }
     return 0;
 }
 
 fn not_negative() >> i64 {
     var v = 0 - 3;
-    if `not(v) { return 1; } else { return 0; }
+    if @not(v) { return 1; } else { return 0; }
     return 0;
 }
 
 fn not_expr() >> i64 {
-    if `not(1 + 1) { return 1; } else { return 0; }
+    if @not(1 + 1) { return 1; } else { return 0; }
     return 0;
 }
 
 fn not_in_if() >> i64 {
-    if `not(0) {
+    if @not(0) {
         return 42;
     } else {
         return 0;
@@ -529,17 +529,17 @@ fn float_var_arith() >> fp {
     return a + b;
 }
 
-# XFAIL: >> fp + `cast return (infer_type `cast bug)
-# fn float_cast_f16() >> fp { return `cast(1.5, fp16); }
-# fn float_cast_f32() >> fp { return `cast(3.14, fp32); }
-# fn float_cast_f64() >> fp { return `cast(2.71828, fp64); }
+# XFAIL: >> fp + @cast return (infer_type @cast bug)
+# fn float_cast_f16() >> fp { return @cast(1.5, fp16); }
+# fn float_cast_f32() >> fp { return @cast(3.14, fp32); }
+# fn float_cast_f64() >> fp { return @cast(2.71828, fp64); }
 
 fn float_while_loop() >> i64 {
-    var v = `cast(0.0, fp16);
+    var v = @cast(0.0, fp16);
     var count = 0;
-    while v < `cast(1.0, fp16) {
+    while v < @cast(1.0, fp16) {
         count = count + 1;
-        v = v + `cast(0.25, fp16);
+        v = v + @cast(0.25, fp16);
     }
     return count;
 }
@@ -566,9 +566,9 @@ fn get_static_str() >> str {
 
 fn call_str_fn() >> i64 {
     var s = get_greeting();
-    `println(s);
+    @println(s);
     var s2 = get_static_str();
-    `println(s2);
+    @println(s2);
     return 1;
 }
 
@@ -691,150 +691,150 @@ fn enum_multiple() >> i64 {
 
 fn enum_in_list() >> i64 {
     var y = [];
-    `list_push(y, Color.Green);
+    @list_push(y, Color.Green);
     return 1;
 }
 
 # === Main ===
 
 fn main() {
-    `println("=== Arithmetic ===");
-    `println(add_basic());
-    `println(sub_basic());
-    `println(mul_basic());
-    `println(div_basic());
-    `println(mod_basic());
-    `println(neg_sub());
-    `println(complex_expr());
-    `println(precedence());
-    `println(all_ops());
-    `println(chained());
-    `println(zero_div_pattern());
-    `println(large_numbers());
-    `println(sub_to_zero());
+    @println("=== Arithmetic ===");
+    @println(add_basic());
+    @println(sub_basic());
+    @println(mul_basic());
+    @println(div_basic());
+    @println(mod_basic());
+    @println(neg_sub());
+    @println(complex_expr());
+    @println(precedence());
+    @println(all_ops());
+    @println(chained());
+    @println(zero_div_pattern());
+    @println(large_numbers());
+    @println(sub_to_zero());
 
-    `println("=== Comparison ===");
-    `println(eq_true());
-    `println(eq_false());
-    `println(neq_true());
-    `println(neq_false());
-    `println(lt_true());
-    `println(lt_false());
-    `println(gt_true());
-    `println(gt_false());
-    `println(le_true());
-    `println(le_false());
-    `println(ge_true());
-    `println(ge_false());
+    @println("=== Comparison ===");
+    @println(eq_true());
+    @println(eq_false());
+    @println(neq_true());
+    @println(neq_false());
+    @println(lt_true());
+    @println(lt_false());
+    @println(gt_true());
+    @println(gt_false());
+    @println(le_true());
+    @println(le_false());
+    @println(ge_true());
+    @println(ge_false());
 
-    `println("=== Control Flow ===");
-    `println(if_then());
-    `println(if_else());
-    `println(if_elseif_chain());
-    `println(while_basic());
-    `println(nested_if());
-    `println(while_with_if());
-    `println(if_returns_early());
-    `println(while_counter());
+    @println("=== Control Flow ===");
+    @println(if_then());
+    @println(if_else());
+    @println(if_elseif_chain());
+    @println(while_basic());
+    @println(nested_if());
+    @println(while_with_if());
+    @println(if_returns_early());
+    @println(while_counter());
 
-    `println("=== Variables ===");
-    `println(var_assign());
-    `println(var_reassign());
-    `println(multiple_vars());
-    `println(var_shadow());
-    `println(var_in_loop());
-    `println(var_math());
+    @println("=== Variables ===");
+    @println(var_assign());
+    @println(var_reassign());
+    @println(multiple_vars());
+    @println(var_shadow());
+    @println(var_in_loop());
+    @println(var_math());
 
-    `println("=== Functions ===");
+    @println("=== Functions ===");
     # XFAIL: call_with_args (Var+Var in add function)
     # XFAIL: nested_calls (uses add)
     # XFAIL: function_with_locals (uses add)
-    `println(call_private());
-    `println(test_recursion());
-    `println(test_fib());
-    `println(early_return());
-    `println(deep_recursion());
+    @println(call_private());
+    @println(test_recursion());
+    @println(test_fib());
+    @println(early_return());
+    @println(deep_recursion());
 
-    `println("=== Lists ===");
-    `println(list_push_and_print());
-    `println(list_with_vars());
-    `println(list_build_loop());
-    `println(list_empty());
+    @println("=== Lists ===");
+    @println(list_push_and_print());
+    @println(list_with_vars());
+    @println(list_build_loop());
+    @println(list_empty());
 
-    `println("=== Cast ===");
-    `println(cast_i8());
-    `println(cast_u8());
-    `println(cast_i16());
-    `println(cast_u16());
-    `println(cast_i32());
-    `println(cast_u32());
-    `println(cast_i64());
-    `println(cast_u64());
-    `println(cast_arithmetic());
-    `println(cast_loop());
-    # `println(cast_mixed());
+    @println("=== Cast ===");
+    @println(cast_i8());
+    @println(cast_u8());
+    @println(cast_i16());
+    @println(cast_u16());
+    @println(cast_i32());
+    @println(cast_u32());
+    @println(cast_i64());
+    @println(cast_u64());
+    @println(cast_arithmetic());
+    @println(cast_loop());
+    # @println(cast_mixed());
     # XFAIL: cast_mixed (infer_type Call bug)
-    `println("=== Shift ===");
-    `println(lshift_basic());
-    `println(lshift_zero());
-    `println(lshift_large());
-    `println(rshift_basic());
-    `println(rshift_zero());
-    `println(rshift_to_zero());
-    `println(shift_with_vars());
-    `println(shift_in_expr());
-    `println(rshift_signed_negative());
-    `println(lshift_then_rshift());
-    `println(shift_chain());
-    `println(rshift_all_bits());
-    `println("=== Not ===");
-    `println(not_zero());
-    `println(not_nonzero());
-    `println(not_negative());
-    `println(not_expr());
-    `println(not_in_if());
-    `println("=== Float ===");
-    `println(float_add());
-    `println(float_sub());
-    `println(float_mul());
-    `println(float_div());
-    `println(float_complex());
-    `println(float_var_arith());
-    # XFAIL: `cast >> fp (infer_type bug)
-    # `println(float_cast_f16());
-    # `println(float_cast_f32());
-    # `println(float_cast_f64());
-    `println(float_while_loop());
-    `println(float_nested());
-    `println(float_mixed());
-    `println("=== String ===");
-    `println(call_str_fn());
-    `println(get_greeting());
-    `println(get_static_str());
+    @println("=== Shift ===");
+    @println(lshift_basic());
+    @println(lshift_zero());
+    @println(lshift_large());
+    @println(rshift_basic());
+    @println(rshift_zero());
+    @println(rshift_to_zero());
+    @println(shift_with_vars());
+    @println(shift_in_expr());
+    @println(rshift_signed_negative());
+    @println(lshift_then_rshift());
+    @println(shift_chain());
+    @println(rshift_all_bits());
+    @println("=== Not ===");
+    @println(not_zero());
+    @println(not_nonzero());
+    @println(not_negative());
+    @println(not_expr());
+    @println(not_in_if());
+    @println("=== Float ===");
+    @println(float_add());
+    @println(float_sub());
+    @println(float_mul());
+    @println(float_div());
+    @println(float_complex());
+    @println(float_var_arith());
+    # XFAIL: @cast >> fp (infer_type bug)
+    # @println(float_cast_f16());
+    # @println(float_cast_f32());
+    # @println(float_cast_f64());
+    @println(float_while_loop());
+    @println(float_nested());
+    @println(float_mixed());
+    @println("=== String ===");
+    @println(call_str_fn());
+    @println(get_greeting());
+    @println(get_static_str());
 
-    `println("=== Increment ===");
-    `println(incr_basic());
-    `println(decr_basic());
-    `println(incr_in_loop());
-    `println(decr_in_loop());
-    `println(incr_multiple());
-    `println(decr_to_zero());
-    `println(incr_and_use());
+    @println("=== Increment ===");
+    @println(incr_basic());
+    @println(decr_basic());
+    @println(incr_in_loop());
+    @println(decr_in_loop());
+    @println(incr_multiple());
+    @println(decr_to_zero());
+    @println(incr_and_use());
 
-    `println("=== Struct ===");
-    `println(struct_create_x());
-    `println(struct_create_y());
-    `println(struct_both_fields());
-    `println(struct_in_function());
+    @println("=== Struct ===");
+    @println(struct_create_x());
+    @println(struct_create_y());
+    @println(struct_both_fields());
+    @println(struct_in_function());
 
-    `println("=== Enum ===");
-    `println(enum_access());
-    `println(enum_multiple());
-    `println(enum_in_list());
+    @println("=== Enum ===");
+    @println(enum_access());
+    @println(enum_multiple());
+    @println(enum_in_list());
 
     # XFAIL: Strings (>> str segfaults — Type::Str ptr bug)
     # XFAIL: list[index] (create_index StructValue panic)
     # XFAIL: return var (move semantics resets tag to Unit)
 
-    `println("=== All Tests Done ===");
+    @println("=== All Tests Done ===");
 }

@@ -42,7 +42,7 @@ pub fn init_project(mut name: Option<&str>) -> Result<(), Box<dyn std::error::Er
     std::fs::create_dir_all("src")?;
 
     let default_code = r#"fn main() {
-    `println("Hello, Sprs!");
+    @println("Hello, Sprs!");
 }
 "#;
     let mut src_file = File::create("src/main.sprs")?;

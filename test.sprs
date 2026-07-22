@@ -5,7 +5,7 @@ pub fn test() >> str {
             var b = 10;
             var c = "hello" + " world";
 
-            `println(c);
+            @println(c);
 
             # test equality
 

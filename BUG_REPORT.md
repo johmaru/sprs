@@ -195,11 +195,11 @@
 
 - **BUG-X02**: `Type::Str` の戻り値型が `ptr` でコード生成され segfault → `declare_fn_prototype` で `Type::Str` を `runtime_value_type` に変更。`register_struct` 側は `create_field_access`/`create_struct_init` が i64 slab handle として扱うため `ptr` のまま維持。`main.sprs` に `>> str` 関数の呼び出しテスト (`get_greeting`, `get_static_str`, `call_str_fn`) を追加し segfault 解消を確認
 
-### バッククォート・マクロ構文導入で解消
+### @ マクロ構文導入で解消
 
-- **BUG-F07**: `>>` トークンが戻り値型の矢印としてのみ使われ、シフト演算子が未実装 → バッククォート前置マクロ構文 `lshift(x, 4)` / `rshift(x, 4)` を導入。`RawTok::MacroIdent` + `Token::Macro(String)` + `Expr::Macro(String, Vec<Expr>)` を追加。符号付きタグ (Integer/Int8/16/32/64) は `ashr`、符号なしタグ (Uint8/16/32/64) は `lshr`、非整数タグは `__panic` で実行時エラー。`>>` (GtGt) トークンは戻り値型矢印として維持。既存マクロ (println!/list_push!/clone!/cast!) も `println` 等のバッククォート構文に統一移行
+- **BUG-F07**: `>>` トークンが戻り値型の矢印としてのみ使われ、シフト演算子が未実装 → @ 前置マクロ構文 `lshift(x, 4)` / `rshift(x, 4)` を導入。`RawTok::MacroIdent` + `Token::Macro(String)` + `Expr::Macro(String, Vec<Expr>)` を追加。符号付きタグ (Integer/Int8/16/32/64) は `ashr`、符号なしタグ (Uint8/16/32/64) は `lshr`、非整数タグは `__panic` で実行時エラー。`>>` (GtGt) トークンは戻り値型矢印として維持。既存マクロ (println!/list_push!/clone!/cast!) も `@println` 等の @ 構文に統一移行
 - **BUG-X09 (部分解消)**: `cast` マクロの戻り値型推論を `infer_type` の `Expr::Macro` 分岐に追加。第2引数の型から戻り値型を推論。`lshift`/`rshift` は第1引数の型を返す
-- **BUG-F04 解消**: 論理否定を `not(x)` マクロで実装。0→1, 非0→0 の論理否定。Bool タグで結果を返す。`!` 単独トークン (`Not` / `Expr::Not`) は追加せず、バッククォート・マクロ方式で代替。`!?` 正規表現は既存マクロ構文のために維持
+- **BUG-F04 解消**: 論理否定を `not(x)` マクロで実装。0→1, 非0→0 の論理否定。Bool タグで結果を返す。`!` 単独トークン (`Not` / `Expr::Not`) は追加せず、@ マクロ方式で代替。`!?` 正規表現は既存マクロ構文のために維持
 
 ### コード整理で解消
 
@@ -291,7 +291,7 @@ LLVM 22.1.8 移行後のスモークテスト実装中に発見されたバグ�
 ### X09: `cast` の戻り値型推論 (部分解消) 【Low】
 
 - **ファイル**: `src/llvm/codegen.rs` (infer_type Macro 分岐)
-- **症状**: `>> fp` で `return `cast(1.5, fp16)` と書くと `Type mismatch: Function expects Float type but got Any` エラー。`>> i64` で `` `cast(1, i8) + `cast(2, i16) `` の異型混合も panic
+- **症状**: `>> fp` で `return @cast(1.5, fp16)` と書くと `Type mismatch: Function expects Float type but got Any` エラー。`>> i64` で `` @cast(1, i8) + @cast(2, i16) `` の異型混合も panic
 - **原因**: `cast` が `Expr::Macro("cast", ...)` として処理されるが、`infer_type` に `Expr::Macro` 分岐が存在しなかった
 - **影響**: `cast` の結果を `>> fp` や異型混合で return できない。同じ型同士の cast 同士の演算は正常動作
 - **対応状況**: `infer_type` に `Expr::Macro` 分岐を追加し、`cast` は第2引数の型を推論するよう実装。ただし `>> fp` 戻り値自体の表示バグ (X08) が未解決のため、`cast` の `>> fp` return はまだ XFAIL。異型混合の加算は X07 (Var+Var) が未解決のため未検証
@@ -306,16 +306,16 @@ LLVM 22.1.8 移行後のスモークテスト実装中に発見されたバグ�
 | Comparison | 12/12 | 0 | 0 | `>> i64` で 1/0 を返す形式で回避 |
 | Control Flow | 8/8 | 0 | 0 | if/else, while 正常 |
 | Variables | 6/6 | 0 | 0 | 代入, シャドウイング正常 |
-| Functions | 0/5 | 3 | 2 | `` `add `` 関数は XFAIL, test_recursion/deep_recursion は結果不正 (期待120→実際107549842873449) |
-| Lists | 4/4 | 0 | 0 | `` `list_push `` のみ, index access は XFAIL |
-| Cast | 10/11 | 1 | 0 | 異型混合 `` `cast `` は XFAIL |
-| Float | 0/9 | 3 | 6 | `` `cast `` >> fp は XFAIL, 残り6は結果不正 (期待4.0→実際4, 異常値) |
+| Functions | 0/5 | 3 | 2 | `` @add `` 関数は XFAIL, test_recursion/deep_recursion は結果不正 (期待120→実際107549842873449) |
+| Lists | 4/4 | 0 | 0 | `` @list_push `` のみ, index access は XFAIL |
+| Cast | 10/11 | 1 | 0 | 異型混合 `` @cast `` は XFAIL |
+| Float | 0/9 | 3 | 6 | `` @cast `` >> fp は XFAIL, 残り6は結果不正 (期待4.0→実際4, 異常値) |
 | Increment | 7/7 | 0 | 0 | ++, -- 正常 |
-| Shift | 12/12 | 0 | 0 | `` `lshift `` / `` `rshift `` 正常 (符号付き ashr / 符号なし lshr / 非整数 panic) |
-| Not | 5/5 | 0 | 0 | `` `not `` 正常 (0→1, 非0→0) |
+| Shift | 12/12 | 0 | 0 | `` @lshift `` / `` @rshift `` 正常 (符号付き ashr / 符号なし lshr / 非整数 panic) |
+| Not | 5/5 | 0 | 0 | `` @not `` 正常 (0→1, 非0→0) |
 | Struct | 4/4 | 0 | 0 | フィールドアクセス正常 |
 | Enum | 3/3 | 0 | 0 | バリアントアクセス正常 |
-| String | 3/3 | 0 | 0 | `` `>> str `` 関数の呼び出し・戻り値表示が正常 (X02 解消) |
+| String | 3/3 | 0 | 0 | `` @>> str `` 関数の呼び出し・戻り値表示が正常 (X02 解消) |
 
 **合計**: 87 PASS / 7 XFAIL / 8 FAIL / 0 クラッシュ
 

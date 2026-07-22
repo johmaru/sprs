@@ -45,17 +45,17 @@ For this language development environment setup is WSL2(Ubuntu) + VSCode is reco
  * Unit
  * Enum
  * Struct
- * i8 (only for `cast macro)
- * u8 (only for `cast macro)
- * i16 (only for `cast macro)
- * u16 (only for `cast macro)
- * i32 (only for `cast macro)
- * u32 (only for `cast macro)
- * i64 (only for `cast macro)
- * u64 (only for `cast macro)
- * f16 (only for `cast macro)
- * f32 (only for `cast macro)
- * f64 (only for `cast macro)
+ * i8 (only for @cast macro)
+ * u8 (only for @cast macro)
+ * i16 (only for @cast macro)
+ * u16 (only for @cast macro)
+ * i32 (only for @cast macro)
+ * u32 (only for @cast macro)
+ * i64 (only for @cast macro)
+ * u64 (only for @cast macro)
+ * f16 (only for @cast macro)
+ * f32 (only for @cast macro)
+ * f64 (only for @cast macro)
 
 - Variables and assignments
 ```sprs
@@ -85,7 +85,7 @@ fn add(a, b) {
 
 fn main() {
  result = add(5, 10);
- `println(result);
+ @println(result);
 }
 ```
 
@@ -124,7 +124,7 @@ pub enum Animal {
 }
 
 fn main() {
-   `println(Animal.Dog);
+   @println(Animal.Dog);
 
 }
 
@@ -144,17 +144,17 @@ fn main() {
   y = 20
  };
 
-`println(p.x); # prints 10
-`println(p.y); # prints 20
+@println(p.x); # prints 10
+@println(p.y); # prints 20
 }
 ```
 
 - Control flow
 ```rust
 if x > 5 {
-  `println("x is greater than 5");
+  @println("x is greater than 5");
 } else {
- `println("x is 5 or less");
+ @println("x is 5 or less");
 }
 
 while x < 10 {
@@ -171,49 +171,49 @@ while x < 10 {
 * indexing: `list[index]`
 
 ####  **Built-in macros**
-* ``println(value)`: Print value to the console
+* `@println(value)`: Print value to the console
 examples:
 ```rust
-`println(y[1]);
+@println(y[1]);
 ```
-* ``list_push(list, value)`: Push value to the end of the list
+* `@list_push(list, value)`: Push value to the end of the list
 examples:
 ```rust
-`list_push(y, z);
+@list_push(y, z);
 ```
 
-* ``clone(value)`: Clone the value
+* `@clone(value)`: Clone the value
 examples:
 ```rust
 var a = "hello";
-`println(`clone(a));
+@println(@clone(a));
 
 ```
 
-* ``cast(value, type)`: Cast the value to the specified type
+* `@cast(value, type)`: Cast the value to the specified type
 examples:
 ```rust
 var a = 100; # default is i64
-var b = `cast(a, i8); # cast to i8
-`println(b); # prints 100 as i8
+var b = @cast(a, i8); # cast to i8
+@println(b); # prints 100 as i8
 ```
 
-**Note:** `cast macro is faster than normal int type, because it use i8 and u8 llvm type directly.
+**Note:** @cast macro is faster than normal int type, because it use i8 and u8 llvm type directly.
 examples:
 ```rust
 var i = 0; # default is i64
 while i < 5 {
-  `println(i); ## this is too slow for embedded and system programming environment, because it use dynamic type checking.
+  @println(i); ## this is too slow for embedded and system programming environment, because it use dynamic type checking.
  i = i + 1;
 }
 ```
 
- but with `cast macro
+ but with @cast macro
 ```rust
-var i = `cast(0, i8); # i is i8 type
-while i < `cast(5, i8) {
- `println(i); ## this is faster for embedded system, because it use i8 llvm type directly.
-i = i + `cast(1, i8);
+var i = @cast(0, i8); # i is i8 type
+while i < @cast(5, i8) {
+ @println(i); ## this is faster for embedded system, because it use i8 llvm type directly.
+i = i + @cast(1, i8);
 }
 ```
 
@@ -237,21 +237,21 @@ import test;
           var z = 20;
           var alpha = "test";
           var beta = true;
-          `println(x);
-          `list_push(y, z);
-          `list_push(y, alpha);
-          `println(y[1]);
+          @println(x);
+          @list_push(y, z);
+          @list_push(y, alpha);
+          @println(y[1]);
 
              var result = (x + 10) * 2;
-             `println(result);
-             var i = `cast(0, i8);
+             @println(result);
+             var i = @cast(0, i8);
                while i <= 5 {
-                   `println(i);
+                   @println(i);
                    i = i + 1;
                }
 
              var m = 10 % 3;
-             `println(m);
+             @println(m);
        }
 
 ```
@@ -264,7 +264,7 @@ pkg test;
            var a = 5 - 1;
            var b = 10;
            var c = "hello" + " world";
-           `println(c);
+           @println(c);
 
            if a == 3 {
                return a;
@@ -310,8 +310,8 @@ fn main() {
 fn test() {
   var test = "Hello, Sprs!"; # set a string to variable
   var a = test; # move the value from test to a, test is now invalid
-  return `println(a); # function call with a, a is now invalid after this line
-  `println(`clone(a)); # a is still valid after this line
+  return @println(a); # function call with a, a is now invalid after this line
+  @println(@clone(a)); # a is still valid after this line
 }
 
 ```

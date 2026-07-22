@@ -107,7 +107,7 @@ pub fn call_builtin_macro_clone<'ctx>(
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
     if args.len() != 1 {
-        return Err("`clone expects 1 argument".to_string());
+        return Err("@clone expects 1 argument".to_string());
     }
     let arg_ptr = self_compiler
         .compile_expr(&args[0], module)?
@@ -169,7 +169,7 @@ pub fn call_builtin_macro_cast<'ctx>(
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
     if args.len() != 2 {
-        return Err("`cast expects 2 arguments".to_string());
+        return Err("@cast expects 2 arguments".to_string());
     }
 
     let value_ptr = self_compiler
@@ -193,7 +193,7 @@ pub fn call_builtin_macro_cast<'ctx>(
         ast::Expr::TypeF64 => "fp64",
         _ => {
             return Err(format!(
-                "`cast second argument must be a type identifier : {:?}",
+                "@cast second argument must be a type identifier : {:?}",
                 target_type_expr
             ));
         }
@@ -615,7 +615,7 @@ pub fn call_builtin_macro_lshift<'ctx>(
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
     if args.len() != 2 {
-        return Err("`lshift expects 2 arguments (value, shift_amount)".to_string());
+        return Err("@lshift expects 2 arguments (value, shift_amount)".to_string());
     }
     shift_impl(self_compiler, args, module, ShiftDir::Left)
 }
@@ -626,7 +626,7 @@ pub fn call_builtin_macro_rshift<'ctx>(
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
     if args.len() != 2 {
-        return Err("`rshift expects 2 arguments (value, shift_amount)".to_string());
+        return Err("@rshift expects 2 arguments (value, shift_amount)".to_string());
     }
     shift_impl(self_compiler, args, module, ShiftDir::Right)
 }
@@ -765,8 +765,8 @@ fn shift_impl<'ctx>(
         // Error: non-integer tag — call __panic
         self_compiler.builder.position_at_end(bb_err);
         let err_msg: &'static str = match dir {
-            ShiftDir::Left => "`lshift expects an integer value",
-            ShiftDir::Right => "`rshift expects an integer value",
+            ShiftDir::Left => "@lshift expects an integer value",
+            ShiftDir::Right => "@rshift expects an integer value",
         };
         let settings = PanicErrorSettings {
             is_const: true,
@@ -811,7 +811,7 @@ pub fn call_builtin_macro_not<'ctx>(
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
     if args.len() != 1 {
-        return Err("`not expects 1 argument".to_string());
+        return Err("@not expects 1 argument".to_string());
     }
 
     let value_ptr = self_compiler

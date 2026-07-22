@@ -130,7 +130,7 @@ enum RawTok {
     Else,
     #[token("while")]
     While,
-    #[regex(r"`[A-Za-z_][A-Za-z0-9_]*", |lex| lex.slice()[1..].to_string())]
+    #[regex(r"@[A-Za-z_][A-Za-z0-9_]*", |lex| lex.slice()[1..].to_string())]
     MacroIdent(String),
     #[regex(r"[A-Za-z_][A-Za-z0-9_]*!?")]
     Ident,
