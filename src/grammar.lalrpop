@@ -125,14 +125,6 @@ EnumDef: Enum =
         }
     };
 
-    IdentList: Vec<String> = {
-    => vec![],
-    <first:Ident> <rest:(Comma <Ident>)*> => {
-        let mut v = vec![first];
-        v.extend(rest);
-        v
-    }
-};
 
 StructDef: Struct =
     <is_pub:PublicKw> Struct <name:Ident> LBrace <fields:StructFieldList> RBrace => {
@@ -185,14 +177,6 @@ EnumVariantTail: Vec<String> = {
     }
 };
 
-MoreStructFields: Vec<StructField> = {
-    => vec![],
-    Comma <p:StructFieldNode> <mut rest:MoreStructFields> => {
-        let mut v = vec![p];
-        v.append(&mut rest);
-        v
-    }
-};
 FieldType: Type = {
     GtGt <t:Type> => t,
 };
@@ -329,10 +313,6 @@ StmtTail: Option<Expr> = {
     Assign <e:Expr> Semi => Some(e),
 };
 
-VarDecls: Vec<VarDecl> = {
-    => vec![],
-    <v:VarDecl> <mut rest:VarDecls> => { rest.insert(0, v); rest }
-};
 
 VarDecl: VarDecl = {
  Var <id:Ident> Assign <e:Expr> Semi => VarDecl { ident: id, expr: Some(e) },
@@ -368,103 +348,6 @@ BooleanLiteral: bool = {
     FALSE => false,
 };
 
-I8Literal: i8 = {
-    <tok:TypeI8> => {
-        match tok {
-            Token::TypeI8 => 0, // Placeholder value
-            _ => unreachable!(),
-        }
-    }
-};
-
-U8Literal: u8 = {
-    <tok:TypeU8> => {
-        match tok {
-            Token::TypeU8 => 0, // Placeholder value
-            _ => unreachable!(),
-        }
-    }
-};
-
-I16Literal: i16 = {
-    <tok:TypeI16> => {
-        match tok {
-            Token::TypeI16 => 0, // Placeholder value
-            _ => unreachable!(),
-        }
-    }
-};
-U16Literal: u16 = {
-    <tok:TypeU16> => {
-        match tok {
-            Token::TypeU16 => 0, // Placeholder value
-            _ => unreachable!(),
-        }
-    }
-};
-
-I32Literal: i32 = {
-    <tok:TypeI32> => {
-        match tok {
-            Token::TypeI32 => 0, // Placeholder value
-            _ => unreachable!(),
-        }
-    }
-};
-
-U32Literal: u32 = {
-    <tok:TypeU32> => {
-        match tok {
-            Token::TypeU32 => 0, // Placeholder value
-            _ => unreachable!(),
-        }
-    }
-};
-
-I64Literal: i64 = {
-    <tok:TypeI64> => {
-        match tok {
-            Token::TypeI64 => 0, // Placeholder value
-            _ => unreachable!(),
-        }
-    }
-};
-
-U64Literal: u64 = {
-    <tok:TypeU64> => {
-        match tok {
-            Token::TypeU64 => 0, // Placeholder value
-            _ => unreachable!(),
-        }
-    }
-};
-
-F16Literal: f16 = {
-    <tok:TypeF16> => {
-        match tok {
-            Token::TypeF16 => f16::from_f64(0.0), // Placeholder value
-            _ => unreachable!(),
-        }
-    }
-};
-
-F32Literal: f32 = {
-    <tok:TypeF32> => {
-        match tok {
-            Token::TypeF32 => 0.0, // Placeholder value
-            _ => unreachable!(),
-        }
-    }
-};
-
-F64Literal: f64 = {
-    <tok:TypeF64> => {
-        match tok {
-            Token::TypeF64 => 0.0, // Placeholder value
-            _ => unreachable!(),
-        }
-    }
-};
 
 Expr: Expr = RangeExpr;
 

@@ -11,21 +11,10 @@ pub struct ProjectConfig {
 }
 
 pub fn get_all_arguments(args: Vec<String>) -> Vec<String> {
-    let mut all_args = Vec::new();
-    let mut skip_next = false;
-
-    for (_idx, arg) in args.iter().enumerate() {
-        if skip_next {
-            skip_next = false;
-            continue;
-        }
-
-        if arg.starts_with("--") {
-            all_args.push(arg.clone());
-        }
-    }
-
-    all_args
+    args.iter()
+        .filter(|arg| arg.starts_with("--"))
+        .cloned()
+        .collect()
 }
 
 pub fn init_project(mut name: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {

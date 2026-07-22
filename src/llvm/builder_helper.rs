@@ -8,7 +8,7 @@ use inkwell::{
 use crate::{
     front::ast,
     llvm::compiler::{
-        Compiler, StoreTag, StoreValue, StrConstantAction, StrConstantResult, StrValue, Tag,
+        Compiler, StoreTag, StoreValue, StrConstantResult, Tag,
     },
 };
 
@@ -147,8 +147,7 @@ pub fn create_panic_err<'ctx>(
 ) -> Result<(), String> {
     let global = self_compiler.set_global_constant_str(
         module,
-        StrValue::Get(message),
-        StrConstantAction::Get,
+        message,
         settings.is_global,
         settings.is_const,
     );
@@ -633,170 +632,32 @@ pub fn create_bool<'ctx>(
     Ok(ptr.into())
 }
 
-pub fn create_int8<'ctx>(
+pub fn create_typed_zero<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
+    tag: Tag,
+    name: &str,
 ) -> Result<BasicValueEnum<'ctx>, String> {
-    let ptr = create_entry_block_alloca(self_compiler, "int8_alloc");
-
+    let ptr = create_entry_block_alloca(self_compiler, &format!("{}_alloc", name));
     self_compiler.build_runtime_value_store(
         ptr,
-        StoreTag::Int(Tag::Int8 as u64),
+        StoreTag::Int(tag as u64),
         StoreValue::Int(self_compiler.context.i64_type().const_int(0, false)),
-        "int8",
+        name,
     );
-
     Ok(ptr.into())
 }
 
-pub fn create_uint8<'ctx>(
-    self_compiler: &mut Compiler<'ctx>,
-) -> Result<BasicValueEnum<'ctx>, String> {
-    let ptr = create_entry_block_alloca(self_compiler, "uint8_alloc");
-
-    self_compiler.build_runtime_value_store(
-        ptr,
-        StoreTag::Int(Tag::Uint8 as u64),
-        StoreValue::Int(self_compiler.context.i64_type().const_int(0, false)),
-        "uint8",
-    );
-
-    Ok(ptr.into())
-}
-
-pub fn create_int16<'ctx>(
-    self_compiler: &mut Compiler<'ctx>,
-) -> Result<BasicValueEnum<'ctx>, String> {
-    let ptr = create_entry_block_alloca(self_compiler, "int16_alloc");
-
-    self_compiler.build_runtime_value_store(
-        ptr,
-        StoreTag::Int(Tag::Int16 as u64),
-        StoreValue::Int(self_compiler.context.i64_type().const_int(0, false)),
-        "int16",
-    );
-
-    Ok(ptr.into())
-}
-
-pub fn create_uint16<'ctx>(
-    self_compiler: &mut Compiler<'ctx>,
-) -> Result<BasicValueEnum<'ctx>, String> {
-    let ptr = create_entry_block_alloca(self_compiler, "uint16_alloc");
-
-    self_compiler.build_runtime_value_store(
-        ptr,
-        StoreTag::Int(Tag::Uint16 as u64),
-        StoreValue::Int(self_compiler.context.i64_type().const_int(0, false)),
-        "uint16",
-    );
-
-    Ok(ptr.into())
-}
-
-pub fn create_int32<'ctx>(
-    self_compiler: &mut Compiler<'ctx>,
-) -> Result<BasicValueEnum<'ctx>, String> {
-    let ptr = create_entry_block_alloca(self_compiler, "int32_alloc");
-
-    self_compiler.build_runtime_value_store(
-        ptr,
-        StoreTag::Int(Tag::Int32 as u64),
-        StoreValue::Int(self_compiler.context.i64_type().const_int(0, false)),
-        "int32",
-    );
-
-    Ok(ptr.into())
-}
-
-pub fn create_uint32<'ctx>(
-    self_compiler: &mut Compiler<'ctx>,
-) -> Result<BasicValueEnum<'ctx>, String> {
-    let ptr = create_entry_block_alloca(self_compiler, "uint32_alloc");
-
-    self_compiler.build_runtime_value_store(
-        ptr,
-        StoreTag::Int(Tag::Uint32 as u64),
-        StoreValue::Int(self_compiler.context.i64_type().const_int(0, false)),
-        "uint32",
-    );
-
-    Ok(ptr.into())
-}
-
-pub fn create_int64<'ctx>(
-    self_compiler: &mut Compiler<'ctx>,
-) -> Result<BasicValueEnum<'ctx>, String> {
-    let ptr = create_entry_block_alloca(self_compiler, "int64_alloc");
-
-    self_compiler.build_runtime_value_store(
-        ptr,
-        StoreTag::Int(Tag::Int64 as u64),
-        StoreValue::Int(self_compiler.context.i64_type().const_int(0, false)),
-        "int64",
-    );
-
-    Ok(ptr.into())
-}
-
-pub fn create_uint64<'ctx>(
-    self_compiler: &mut Compiler<'ctx>,
-) -> Result<BasicValueEnum<'ctx>, String> {
-    let ptr = create_entry_block_alloca(self_compiler, "uint64_alloc");
-
-    self_compiler.build_runtime_value_store(
-        ptr,
-        StoreTag::Int(Tag::Uint64 as u64),
-        StoreValue::Int(self_compiler.context.i64_type().const_int(0, false)),
-        "uint64",
-    );
-
-    Ok(ptr.into())
-}
-
-pub fn create_float16<'ctx>(
-    self_compiler: &mut Compiler<'ctx>,
-) -> Result<BasicValueEnum<'ctx>, String> {
-    let ptr = create_entry_block_alloca(self_compiler, "f16_alloc");
-
-    self_compiler.build_runtime_value_store(
-        ptr,
-        StoreTag::Int(Tag::Float16 as u64),
-        StoreValue::Int(self_compiler.context.i64_type().const_int(0, false)),
-        "f16",
-    );
-
-    Ok(ptr.into())
-}
-
-pub fn create_float32<'ctx>(
-    self_compiler: &mut Compiler<'ctx>,
-) -> Result<BasicValueEnum<'ctx>, String> {
-    let ptr = create_entry_block_alloca(self_compiler, "f32_alloc");
-
-    self_compiler.build_runtime_value_store(
-        ptr,
-        StoreTag::Int(Tag::Float32 as u64),
-        StoreValue::Int(self_compiler.context.i64_type().const_int(0, false)),
-        "f32",
-    );
-
-    Ok(ptr.into())
-}
-
-pub fn create_float64<'ctx>(
-    self_compiler: &mut Compiler<'ctx>,
-) -> Result<BasicValueEnum<'ctx>, String> {
-    let ptr = create_entry_block_alloca(self_compiler, "f64_alloc");
-
-    self_compiler.build_runtime_value_store(
-        ptr,
-        StoreTag::Int(Tag::Float64 as u64),
-        StoreValue::Int(self_compiler.context.i64_type().const_int(0, false)),
-        "f64",
-    );
-
-    Ok(ptr.into())
-}
+pub fn create_int8<'ctx>(c: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, String> { create_typed_zero(c, Tag::Int8, "int8") }
+pub fn create_uint8<'ctx>(c: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, String> { create_typed_zero(c, Tag::Uint8, "uint8") }
+pub fn create_int16<'ctx>(c: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, String> { create_typed_zero(c, Tag::Int16, "int16") }
+pub fn create_uint16<'ctx>(c: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, String> { create_typed_zero(c, Tag::Uint16, "uint16") }
+pub fn create_int32<'ctx>(c: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, String> { create_typed_zero(c, Tag::Int32, "int32") }
+pub fn create_uint32<'ctx>(c: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, String> { create_typed_zero(c, Tag::Uint32, "uint32") }
+pub fn create_int64<'ctx>(c: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, String> { create_typed_zero(c, Tag::Int64, "int64") }
+pub fn create_uint64<'ctx>(c: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, String> { create_typed_zero(c, Tag::Uint64, "uint64") }
+pub fn create_float16<'ctx>(c: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, String> { create_typed_zero(c, Tag::Float16, "f16") }
+pub fn create_float32<'ctx>(c: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, String> { create_typed_zero(c, Tag::Float32, "f32") }
+pub fn create_float64<'ctx>(c: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, String> { create_typed_zero(c, Tag::Float64, "f64") }
 
 fn box_return_value<'ctx>(
     self_compiler: &mut Compiler<'ctx>,

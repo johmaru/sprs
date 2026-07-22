@@ -52,19 +52,9 @@ pub enum StoreValue<'ctx> {
     Bool(IntValue<'ctx>),
 }
 
-pub enum StrConstantAction {
-    Get,
-    Set,
-}
-
 pub enum StrConstantResult<'ctx> {
     Global(GlobalValue<'ctx>),
     Pointer(PointerValue<'ctx>),
-}
-
-pub enum StrValue<'ctx> {
-    Get(&'ctx str),
-    Set(GlobalValue<'ctx>),
 }
 
 // Support builder_helper.rs for LLVM instuctions of execution.
@@ -202,72 +192,37 @@ impl<'ctx> Compiler<'ctx> {
     pub fn set_global_constant_str(
         &mut self,
         module: &Module<'ctx>,
-        str_value: StrValue<'ctx>,
-        action: StrConstantAction,
+        s: &str,
         is_global: bool,
         is_const: bool,
     ) -> Option<StrConstantResult<'ctx>> {
-        match action {
-            StrConstantAction::Get => {
-                if let Some(global) = self.string_constants.get(match str_value {
-                    StrValue::Get(s) => s,
-                    _ => return None,
-                }) {
-                    return Some(StrConstantResult::Global(*global));
-                } else {
-                    let global_name = if is_global {
-                        format!("str_const_global_{}", self.string_constants.len())
-                    } else {
-                        format!("str_const_const_{}", self.string_constants.len())
-                    };
-                    let str_const = self.context.const_string(
-                        match str_value {
-                            StrValue::Get(s) => s.as_bytes(),
-                            _ => return None,
-                        },
-                        true,
-                    );
-                    let global_str = module.add_global(
-                        str_const.get_type(),
-                        Some(AddressSpace::default()),
-                        &global_name,
-                    );
-                    global_str.set_initializer(&str_const);
-                    if is_const {
-                        global_str.set_constant(true);
-                    }
-
-                    match if is_global {
-                        Linkage::External
-                    } else {
-                        Linkage::Internal
-                    } {
-                        Linkage::External => global_str.set_linkage(Linkage::External),
-                        Linkage::Internal => global_str.set_linkage(Linkage::Internal),
-                        _ => {}
-                    }
-
-                    self.string_constants.insert(
-                        match str_value {
-                            StrValue::Get(s) => s.to_string(),
-                            _ => "".to_string(),
-                        },
-                        global_str,
-                    );
-                    return Some(StrConstantResult::Global(global_str));
-                }
-            }
-            StrConstantAction::Set => {
-                let name_ptr = match str_value {
-                    StrValue::Set(g) => g,
-                    _ => return None,
-                };
-
-                let str_ptr = name_ptr.as_pointer_value();
-
-                return Some(StrConstantResult::Pointer(str_ptr));
-            }
+        if let Some(global) = self.string_constants.get(s) {
+            return Some(StrConstantResult::Global(*global));
         }
+
+        let global_name = if is_global {
+            format!("str_const_global_{}", self.string_constants.len())
+        } else {
+            format!("str_const_const_{}", self.string_constants.len())
+        };
+        let str_const = self.context.const_string(s.as_bytes(), true);
+        let global_str = module.add_global(
+            str_const.get_type(),
+            Some(AddressSpace::default()),
+            &global_name,
+        );
+        global_str.set_initializer(&str_const);
+        if is_const {
+            global_str.set_constant(true);
+        }
+        global_str.set_linkage(if is_global {
+            Linkage::External
+        } else {
+            Linkage::Internal
+        });
+
+        self.string_constants.insert(s.to_string(), global_str);
+        Some(StrConstantResult::Global(global_str))
     }
 }
 
@@ -1319,50 +1274,17 @@ impl<'ctx> Compiler<'ctx> {
                 let result = builder_helper::create_float(self, *fp);
                 result
             }
-            ast::Expr::TypeI8 => {
-                let result = builder_helper::create_int8(self);
-                result
-            }
-            ast::Expr::TypeU8 => {
-                let result = builder_helper::create_uint8(self);
-                result
-            }
-            ast::Expr::TypeI16 => {
-                let result = builder_helper::create_int16(self);
-                result
-            }
-            ast::Expr::TypeU16 => {
-                let result = builder_helper::create_uint16(self);
-                result
-            }
-            ast::Expr::TypeI32 => {
-                let result = builder_helper::create_int32(self);
-                result
-            }
-            ast::Expr::TypeU32 => {
-                let result = builder_helper::create_uint32(self);
-                result
-            }
-            ast::Expr::TypeI64 => {
-                let result = builder_helper::create_int64(self);
-                result
-            }
-            ast::Expr::TypeU64 => {
-                let result = builder_helper::create_uint64(self);
-                result
-            }
-            ast::Expr::TypeF16 => {
-                let result = builder_helper::create_float16(self);
-                result
-            }
-            ast::Expr::TypeF32 => {
-                let result = builder_helper::create_float32(self);
-                result
-            }
-            ast::Expr::TypeF64 => {
-                let result = builder_helper::create_float64(self);
-                result
-            }
+            ast::Expr::TypeI8 => builder_helper::create_int8(self),
+            ast::Expr::TypeU8 => builder_helper::create_uint8(self),
+            ast::Expr::TypeI16 => builder_helper::create_int16(self),
+            ast::Expr::TypeU16 => builder_helper::create_uint16(self),
+            ast::Expr::TypeI32 => builder_helper::create_int32(self),
+            ast::Expr::TypeU32 => builder_helper::create_uint32(self),
+            ast::Expr::TypeI64 => builder_helper::create_int64(self),
+            ast::Expr::TypeU64 => builder_helper::create_uint64(self),
+            ast::Expr::TypeF16 => builder_helper::create_float16(self),
+            ast::Expr::TypeF32 => builder_helper::create_float32(self),
+            ast::Expr::TypeF64 => builder_helper::create_float64(self),
             ast::Expr::Str(str) => {
                 let result = builder_helper::create_string(self, str, module);
                 result
