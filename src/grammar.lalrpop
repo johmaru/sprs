@@ -49,7 +49,6 @@ extern {
         Semi   => Token::Semi,
         StrLiteral => Token::StrLiteral(String),
         If     => Token::If,
-        Then   => Token::Then,
         Else   => Token::Else,
         While  => Token::While,
         IDENT  => Token::Ident(String),
@@ -296,12 +295,12 @@ Stmt: Stmt = {
 
 #[inline]
 IfStmt: Stmt = {
-    If <c:Expr> Then <then:Block> => Stmt::If {
+    If <c:ExprNoStruct> <then:Block> => Stmt::If {
         cond: c,
         then_blk: then,
         else_blk: None,
     },
-    If <c:Expr> Then <then:Block> Else <else_blk:Block> => Stmt::If {
+    If <c:ExprNoStruct> <then:Block> Else <else_blk:Block> => Stmt::If {
         cond: c,
         then_blk: then,
         else_blk: Some(else_blk),

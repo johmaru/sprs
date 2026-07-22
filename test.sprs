@@ -9,11 +9,11 @@ pub fn test() >> str {
 
             # test equality
 
-            if a == 4 then {
+            if a == 4 {
                 return c;
             }
 
-            if a != 4 then {
+            if a != 4 {
                 return a++;
             } else {
                 return a + 2;

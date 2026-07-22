@@ -31,7 +31,6 @@ pub enum Token {
     StrLiteral(String),
     Bool(bool),
     If,
-    Then,
     Else,
     While,
     Ident(String),
@@ -127,8 +126,6 @@ enum RawTok {
     StrLiteral(String),
     #[token("if")]
     If,
-    #[token("then")]
-    Then,
     #[token("else")]
     Else,
     #[token("while")]
@@ -264,7 +261,6 @@ impl<'input> Iterator for Lexer<'input> {
             RawTok::Comma => Token::Comma,
             RawTok::StrLiteral(s) => Token::StrLiteral(s),
             RawTok::If => Token::If,
-            RawTok::Then => Token::Then,
             RawTok::Else => Token::Else,
             RawTok::While => Token::While,
             RawTok::Ident => Token::Ident(text.to_string()),
