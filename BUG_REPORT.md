@@ -205,6 +205,7 @@
 - **BUG-M05**: `get_all_arguments` の `skip_next` が dead code → `filter().collect()` に簡潔化
 - **BUG-L03**: `create_if_expr` の PHI incoming 判定が `t.get_parent() == merge_bb` で常に false になる問題 → ターミネータの `opcode` が `Br` かどうかで判定するよう修正。`src/llvm/control_flow.rs`
 - **BUG-L07**: `create_div_expr` / `create_mod_expr` でゼロ除算チェックなし → `create_binary_int_op` 経由から独立実装に切り出し、除算前に `r_val == 0` チェックを生成し `__panic` を呼ぶよう修正。`src/llvm/arithmetic.rs`
+- **BUG-X06**: `string_constants` HashMap がモジュール非スコープ → キャッシュを完全に削除し、`string_constants` フィールドを `string_counter: usize` に置き換え。各モジュールが独自の `Internal` linkage グローバルを作成するよう修正。`src/llvm/compiler.rs`, `src/llvm/value.rs`
 
 ---
 
@@ -260,14 +261,6 @@ LLVM 22.1.8 移行後のスモークテスト実装中に発見されたバグ�
 - **原因**: `create_dummy_for_no_return` が常に `runtime_value_type` (`{ i32, i64 }`) を返す。`>> i64` や `>> fp` など他の戻り値型の場合、型不一致で LLVM が関数を検証エラーにする
 - **影響**: `if/else` で両分岐 return する関数で末尾に `return 0;` のようなダミーが必要
 - **推奨修正**: 現在の関数 (`function_signatures`) の戻り値型に応じたゼロ値を返すよう分岐
-
-### X06: `string_constants` HashMap がモジュール非スコープ 【High】
-
-- **ファイル**: `src/llvm/compiler.rs` (string_constants フィールド), `src/llvm/value.rs` (create_panic_err)
-- **症状**: 複数モジュールを import すると `Referencing global in another module!` リンクエラー
-- **原因**: `create_panic_err` が `is_global: true` で `External` linkage の GlobalValue を生成し `self.string_constants` にキャッシュする。次のモジュールが同じエラーメッセージ文字列を生成すると、キャッシュから別モジュールの GlobalValue が返され、linker が別モジュールのグローバル参照として弾く
-- **影響**: 複数モジュールにまたがるプログラムで `Var + Var` 等の error_bb が生成されるとリンクエラー。単一ファイルなら発生しない
-- **推奨修正**: `string_constants` をモジュールごとに管理するか、`External` linkage ではなくモジュールローカルな `Internal` linkage を使用
 
 ### X07: `Var + Var` 加算で実行時 error_bb に到達する 【High】
 
