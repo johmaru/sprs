@@ -20,12 +20,15 @@ pub enum ExecuteMode {
     Debug,
 }
 
-pub fn build_and_run(_full_path: String, mode: ExecuteMode) -> Result<(), Box<dyn std::error::Error>> {
+pub fn build_and_run(dest: Option<&str>, mode: ExecuteMode) -> Result<(), Box<dyn std::error::Error>> {
     let context = Context::create();
     let builder = context.create_builder();
 
+    let base = dest.unwrap_or(".");
+
+    let toml_path = format!("{}/sprs.toml", base);
     let setting_toml_content =
-        std::fs::read_to_string("sprs.toml").unwrap_or_else(|_| "".to_string());
+        std::fs::read_to_string(&toml_path).unwrap_or_else(|_| "".to_string());
 
     let config: Option<ProjectConfig> = if !setting_toml_content.is_empty() {
         match toml::from_str(&setting_toml_content) {
@@ -39,10 +42,11 @@ pub fn build_and_run(_full_path: String, mode: ExecuteMode) -> Result<(), Box<dy
         None
     };
 
-    let src_path = config
+    let src_dir = config
         .as_ref()
         .map(|c| c.src_dir.clone())
         .unwrap_or_else(|| "src".to_string());
+    let src_path = format!("{}/{}", base, src_dir);
 
     let mut compiler = compiler::Compiler::new(&context, builder, src_path.clone());
 
@@ -51,10 +55,10 @@ pub fn build_and_run(_full_path: String, mode: ExecuteMode) -> Result<(), Box<dy
         .as_ref()
         .map(|c| c.name.clone())
         .unwrap_or_else(|| "sprs_project".to_string());
-    let out_dir = config
+    let out_dir = format!("{}/{}", base, config
         .as_ref()
         .map(|c| c.out_dir.clone())
-        .unwrap_or_else(|| "build".to_string());
+        .unwrap_or_else(|| "build".to_string()));
 
     if !Path::new(&out_dir).exists() {
         std::fs::create_dir_all(&out_dir)?;
@@ -96,17 +100,16 @@ pub fn build_and_run(_full_path: String, mode: ExecuteMode) -> Result<(), Box<dy
         let pass_options = PassBuilderOptions::create();
         let _ = module.run_passes("mem2reg", &target_machine, pass_options);
 
-        let ll_filename = format!("{}.ll", name);
+        let ll_filename = format!("{}/{}.ll", out_dir, name);
         if let Err(e) = module.print_to_file(Path::new(&ll_filename)) {
             eprintln!("Failed to write LLVM IR to {}: {}", ll_filename, e);
         }
         println!("Generated: {}", ll_filename);
 
-        let filename = format!("{}.o", name);
-        let obj_path = Path::new(&filename);
+        let filename = format!("{}/{}.o", out_dir, name);
 
         target_machine
-            .write_to_file(module, inkwell::targets::FileType::Object, obj_path)
+            .write_to_file(module, inkwell::targets::FileType::Object, Path::new(&filename))
             .map_err(|e| format!("Failed to write object file: {}", e))?;
         println!("Generated: {}", filename);
         object_files.push(filename);

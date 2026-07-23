@@ -372,28 +372,30 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
             Ok(())
         }
-        "build" => {
+        "build" | "run" | "debug" => {
+            let mut dest: Option<String> = None;
             if argc > 2 {
-                eprintln!("not supported yet with arguments.");
-                return Err("wrong arguments".into());
+                let mut iter = argv[2..].iter();
+                while let Some(arg) = iter.next() {
+                    if arg == "--dest" {
+                        dest = iter.next().cloned();
+                        if dest.is_none() {
+                            eprintln!("Usage: sprs {} --dest <path>", command);
+                            return Err("missing value for --dest".into());
+                        }
+                    } else {
+                        eprintln!("Unknown argument: {}", arg);
+                        return Err(format!("invalid argument: {}", arg).into());
+                    }
+                }
             }
-            llvm_executer::build_and_run(argv[0].clone(), llvm_executer::ExecuteMode::Build)?;
-            Ok(())
-        }
-        "run" => {
-            if argc > 2 {
-                eprintln!("not supported yet with arguments.");
-                return Err("wrong arguments".into());
-            }
-            llvm_executer::build_and_run(argv[0].clone(), llvm_executer::ExecuteMode::Run)?;
-            Ok(())
-        }
-        "debug" => {
-            if argc > 2 {
-                eprintln!("not supported yet with arguments.");
-                return Err("wrong arguments".into());
-            }
-            llvm_executer::build_and_run(argv[0].clone(), llvm_executer::ExecuteMode::Debug)?;
+            let mode = match command.as_str() {
+                "build" => llvm_executer::ExecuteMode::Build,
+                "run" => llvm_executer::ExecuteMode::Run,
+                "debug" => llvm_executer::ExecuteMode::Debug,
+                _ => unreachable!(),
+            };
+            llvm_executer::build_and_run(dest.as_deref(), mode)?;
             Ok(())
         }
         "help" => {
