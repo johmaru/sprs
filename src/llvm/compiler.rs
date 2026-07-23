@@ -308,7 +308,7 @@ impl<'ctx> Compiler<'ctx> {
         self.scopes.push(Scope::new());
     }
 
-    pub(crate) fn exit_scope(&mut self, module: &Module<'ctx>) {
+    pub(crate) fn exit_scope(&mut self, module: &Module<'ctx>) -> Result<(), String> {
         let scope = self.scopes.pop().unwrap();
 
         if self
@@ -318,7 +318,7 @@ impl<'ctx> Compiler<'ctx> {
             .get_terminator()
             .is_none()
         {
-            let drop_fn = self.get_runtime_fn(module, "__drop");
+            let drop_fn = self.get_runtime_fn(module, "__drop")?;
 
             for name in scope.var_name.iter().rev() {
                 if let Some((val, _)) = scope.variables.get(name) {
@@ -328,6 +328,7 @@ impl<'ctx> Compiler<'ctx> {
                 }
             }
         }
+        Ok(())
     }
 
     pub fn get_variables(&self, name: &str) -> Option<(BasicValueEnum<'ctx>, Type)> {
@@ -352,8 +353,8 @@ impl<'ctx> Compiler<'ctx> {
         }
     }
 
-    pub(crate) fn emit_drop_for_return(&mut self, module: &Module<'ctx>) {
-        let drop_fn = self.get_runtime_fn(module, "__drop");
+    pub(crate) fn emit_drop_for_return(&mut self, module: &Module<'ctx>) -> Result<(), String> {
+        let drop_fn = self.get_runtime_fn(module, "__drop")?;
 
         let mut vars_to_drop: Vec<(PointerValue<'ctx>, String)> = Vec::new();
 
@@ -370,6 +371,7 @@ impl<'ctx> Compiler<'ctx> {
         for (ptr, var_name) in vars_to_drop.into_iter().rev() {
             builder_helper::drop_var(self, ptr, drop_fn, &var_name);
         }
+        Ok(())
     }
 
     pub fn register_struct(&mut self, name: String, fields: Vec<ast::StructField>) {
@@ -445,9 +447,9 @@ impl<'ctx> Compiler<'ctx> {
         create
     }
 
-    pub fn get_runtime_fn(&self, module: &Module<'ctx>, name: &str) -> FunctionValue<'ctx> {
+    pub fn get_runtime_fn(&self, module: &Module<'ctx>, name: &str) -> Result<FunctionValue<'ctx>, String> {
         if let Some(func) = module.get_function(name) {
-            return func;
+            return Ok(func);
         }
 
         let i64_type = self.context.i64_type();
@@ -525,9 +527,9 @@ impl<'ctx> Compiler<'ctx> {
                 ],
                 false,
             ),
-            _ => panic!("Unknown runtime function: {}", name),
+            _ => return Err(format!("Unknown runtime function: {}", name)),
         };
 
-        module.add_function(name, fn_type, None)
+        Ok(module.add_function(name, fn_type, None))
     }
 }

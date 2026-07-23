@@ -769,7 +769,7 @@ fn create_add_expr_build_string_branch<'ctx>(
     // Delegate the concatenation to the runtime, which does it in safe Rust
     // (no `l_len + r_len` overflow, no manual memcpy). This eliminates
     // BUG-L02 (heap buffer overflow in string concat) entirely.
-    let concat_fn = self_compiler.get_runtime_fn(module, "__string_concat");
+    let concat_fn = self_compiler.get_runtime_fn(module, "__string_concat")?;
     let concat_call = self_compiler
         .builder
         .build_call(

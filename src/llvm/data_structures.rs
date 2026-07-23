@@ -50,7 +50,7 @@ pub fn create_index<'ctx>(
     index_expr: &ast::Expr,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
-    let get_fn = self_compiler.get_runtime_fn(module, "__list_get");
+    let get_fn = self_compiler.get_runtime_fn(module, "__list_get")?;
 
     let collection_var_ptr = self_compiler
         .compile_expr(collection_expr, module)?
@@ -120,7 +120,7 @@ pub fn create_range<'ctx>(
     end_expr: &ast::Expr,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
-    let range_fn = self_compiler.get_runtime_fn(module, "__range_new");
+    let range_fn = self_compiler.get_runtime_fn(module, "__range_new")?;
     let start_val_ptr = self_compiler
         .compile_expr(start_expr, module)?
         .into_pointer_value();
@@ -286,7 +286,7 @@ pub fn create_field_access<'ctx>(
 
     // `data` is an i64 slab handle — call `__struct_borrow(handle)` to get the
     // raw pointer for field access.
-    let struct_borrow_fn = self_compiler.get_runtime_fn(module, "__struct_borrow");
+    let struct_borrow_fn = self_compiler.get_runtime_fn(module, "__struct_borrow")?;
     let borrow_call = self_compiler
         .builder
         .build_call(
@@ -432,7 +432,7 @@ pub fn create_struct_init<'ctx>(
     let struct_size = llvm_type
         .size_of()
         .ok_or_else(|| "struct type has no size".to_string())?;
-    let struct_new_fn = self_compiler.get_runtime_fn(module, "__struct_new");
+    let struct_new_fn = self_compiler.get_runtime_fn(module, "__struct_new")?;
     let struct_new_call = self_compiler
         .builder
         .build_call(
@@ -445,7 +445,7 @@ pub fn create_struct_init<'ctx>(
         ValueKind::Basic(val) => val.into_int_value(),
         _ => return Err("Expected i64 handle from __struct_new".to_string()),
     };
-    let struct_borrow_fn = self_compiler.get_runtime_fn(module, "__struct_borrow");
+    let struct_borrow_fn = self_compiler.get_runtime_fn(module, "__struct_borrow")?;
     let borrow_call = self_compiler
         .builder
         .build_call(

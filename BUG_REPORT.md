@@ -72,9 +72,6 @@
 - **ファイル**: `src/llvm/value.rs`
 - **推奨修正**: `None` の場合は `Err` を返す。
 
-#### BUG-L14: `get_runtime_fn` が未知関数で `panic!` 【High】
-- **ファイル**: `src/llvm/compiler.rs`
-- **推奨修正**: `Result` でエラー伝播。
 
 #### BUG-L15: `compile_block` が early-return 時にスコープをリーク / `emit_drop_for_return` の drop 順序が逆 【High】
 - **ファイル**: `src/llvm/codegen.rs`, `src/llvm/compiler.rs`
@@ -136,11 +133,11 @@
 | 深刻度 | 件数 | バグ ID |
 |--------|------|--------|
 | **Critical** | 0 | — |
-| **High** | 5 | L14, L15, L21, M03, M04 |
+| **High** | 4 | L15, L21, M03, M04 |
 | **Medium** | 9 | F06, F08, F09, L04, L06, L09, L13, L17, M12 |
-| **Low** | 12 | F04b, F11, F12, F14, F15, L05, L24, M06, M08, M09, M10, M11 |
+- **Low** | 12 | F04b, F11, F12, F14, F15, L05, L24, M06, M08, M09, M10, M11 |
 
-合計: 26 件 (ユニーク)。
+合計: 25 件 (ユニーク)。
 
 ---
 
@@ -206,6 +203,10 @@
 
 ---
 
+
+### BUG-L14 修正で解消
+
+- **BUG-L14**: `get_runtime_fn` が未知関数で `panic!` → `Result<FunctionValue, String>` を返すよう変更し、`_ => return Err(format!("Unknown runtime function: {}", name))` でエラー伝播。全17箇所の呼び出し箇所 (`arithmetic.rs:1`, `codegen.rs:1`, `compiler.rs:2`, `data_structures.rs:5`, `macros.rs:3`, `value.rs:5`) に `?` を追加。`exit_scope` / `emit_drop_for_return` も `()` → `Result<(), String>` にシグネチャ変更し、呼び出し側3箇所 (`compile_fn`, `compile_return`, `compile_block`) に `?` を追加。`src/llvm/compiler.rs`, `src/llvm/codegen.rs`, `src/llvm/arithmetic.rs`, `src/llvm/data_structures.rs`, `src/llvm/macros.rs`, `src/llvm/value.rs`
 - **BUG-L08**: `cast` マクロの switch cases に `Int8/Int16/Int32/Int64/Uint8/Uint16/Uint32/Uint64` が未登録 → 整数タグ値を cast すると default `bb_f64` にフォールスルーし bit_cast で f64 として誤解釈。修正: 8タグを cases に追加。符号付き (Int8/16/32/64) は `bb_int` (SITOFP) へ、符号なし (Uint8/16/32/64) は新設の `bb_uint` (UITOFP) へルーティング。merge PHI に `bb_uint` の incoming を追加。検証: `@cast(@cast(4294967295, u32), fp64)` → `4294967295` (UITOFP 正解、SITOFP なら `-1`、bit_cast なら非正規化数)。`src/llvm/macros.rs`
 ## 6. 詳細テストスイートで発見されたバグ (XFAIL)
 

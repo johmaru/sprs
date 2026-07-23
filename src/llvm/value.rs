@@ -39,7 +39,7 @@ pub fn create_panic_err<'ctx>(
         "panic_err_str_ptr_i8",
     );
 
-    let panic_fn = self_compiler.get_runtime_fn(module, "__panic");
+    let panic_fn = self_compiler.get_runtime_fn(module, "__panic")?;
     self_compiler
         .builder
         .build_call(panic_fn, &[str_ptr_i8.unwrap().into()], "panic_call")
@@ -82,7 +82,7 @@ pub fn create_list_from_expr<'ctx>(
     let len = elements.len();
     let i64_type = self_compiler.context.i64_type();
 
-    let list_new_fn = self_compiler.get_runtime_fn(module, "__list_new");
+    let list_new_fn = self_compiler.get_runtime_fn(module, "__list_new")?;
 
     let list_call = self_compiler
         .builder
@@ -99,7 +99,7 @@ pub fn create_list_from_expr<'ctx>(
         _ => return Err("Expected i64 handle from __list_new".to_string()),
     };
 
-    let list_push_fn = self_compiler.get_runtime_fn(module, "__list_push");
+    let list_push_fn = self_compiler.get_runtime_fn(module, "__list_push")?;
     for elem in elements {
         let val_ptr = self_compiler
             .compile_expr(elem, module)?
@@ -171,7 +171,7 @@ pub fn create_string<'ctx>(
     // length tracking — no NUL-termination assumption). The slot is freed
     // by `__drop` on scope exit, fixing BUG-R04 (String leak) and BUG-R05
     // (NUL-terminated buffer over-read in `__clone`).
-    let string_from_cstr_fn = self_compiler.get_runtime_fn(module, "__string_from_cstr");
+    let string_from_cstr_fn = self_compiler.get_runtime_fn(module, "__string_from_cstr")?;
     let cstr_ptr = global.as_pointer_value();
     let string_call = self_compiler
         .builder
@@ -348,7 +348,7 @@ pub(crate) fn box_return_value<'ctx>(
         // Extern function returning `i8*` (a C string). Register the pointer
         // in a slab String slot so the runtime owns it properly.
         let ptr_val = result_val.into_pointer_value();
-        let string_from_cstr_fn = self_compiler.get_runtime_fn(module, "__string_from_cstr");
+        let string_from_cstr_fn = self_compiler.get_runtime_fn(module, "__string_from_cstr")?;
         let string_call = self_compiler
             .builder
             .build_call(

@@ -13,7 +13,7 @@ pub fn call_builtin_macro_println<'ctx>(
     args: &Vec<ast::Expr>,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
-    let print_fn = self_compiler.get_runtime_fn(module, "__println");
+    let print_fn = self_compiler.get_runtime_fn(module, "__println")?;
 
     let list_ptr = self_compiler.build_list_from_exprs(args, module)?;
 
@@ -85,7 +85,7 @@ pub fn call_builtin_macro_list_push<'ctx>(
         .unwrap()
         .into_int_value();
 
-    let list_push_fn = self_compiler.get_runtime_fn(module, "__list_push");
+    let list_push_fn = self_compiler.get_runtime_fn(module, "__list_push")?;
     self_compiler
         .builder
         .build_call(
@@ -143,7 +143,7 @@ pub fn call_builtin_macro_clone<'ctx>(
         .unwrap()
         .into_int_value();
 
-    let clone_fn = self_compiler.get_runtime_fn(module, "__clone");
+    let clone_fn = self_compiler.get_runtime_fn(module, "__clone")?;
     let call_site = self_compiler
         .builder
         .build_call(clone_fn, &[tag.into(), data.into()], "clone_call")

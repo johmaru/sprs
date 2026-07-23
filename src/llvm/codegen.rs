@@ -153,7 +153,7 @@ impl<'ctx> Compiler<'ctx> {
         let current_block = self.builder.get_insert_block().unwrap();
         if current_block.get_terminator().is_none() {
             // Inter compile_block will execute exit_scope, so need scope of function args end here
-            self.exit_scope(module);
+            self.exit_scope(module)?;
             builder_helper::create_dummy_for_no_return(self);
         } else {
             self.scopes.pop();
@@ -198,7 +198,7 @@ impl<'ctx> Compiler<'ctx> {
             None
         };
 
-        self.emit_drop_for_return(module);
+        self.emit_drop_for_return(module)?;
 
         if let Some(val) = ret_val {
             self.builder.build_return(Some(&val)).unwrap();
@@ -389,7 +389,7 @@ impl<'ctx> Compiler<'ctx> {
 
                     let target_ptr = target_val.into_pointer_value();
 
-                    let drop_fn = self.get_runtime_fn(module, "__drop");
+                    let drop_fn = self.get_runtime_fn(module, "__drop")?;
                     builder_helper::drop_var(self, target_ptr, drop_fn, &assign_stmt.name);
 
                     let new_val = self
@@ -410,7 +410,7 @@ impl<'ctx> Compiler<'ctx> {
             }
         }
 
-        self.exit_scope(module);
+        self.exit_scope(module)?;
 
         Ok(())
     }
