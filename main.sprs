@@ -88,6 +88,9 @@ fn main() {
     @println(types.cast_loop());
     # @println(types.cast_mixed());
     # XFAIL: cast_mixed (infer_type Call bug)
+    @println("=== BUG-L08 Verify ===");
+    @println(types.cast_uint32_to_fp64());
+    @println(types.cast_int32_to_fp64());
     @println("=== Shift ===");
     @println(comparison.lshift_basic());
     @println(comparison.lshift_zero());

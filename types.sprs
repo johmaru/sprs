@@ -48,6 +48,21 @@ pub fn cast_loop() >> i64 {
     return count;
 }
 
+# BUG-L08 verification: Uint* tag -> fp64 cast
+# Uses 4294967295 (0xFFFFFFFF) — bit pattern with sign bit set.
+# - Original bug (default bb_f64, bit_cast): ~2.12e-314 (garbage)
+# - Wrong fix (SITOFP): 4294967295.0 (same as correct for u32, but for u64 max it'd be negative)
+# - Correct fix (UITOFP): 4294967295.0
+# For definitive 3-way discrimination we need u64 max, but -1 is not parseable (BUG-F04b).
+# u32 with sign bit set still validates that Uint32 routes to bb_uint (UITOFP) not bb_int (SITOFP):
+#   SITOFP(0xFFFFFFFF as i32) = -1.0, UITOFP(0xFFFFFFFF as u32) = 4294967295.0
+pub fn cast_uint32_to_fp64() >> fp {
+    return @cast(@cast(4294967295, u32), fp64);
+}
+pub fn cast_int32_to_fp64() >> fp {
+    return @cast(@cast(2147483647, i32), fp64);
+}
+
 # XFAIL: @cast + @cast with different types (infer_type Call bug)
 # fn cast_mixed() >> i64 { return @cast(1, i8) + @cast(2, i16) + @cast(3, i32); }
 

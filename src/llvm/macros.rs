@@ -253,13 +253,27 @@ pub fn call_builtin_macro_cast<'ctx>(
     let bb_f64 = self_compiler
         .context
         .append_basic_block(parent, "cast_f64_bb");
+    let bb_uint = self_compiler
+        .context
+        .append_basic_block(parent, "cast_uint_bb");
     let marge = self_compiler
         .context
         .append_basic_block(parent, "cast_merge_bb");
 
     let i32_type = self_compiler.context.i32_type();
     let cases = vec![
+        // Signed integers -> SITOFP (bb_int)
         (i32_type.const_int(Tag::Integer as u64, false), bb_int),
+        (i32_type.const_int(Tag::Int8 as u64, false), bb_int),
+        (i32_type.const_int(Tag::Int16 as u64, false), bb_int),
+        (i32_type.const_int(Tag::Int32 as u64, false), bb_int),
+        (i32_type.const_int(Tag::Int64 as u64, false), bb_int),
+        // Unsigned integers -> UITOFP (bb_uint)
+        (i32_type.const_int(Tag::Uint8 as u64, false), bb_uint),
+        (i32_type.const_int(Tag::Uint16 as u64, false), bb_uint),
+        (i32_type.const_int(Tag::Uint32 as u64, false), bb_uint),
+        (i32_type.const_int(Tag::Uint64 as u64, false), bb_uint),
+        // Floats -> f64
         (i32_type.const_int(Tag::Float as u64, false), bb_float),
         (i32_type.const_int(Tag::Float16 as u64, false), bb_f16),
         (i32_type.const_int(Tag::Float32 as u64, false), bb_f32),
@@ -276,6 +290,16 @@ pub fn call_builtin_macro_cast<'ctx>(
     let int_to_f64 = self_compiler
         .builder
         .build_signed_int_to_float(data, self_compiler.context.f64_type(), "int_to_f64")
+        .unwrap();
+    self_compiler
+        .builder
+        .build_unconditional_branch(marge)
+        .unwrap();
+    // Unsigned Integer -> f64 (UITOFP)
+    self_compiler.builder.position_at_end(bb_uint);
+    let uint_to_f64 = self_compiler
+        .builder
+        .build_unsigned_int_to_float(data, self_compiler.context.f64_type(), "uint_to_f64")
         .unwrap();
     self_compiler
         .builder
@@ -363,6 +387,7 @@ pub fn call_builtin_macro_cast<'ctx>(
         .unwrap();
     phi.add_incoming(&[
         (&int_to_f64, bb_int),
+        (&uint_to_f64, bb_uint),
         (&float_to_f64, bb_float),
         (&val_f16_ext, bb_f16),
         (&val_f32_ext, bb_f32),

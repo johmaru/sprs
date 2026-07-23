@@ -63,9 +63,6 @@
 - **ファイル**: `src/llvm/arithmetic.rs`
 - **推奨修正**: 仕様に応じてオーバーフローチェックまたはフラグ追加。
 
-#### BUG-L08: `cast` マクロの switch cases に `Int8/Int16/Int32/Int64/Uint8/...` が未登録 → 整数を cast すると f64 として誤解釈 【High】
-- **ファイル**: `src/llvm/macros.rs`
-- **推奨修正**: Int8/Int16/.../Uint64 のケースを追加。
 
 #### BUG-L09: `create_field_access` で `field_index` の境界チェックなし 【Medium】
 - **ファイル**: `src/llvm/data_structures.rs`
@@ -139,11 +136,11 @@
 | 深刻度 | 件数 | バグ ID |
 |--------|------|--------|
 | **Critical** | 0 | — |
-| **High** | 6 | L08, L14, L15, L21, M03, M04 |
+| **High** | 5 | L14, L15, L21, M03, M04 |
 | **Medium** | 9 | F06, F08, F09, L04, L06, L09, L13, L17, M12 |
 | **Low** | 12 | F04b, F11, F12, F14, F15, L05, L24, M06, M08, M09, M10, M11 |
 
-合計: 27 件 (ユニーク)。
+合計: 26 件 (ユニーク)。
 
 ---
 
@@ -209,6 +206,7 @@
 
 ---
 
+- **BUG-L08**: `cast` マクロの switch cases に `Int8/Int16/Int32/Int64/Uint8/Uint16/Uint32/Uint64` が未登録 → 整数タグ値を cast すると default `bb_f64` にフォールスルーし bit_cast で f64 として誤解釈。修正: 8タグを cases に追加。符号付き (Int8/16/32/64) は `bb_int` (SITOFP) へ、符号なし (Uint8/16/32/64) は新設の `bb_uint` (UITOFP) へルーティング。merge PHI に `bb_uint` の incoming を追加。検証: `@cast(@cast(4294967295, u32), fp64)` → `4294967295` (UITOFP 正解、SITOFP なら `-1`、bit_cast なら非正規化数)。`src/llvm/macros.rs`
 ## 6. 詳細テストスイートで発見されたバグ (XFAIL)
 
 LLVM 22.1.8 移行後のスモークテスト実装中に発見されたバグ群。
