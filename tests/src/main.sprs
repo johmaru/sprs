@@ -1,734 +1,164 @@
 pkg main;
 
-# === Arithmetic ===
-
-fn add_basic() >> i64 {
-    return 5 + 3;
-}
-
-fn sub_basic() >> i64 {
-    return 10 - 4;
-}
-
-fn mul_basic() >> i64 {
-    return 6 * 7;
-}
-
-fn div_basic() >> i64 {
-    return 20 / 4;
-}
-
-fn mod_basic() >> i64 {
-    return 10 % 3;
-}
-
-fn neg_sub() >> i64 {
-    return 5 - 10;
-}
-
-fn complex_expr() >> i64 {
-    return (2 + 3) * 4 - 1;
-}
-
-fn precedence() >> i64 {
-    return 2 + 3 * 4;
-}
-
-fn all_ops() >> i64 {
-    return 100 / 7 * 10 + 100 % 7;
-}
-
-fn chained() >> i64 {
-    return 1 + 2 + 3 + 4 + 5;
-}
-
-fn zero_div_pattern() >> i64 {
-    return 0 / 1;
-}
-
-fn large_numbers() >> i64 {
-    return 1000000 * 1000;
-}
-
-fn sub_to_zero() >> i64 {
-    return 42 - 42;
-}
-
-# === Comparison ===
-
-fn eq_true() >> i64 {
-    if 5 == 5 {
-        return 1;
-    }
-    return 0;
-}
-
-fn eq_false() >> i64 {
-    if 5 == 3 {
-        return 1;
-    }
-    return 0;
-}
-
-fn neq_true() >> i64 {
-    if 5 != 3 {
-        return 1;
-    }
-    return 0;
-}
-
-fn neq_false() >> i64 {
-    if 5 != 5 {
-        return 1;
-    }
-    return 0;
-}
-
-fn lt_true() >> i64 {
-    if 3 < 5 {
-        return 1;
-    }
-    return 0;
-}
-
-fn lt_false() >> i64 {
-    if 5 < 3 {
-        return 1;
-    }
-    return 0;
-}
-
-fn gt_true() >> i64 {
-    if 5 > 3 {
-        return 1;
-    }
-    return 0;
-}
-
-fn gt_false() >> i64 {
-    if 3 > 5 {
-        return 1;
-    }
-    return 0;
-}
-
-fn le_true() >> i64 {
-    if 5 <= 5 {
-        return 1;
-    }
-    return 0;
-}
-
-fn le_false() >> i64 {
-    if 6 <= 5 {
-        return 1;
-    }
-    return 0;
-}
-
-fn ge_true() >> i64 {
-    if 5 >= 5 {
-        return 1;
-    }
-    return 0;
-}
-
-fn ge_false() >> i64 {
-    if 4 >= 5 {
-        return 1;
-    }
-    return 0;
-}
-
-# === Control Flow ===
-
-fn if_then() >> i64 {
-    var x = 5;
-    if x > 3 {
-        return 1;
-    }
-    return 0;
-}
-
-fn if_else() >> i64 {
-    var x = 2;
-    if x > 3 {
-        return 1;
-    } else {
-        return 2;
-    }
-    return 0;
-}
-
-fn if_elseif_chain() >> i64 {
-    var x = 15;
-    if x < 10 {
-        return 1;
-    }
-    if x < 20 {
-        return 2;
-    }
-    if x < 30 {
-        return 3;
-    }
-    return 0;
-}
-
-fn while_basic() >> i64 {
-    var i = 0;
-    var sum = 0;
-    while i < 10 {
-        sum = sum + i;
-        i = i + 1;
-    }
-    return sum;
-}
-
-fn nested_if() >> i64 {
-    var x = 5;
-    var y = 10;
-    if x > 0 {
-        if y > 5 {
-            return 1;
-        }
-        return 2;
-    }
-    return 0;
-}
-
-fn while_with_if() >> i64 {
-    var i = 0;
-    var found = 0;
-    while i <= 20 {
-        if i == 10 {
-            found = i;
-        }
-        i = i + 1;
-    }
-    return found;
-}
-
-fn if_returns_early() >> i64 {
-    var x = 42;
-    if x == 42 {
-        return 100;
-    }
-    return 0;
-}
-
-fn while_counter() >> i64 {
-    var count = 0;
-    var i = 0;
-    while i < 100 {
-        count = count + 1;
-        i = i + 1;
-    }
-    return count;
-}
-
-# === Variables ===
-
-fn var_assign() >> i64 {
-    var x = 10;
-    x = 20;
-    return x;
-}
-
-fn var_reassign() >> i64 {
-    var x = 1;
-    x = 2;
-    x = 3;
-    return x;
-}
-
-fn multiple_vars() >> i64 {
-    var a = 1;
-    var b = 2;
-    var c = 3;
-    return a + b + c;
-}
-
-fn var_shadow() >> i64 {
-    var x = 1;
-    var x = 2;
-    return x;
-}
-
-fn var_in_loop() >> i64 {
-    var total = 0;
-    var i = 0;
-    while i < 5 {
-        var temp = i * 2;
-        total = total + temp;
-        i = i + 1;
-    }
-    return total;
-}
-
-fn var_math() >> i64 {
-    var a = 10;
-    var b = 20;
-    var c = a + b;
-    var d = c * 2;
-    return d;
-}
-
-# === Functions ===
-
-# XFAIL: Var + Var with function args (runtime tag not Integer)
-# fn add(a, b) >> i64 { return a + b; }
-# fn call_with_args() >> i64 { return add(3, 4); }
-# fn nested_calls() >> i64 { return add(add(1, 2), add(3, 4)); }
-# fn function_with_locals() >> i64 {
-#     var a = 10;
-#     var b = 20;
-#     var c = add(a, b);
-#     return c;
-# }
-
-fn private_helper(n) >> i64 {
-    return n * 2;
-}
-
-fn call_private() >> i64 {
-    return private_helper(5);
-}
-
-fn factorial(n) >> i64 {
-    if n <= 1 {
-        return 1;
-    }
-    return n * factorial(n - 1);
-}
-
-fn test_recursion() >> i64 {
-    return factorial(5);
-}
-
-fn fibonacci(n) >> i64 {
-    if n <= 1 {
-        return n;
-    }
-    return fibonacci(n - 1) + fibonacci(n - 2);
-}
-
-fn test_fib() >> i64 {
-    return fibonacci(10);
-}
-
-fn early_return() >> i64 {
-    var x = 5;
-    if x > 0 {
-        return 100;
-    }
-    return 0;
-}
-
-fn deep_recursion() >> i64 {
-    return factorial(7);
-}
-
-# === Lists (list_push only, no index — create_index bug) ===
-
-fn list_push_and_print() >> i64 {
-    var y = [];
-    @list_push(y, 42);
-    @list_push(y, 100);
-    @list_push(y, 200);
-    return 1;
-}
-
-fn list_with_vars() >> i64 {
-    var y = [];
-    var z = 20;
-    @list_push(y, z);
-    var w = 30;
-    @list_push(y, w);
-    return 1;
-}
-
-fn list_build_loop() >> i64 {
-    var y = [];
-    var i = 0;
-    while i < 5 {
-        @list_push(y, i);
-        i = i + 1;
-    }
-    return 1;
-}
-
-fn list_empty() >> i64 {
-    var y = [];
-    return 1;
-}
-
-# === Cast ===
-
-fn cast_i8() >> i64 {
-    return @cast(100, i8);
-}
-
-fn cast_u8() >> i64 {
-    return @cast(200, u8);
-}
-
-fn cast_i16() >> i64 {
-    return @cast(1000, i16);
-}
-
-fn cast_u16() >> i64 {
-    return @cast(50000, u16);
-}
-
-fn cast_i32() >> i64 {
-    return @cast(100000, i32);
-}
-
-fn cast_u32() >> i64 {
-    return @cast(3000000000, u32);
-}
-
-fn cast_i64() >> i64 {
-    return @cast(999999999999, i64);
-}
-
-fn cast_u64() >> i64 {
-    return @cast(99999999999, u64);
-}
-
-fn cast_arithmetic() >> i64 {
-    return @cast(10, i32) + @cast(5, i32);
-}
-
-fn cast_loop() >> i64 {
-    var i = @cast(0, i8);
-    var count = 0;
-    while i < @cast(5, i8) {
-        count = count + 1;
-        i = i + @cast(1, i8);
-    }
-    return count;
-}
-
-# XFAIL: @cast + @cast with different types (infer_type Call bug)
-# fn cast_mixed() >> i64 { return @cast(1, i8) + @cast(2, i16) + @cast(3, i32); }
-
-# === Float ===
-
-fn float_add() >> fp {
-    return 1.5 + 2.5;
-}
-
-fn float_sub() >> fp {
-    return 10.0 - 3.5;
-}
-
-fn float_mul() >> fp {
-    return 2.5 * 4.0;
-}
-
-fn float_div() >> fp {
-    return 10.0 / 4.0;
-}
-
-fn float_complex() >> fp {
-    return (1.5 + 2.5) * 2.0;
-}
-
-fn float_var_arith() >> fp {
-    # XFAIL: return var (move semantics resets tag)
-    var a = 5.2;
-    var b = 7.3;
-    return a + b;
-}
-
-# XFAIL: >> fp + @cast return (infer_type @cast bug)
-# fn float_cast_f16() >> fp { return @cast(1.5, fp16); }
-# fn float_cast_f32() >> fp { return @cast(3.14, fp32); }
-# fn float_cast_f64() >> fp { return @cast(2.71828, fp64); }
-
-fn float_while_loop() >> i64 {
-    var v = @cast(0.0, fp16);
-    var count = 0;
-    while v < @cast(1.0, fp16) {
-        count = count + 1;
-        v = v + @cast(0.25, fp16);
-    }
-    return count;
-}
-
-fn float_nested() >> fp {
-    return (1.0 + 2.0) * (3.0 + 4.0);
-}
-
-fn float_mixed() >> fp {
-    # XFAIL: return var (move semantics resets tag)
-    var x = 12.3;
-    return x + 0.1;
-}
-
-# === String ===
-
-fn get_greeting() >> str {
-    return "hello" + " world";
-}
-
-fn get_static_str() >> str {
-    return "sprs";
-}
-
-fn call_str_fn() >> i64 {
-    var s = get_greeting();
-    @println(s);
-    var s2 = get_static_str();
-    @println(s2);
-    return 1;
-}
-
-# === Increment/Decrement ===
-
-fn incr_basic() >> i64 {
-    var x = 5;
-    x++;
-    return x;
-}
-
-fn decr_basic() >> i64 {
-    var x = 5;
-    x--;
-    return x;
-}
-
-fn incr_in_loop() >> i64 {
-    var i = 0;
-    var count = 0;
-    while i < 10 {
-        count = count + 1;
-        i++;
-    }
-    return count;
-}
-
-fn decr_in_loop() >> i64 {
-    var i = 10;
-    var count = 0;
-    while i > 0 {
-        count = count + 1;
-        i--;
-    }
-    return count;
-}
-
-fn incr_multiple() >> i64 {
-    var x = 0;
-    x++;
-    x++;
-    x++;
-    return x;
-}
-
-fn decr_to_zero() >> i64 {
-    var x = 3;
-    x--;
-    x--;
-    x--;
-    return x;
-}
-
-fn incr_and_use() >> i64 {
-    var x = 10;
-    x++;
-    var y = x;
-    return y;
-}
-
-# === Struct ===
-
-struct Point {
-    x >> i64,
-    y >> i64
-}
-
-fn struct_create_x() >> i64 {
-    var p = Point {
-        x = 10,
-        y = 20
-    };
-    return p.x;
-}
-
-fn struct_create_y() >> i64 {
-    var p = Point {
-        x = 100,
-        y = 200
-    };
-    return p.y;
-}
-
-fn struct_both_fields() >> i64 {
-    var p = Point {
-        x = 5,
-        y = 15
-    };
-    return p.x + p.y;
-}
-
-fn struct_in_function() >> i64 {
-    var p = Point {
-        x = 1,
-        y = 2
-    };
-    var sum = p.x + p.y;
-    return sum;
-}
-
-# === Enum ===
-
-enum Color {
-    Red,
-    Green,
-    Blue
-}
-
-fn enum_access() >> i64 {
-    var c = Color.Red;
-    return 1;
-}
-
-fn enum_multiple() >> i64 {
-    var a = Color.Red;
-    var b = Color.Green;
-    var c = Color.Blue;
-    return 3;
-}
-
-fn enum_in_list() >> i64 {
-    var y = [];
-    @list_push(y, Color.Green);
-    return 1;
-}
+import arithmetic;
+import comparison;
+import control_flow;
+import variables;
+import functions;
+import data_structures;
+import types;
+import test;
 
 # === Main ===
 
 fn main() {
     @println("=== Arithmetic ===");
-    @println(add_basic());
-    @println(sub_basic());
-    @println(mul_basic());
-    @println(div_basic());
-    @println(mod_basic());
-    @println(neg_sub());
-    @println(complex_expr());
-    @println(precedence());
-    @println(all_ops());
-    @println(chained());
-    @println(zero_div_pattern());
-    @println(large_numbers());
-    @println(sub_to_zero());
+    @println(arithmetic.add_basic());
+    @println(arithmetic.sub_basic());
+    @println(arithmetic.mul_basic());
+    @println(arithmetic.div_basic());
+    @println(arithmetic.mod_basic());
+    @println(arithmetic.neg_sub());
+    @println(arithmetic.complex_expr());
+    @println(arithmetic.precedence());
+    @println(arithmetic.all_ops());
+    @println(arithmetic.chained());
+    @println(arithmetic.zero_div_pattern());
+    @println(arithmetic.large_numbers());
+    @println(arithmetic.sub_to_zero());
 
     @println("=== Comparison ===");
-    @println(eq_true());
-    @println(eq_false());
-    @println(neq_true());
-    @println(neq_false());
-    @println(lt_true());
-    @println(lt_false());
-    @println(gt_true());
-    @println(gt_false());
-    @println(le_true());
-    @println(le_false());
-    @println(ge_true());
-    @println(ge_false());
+    @println(comparison.eq_true());
+    @println(comparison.eq_false());
+    @println(comparison.neq_true());
+    @println(comparison.neq_false());
+    @println(comparison.lt_true());
+    @println(comparison.lt_false());
+    @println(comparison.gt_true());
+    @println(comparison.gt_false());
+    @println(comparison.le_true());
+    @println(comparison.le_false());
+    @println(comparison.ge_true());
+    @println(comparison.ge_false());
 
     @println("=== Control Flow ===");
-    @println(if_then());
-    @println(if_else());
-    @println(if_elseif_chain());
-    @println(while_basic());
-    @println(nested_if());
-    @println(while_with_if());
-    @println(if_returns_early());
-    @println(while_counter());
+    @println(control_flow.if_then());
+    @println(control_flow.if_else());
+    @println(control_flow.if_elseif_chain());
+    @println(control_flow.while_basic());
+    @println(control_flow.nested_if());
+    @println(control_flow.while_with_if());
+    @println(control_flow.if_returns_early());
+    @println(control_flow.while_counter());
 
     @println("=== Variables ===");
-    @println(var_assign());
-    @println(var_reassign());
-    @println(multiple_vars());
-    @println(var_shadow());
-    @println(var_in_loop());
-    @println(var_math());
+    @println(variables.var_assign());
+    @println(variables.var_reassign());
+    @println(variables.multiple_vars());
+    @println(variables.var_shadow());
+    @println(variables.var_in_loop());
+    @println(variables.var_math());
 
     @println("=== Functions ===");
     # XFAIL: call_with_args (Var+Var in add function)
     # XFAIL: nested_calls (uses add)
     # XFAIL: function_with_locals (uses add)
-    @println(call_private());
-    @println(test_recursion());
-    @println(test_fib());
-    @println(early_return());
-    @println(deep_recursion());
+    @println(functions.call_private());
+    @println(functions.test_recursion());
+    @println(functions.test_fib());
+    @println(functions.early_return());
+    @println(functions.deep_recursion());
 
     @println("=== Lists ===");
-    @println(list_push_and_print());
-    @println(list_with_vars());
-    @println(list_build_loop());
-    @println(list_empty());
+    @println(data_structures.list_push_and_print());
+    @println(data_structures.list_with_vars());
+    @println(data_structures.list_build_loop());
+    @println(data_structures.list_empty());
 
     @println("=== Cast ===");
-    @println(cast_i8());
-    @println(cast_u8());
-    @println(cast_i16());
-    @println(cast_u16());
-    @println(cast_i32());
-    @println(cast_u32());
-    @println(cast_i64());
-    @println(cast_u64());
-    @println(cast_arithmetic());
-    @println(cast_loop());
-    # @println(cast_mixed());
+    @println(types.cast_i8());
+    @println(types.cast_u8());
+    @println(types.cast_i16());
+    @println(types.cast_u16());
+    @println(types.cast_i32());
+    @println(types.cast_u32());
+    @println(types.cast_i64());
+    @println(types.cast_u64());
+    @println(types.cast_arithmetic());
+    @println(types.cast_loop());
+    # @println(types.cast_mixed());
     # XFAIL: cast_mixed (infer_type Call bug)
+    @println("=== BUG-L08 Verify ===");
+    @println(types.cast_uint32_to_fp64());
+    @println(types.cast_int32_to_fp64());
+    @println("=== Shift ===");
+    @println(comparison.lshift_basic());
+    @println(comparison.lshift_zero());
+    @println(comparison.lshift_large());
+    @println(comparison.rshift_basic());
+    @println(comparison.rshift_zero());
+    @println(comparison.rshift_to_zero());
+    @println(comparison.shift_with_vars());
+    @println(comparison.shift_in_expr());
+    @println(comparison.rshift_signed_negative());
+    @println(comparison.lshift_then_rshift());
+    @println(comparison.shift_chain());
+    @println(comparison.rshift_all_bits());
+    @println("=== Not ===");
+    @println(comparison.not_zero());
+    @println(comparison.not_nonzero());
+    @println(comparison.not_negative());
+    @println(comparison.not_expr());
+    @println(comparison.not_in_if());
     @println("=== Float ===");
-    @println(float_add());
-    @println(float_sub());
-    @println(float_mul());
-    @println(float_div());
-    @println(float_complex());
-    @println(float_var_arith());
+    @println(types.float_add());
+    @println(types.float_sub());
+    @println(types.float_mul());
+    @println(types.float_div());
+    @println(types.float_complex());
+    @println(types.float_var_arith());
     # XFAIL: @cast >> fp (infer_type bug)
-    # @println(float_cast_f16());
-    # @println(float_cast_f32());
-    # @println(float_cast_f64());
-    @println(float_while_loop());
-    @println(float_nested());
-    @println(float_mixed());
+    # @println(types.float_cast_f16());
+    # @println(types.float_cast_f32());
+    # @println(types.float_cast_f64());
+    @println(types.float_while_loop());
+    @println(types.float_nested());
+    @println(types.float_mixed());
     @println("=== String ===");
-    @println(call_str_fn());
-    @println(get_greeting());
-    @println(get_static_str());
+    @println(types.call_str_fn());
+    @println(types.get_greeting());
+    @println(types.get_static_str());
 
     @println("=== Increment ===");
-    @println(incr_basic());
-    @println(decr_basic());
-    @println(incr_in_loop());
-    @println(decr_in_loop());
-    @println(incr_multiple());
-    @println(decr_to_zero());
-    @println(incr_and_use());
+    @println(arithmetic.incr_basic());
+    @println(arithmetic.decr_basic());
+    @println(arithmetic.incr_in_loop());
+    @println(arithmetic.decr_in_loop());
+    @println(arithmetic.incr_multiple());
+    @println(arithmetic.decr_to_zero());
+    @println(arithmetic.incr_and_use());
 
     @println("=== Struct ===");
-    @println(struct_create_x());
-    @println(struct_create_y());
-    @println(struct_both_fields());
-    @println(struct_in_function());
+    @println(data_structures.struct_create_x());
+    @println(data_structures.struct_create_y());
+    @println(data_structures.struct_both_fields());
+    @println(data_structures.struct_in_function());
 
     @println("=== Enum ===");
-    @println(enum_access());
-    @println(enum_multiple());
-    @println(enum_in_list());
+    @println(data_structures.enum_access());
+    @println(data_structures.enum_multiple());
+    @println(data_structures.enum_in_list());
+
+    @println("=== Module Import ===");
+    @println(test.test());
 
     # XFAIL: Strings (>> str segfaults — Type::Str ptr bug)
     # XFAIL: list[index] (create_index StructValue panic)
     # XFAIL: return var (move semantics resets tag to Unit)
 
     @println("=== All Tests Done ===");
+
+    # XFAIL: div/mod by zero (expect panic + exit(1))
+    # @println(arithmetic.div_by_zero());
+    # @println(arithmetic.mod_by_zero());
 }

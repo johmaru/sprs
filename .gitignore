@@ -6,6 +6,4 @@ output.ll
 *.o
 *.ll
 /build/
-src/main.sprs
-src/test.sprs
 tests/build/
