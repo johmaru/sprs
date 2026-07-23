@@ -8,3 +8,6 @@ output.ll
 /build/
 src/main.sprs
 src/test.sprs
+tests/build/
+tests/main.ll
+tests/main.o
