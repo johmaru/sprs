@@ -6,6 +6,7 @@ use crate::llvm::builder_helper::Comparison;
 use crate::llvm::builder_helper::EqNeq;
 use crate::llvm::builder_helper::UpDown;
 use crate::llvm::parser::parse_only;
+use crate::naming;
 use inkwell::AddressSpace;
 use inkwell::builder::Builder;
 use inkwell::context::Context;

@@ -10,6 +10,7 @@ use crate::{
     command_helper::ProjectConfig,
     llvm::compiler::{self, OS},
 };
+use crate::naming;
 
 const RUNTIME_SOURCE: &str = include_str!("../runtime/runtime.rs");
 
@@ -26,7 +27,7 @@ pub fn build_and_run(dest: Option<&str>, mode: ExecuteMode) -> Result<(), Box<dy
 
     let base = dest.unwrap_or(".");
 
-    let toml_path = format!("{}/sprs.toml", base);
+    let toml_path = format!("{}/{}", base, naming::CONFIG_FILE);
     let setting_toml_content =
         std::fs::read_to_string(&toml_path).unwrap_or_else(|_| "".to_string());
 
@@ -34,7 +35,7 @@ pub fn build_and_run(dest: Option<&str>, mode: ExecuteMode) -> Result<(), Box<dy
         match toml::from_str(&setting_toml_content) {
             Ok(cfg) => Some(cfg),
             Err(e) => {
-                eprintln!("Failed to parse sprs.toml: {}", e);
+        eprintln!("Failed to parse {}: {}", naming::CONFIG_FILE, e);
                 None
             }
         }
@@ -50,11 +51,11 @@ pub fn build_and_run(dest: Option<&str>, mode: ExecuteMode) -> Result<(), Box<dy
 
     let mut compiler = compiler::Compiler::new(&context, builder, src_path.clone());
 
-    let path = format!("{}/main.sprs", src_path);
+    let path = format!("{}/{}", src_path, naming::SOURCE_FILE);
     let proj_name = config
         .as_ref()
         .map(|c| c.name.clone())
-        .unwrap_or_else(|| "sprs_project".to_string());
+        .unwrap_or_else(|| naming::DEFAULT_PROJECT_NAME.to_string());
     let out_dir = format!("{}/{}", base, config
         .as_ref()
         .map(|c| c.out_dir.clone())

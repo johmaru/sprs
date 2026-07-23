@@ -332,6 +332,7 @@ mod command_helper;
 mod front;
 mod grammar;
 mod llvm;
+mod naming;
 mod runtime;
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -339,7 +340,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let argc = argv.len();
 
     if argc <= 1 {
-        eprintln!("Usage: sprs help --all");
+        eprintln!("Usage: {} help --all", naming::LANG_NAME);
         return Err("invalid command".into());
     }
 
@@ -357,11 +358,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                             command_helper::init_project(Some(proj_name))?;
                             return Ok(());
                         } else {
-                            eprintln!("Usage: sprs init --name <project_name>");
+                            eprintln!("Usage: {} init --name <project_name>", naming::LANG_NAME);
                             return Err("missing value for --name".into());
                         }
                     } else {
-                        eprintln!("Usage: sprs init --name <project_name>");
+                        eprintln!("Usage: {} init --name <project_name>", naming::LANG_NAME);
                         return Err("invalid argument for init".into());
                     }
                 }
@@ -380,7 +381,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     if arg == "--dest" {
                         dest = iter.next().cloned();
                         if dest.is_none() {
-                            eprintln!("Usage: sprs {} --dest <path>", command);
+                            eprintln!("Usage: {} {} --dest <path>", naming::LANG_NAME, command);
                             return Err("missing value for --dest".into());
                         }
                     } else {
@@ -411,7 +412,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             Ok(())
         }
         "version" => {
-            println!("sprs version: {}", env!("CARGO_PKG_VERSION"));
+        println!("{} version: {}", naming::LANG_NAME, env!("CARGO_PKG_VERSION"));
             Ok(())
         }
         other => {

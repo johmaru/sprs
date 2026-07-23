@@ -10,6 +10,7 @@ use inkwell::types::{BasicMetadataTypeEnum, BasicTypeEnum};
 use inkwell::values::FunctionValue;
 use std::collections::HashMap;
 use crate::llvm::compiler::{Compiler, StructDef, OS, Tag, WINDOWS_STR, LINUX_STR};
+use crate::naming;
 
 impl<'ctx> Compiler<'ctx> {
     pub fn load_and_compile_module(
@@ -21,7 +22,7 @@ impl<'ctx> Compiler<'ctx> {
             return Ok(());
         }
 
-        let mut path = format!("{}/{}.sprs", self.source_path, module_name);
+        let mut path = format!("{}/{}{}", self.source_path, module_name, naming::SOURCE_EXT);
 
         if let Some(main_path) = main_path {
             if module_name == "main" {
@@ -107,7 +108,7 @@ impl<'ctx> Compiler<'ctx> {
             }
         }
         if llvm_module_name == "main" {
-            if let Some(sprs_main_fn) = module.get_function("_sprs_main") {
+            if let Some(sprs_main_fn) = module.get_function(naming::INTERNAL_MAIN_FN) {
                 let i32_type = self.context.i32_type();
                 let main_type = i32_type.fn_type(&[], false);
                 let c_main = module.add_function("main", main_type, None);
@@ -336,9 +337,8 @@ impl<'ctx> Compiler<'ctx> {
         } else {
             self.runtime_value_type.fn_type(&arg_types, false)
         };
-
         let func_name = if func.ident == "main" {
-            "_sprs_main"
+            naming::INTERNAL_MAIN_FN
         } else {
             &func.ident
         };

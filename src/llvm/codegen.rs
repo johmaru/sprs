@@ -10,6 +10,7 @@ use inkwell::module::Module;
 use inkwell::types::{BasicMetadataTypeEnum, BasicTypeEnum};
 use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
 use crate::llvm::compiler::{Compiler, OS, Tag};
+use crate::naming;
 
 impl<'ctx> Compiler<'ctx> {
     pub fn get_known_type_from_expr(&self, expr: &ast::Expr) -> Result<String, String> {
@@ -120,7 +121,7 @@ impl<'ctx> Compiler<'ctx> {
             .collect();
 
         let func_name = if func.ident == "main" {
-            "_sprs_main"
+            naming::INTERNAL_MAIN_FN
         } else {
             &func.ident
         };

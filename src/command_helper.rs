@@ -1,3 +1,4 @@
+use crate::naming;
 use std::fs::File;
 
 use serde::{Deserialize, Serialize};
@@ -21,7 +22,7 @@ pub fn init_project(mut name: Option<&str>) -> Result<(), Box<dyn std::error::Er
     use std::io::Write;
 
     if name.is_none() {
-        name = Some("sprs_project");
+        name = Some(naming::DEFAULT_PROJECT_NAME);
     }
 
     let name = name.unwrap();
@@ -35,19 +36,19 @@ pub fn init_project(mut name: Option<&str>) -> Result<(), Box<dyn std::error::Er
     };
 
     let toml_str = toml::to_string_pretty(&config)?;
-    let mut file = File::create("sprs.toml")?;
+    let mut file = File::create(naming::CONFIG_FILE)?;
     file.write_all(toml_str.as_bytes())?;
-    println!("Project initialized successfully with sprs.toml");
+    println!("Project initialized successfully with {}", naming::CONFIG_FILE);
 
     std::fs::create_dir_all("src")?;
 
-    let default_code = r#"fn main() {
-    @println("Hello, Sprs!");
-}
-"#;
-    let mut src_file = File::create("src/main.sprs")?;
+    let default_code = format!(
+        "fn main() {{\n    @println(\"Hello, {}!\");\n}}\n",
+        naming::LANG_DISPLAY_NAME
+    );
+    let mut src_file = File::create(format!("src/{}", naming::SOURCE_FILE))?;
     src_file.write_all(default_code.as_bytes())?;
-    println!("Created src/main.sprs with default code.");
+    println!("Created src/{} with default code.", naming::SOURCE_FILE);
 
     Ok(())
 }
@@ -60,8 +61,8 @@ pub enum HelpCommand {
 pub fn help_print(help: HelpCommand) {
     match help {
         HelpCommand::All => {
-            println!("Sprs Compiler Full Help:");
-            println!("Usage: sprs <source_file.sprs> [options]");
+            println!("{} Compiler Full Help:", naming::LANG_DISPLAY_NAME);
+            println!("Usage: {} <source_file{}> [options]", naming::LANG_NAME, naming::SOURCE_EXT);
             println!("Options:");
             println!("---This Section is 'Command' Section---");
             println!("  init <?args>  Initialize the project");
@@ -74,13 +75,14 @@ pub fn help_print(help: HelpCommand) {
             println!("  --all           Show all available commands and options");
             println!();
             println!(
-                "This is the Sprs compiler, a simple compiler for the Sprs programming language."
+                "{} is the {} compiler, a simple compiler for the {} programming language.",
+                naming::LANG_DISPLAY_NAME, naming::LANG_DISPLAY_NAME, naming::LANG_DISPLAY_NAME
             );
             println!("For more information, visit the official documentation.");
         }
         HelpCommand::NoArg => {
-            println!("Sprs Compiler Help:");
-            println!("Usage: sprs <source_file.sprs> [options]");
+            println!("{} Compiler Help:", naming::LANG_DISPLAY_NAME);
+            println!("Usage: {} <source_file{}> [options]", naming::LANG_NAME, naming::SOURCE_EXT);
             println!("Options:");
             println!("---This Section is 'Command' Section---");
             println!("  init <?args>  Initialize the project");
