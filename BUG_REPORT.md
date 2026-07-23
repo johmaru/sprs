@@ -63,10 +63,6 @@
 - **ファイル**: `src/llvm/arithmetic.rs`
 - **推奨修正**: 仕様に応じてオーバーフローチェックまたはフラグ追加。
 
-#### BUG-L07: `create_div_expr` / `create_mod_expr` でゼロ除算チェックなし 【High】
-- **ファイル**: `src/llvm/arithmetic.rs`
-- **推奨修正**: 除算前に `r_val == 0` のチェックを生成し `__panic` を呼ぶ。
-
 #### BUG-L08: `cast` マクロの switch cases に `Int8/Int16/Int32/Int64/Uint8/...` が未登録 → 整数を cast すると f64 として誤解釈 【High】
 - **ファイル**: `src/llvm/macros.rs`
 - **推奨修正**: Int8/Int16/.../Uint64 のケースを追加。
@@ -143,11 +139,11 @@
 | 深刻度 | 件数 | バグ ID |
 |--------|------|--------|
 | **Critical** | 0 | — |
-| **High** | 7 | L07, L08, L14, L15, L21, M03, M04 |
+| **High** | 6 | L08, L14, L15, L21, M03, M04 |
 | **Medium** | 9 | F06, F08, F09, L04, L06, L09, L13, L17, M12 |
 | **Low** | 12 | F04b, F11, F12, F14, F15, L05, L24, M06, M08, M09, M10, M11 |
 
-合計: 28 件 (ユニーク)。
+合計: 27 件 (ユニーク)。
 
 ---
 
@@ -208,6 +204,7 @@
 - **BUG-L16**: `set_global_constant_str` の `Set` バリアントと不整合 → `StrConstantAction`/`StrValue` enum を削除し、`&str` 直接受け取りに簡略化。`src/llvm/compiler.rs`
 - **BUG-M05**: `get_all_arguments` の `skip_next` が dead code → `filter().collect()` に簡潔化
 - **BUG-L03**: `create_if_expr` の PHI incoming 判定が `t.get_parent() == merge_bb` で常に false になる問題 → ターミネータの `opcode` が `Br` かどうかで判定するよう修正。`src/llvm/control_flow.rs`
+- **BUG-L07**: `create_div_expr` / `create_mod_expr` でゼロ除算チェックなし → `create_binary_int_op` 経由から独立実装に切り出し、除算前に `r_val == 0` チェックを生成し `__panic` を呼ぶよう修正。`src/llvm/arithmetic.rs`
 
 ---
 

@@ -1522,14 +1522,76 @@ pub fn create_div_expr<'ctx>(
     rhs: &ast::Expr,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
-    create_binary_int_op(
-        self_compiler,
-        lhs,
-        rhs,
-        module,
-        IntBinOp::Div,
-        |builder, l_val, r_val, name| Ok(builder.build_int_signed_div(l_val, r_val, name).unwrap()),
-    )
+    let l_ptr = self_compiler.compile_expr(lhs, module)?.into_pointer_value();
+    let r_ptr = self_compiler.compile_expr(rhs, module)?.into_pointer_value();
+
+    let l_data_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, l_ptr, 1, "l_data_ptr")
+        .unwrap();
+    let l_val = self_compiler
+        .builder
+        .build_load(self_compiler.context.i64_type(), l_data_ptr, "l_val")
+        .unwrap()
+        .into_int_value();
+
+    let r_data_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, r_ptr, 1, "r_data_ptr")
+        .unwrap();
+    let r_val = self_compiler
+        .builder
+        .build_load(self_compiler.context.i64_type(), r_data_ptr, "r_val")
+        .unwrap()
+        .into_int_value();
+
+    // Zero-division check
+    let parent_fn = self_compiler
+        .builder
+        .get_insert_block()
+        .unwrap()
+        .get_parent()
+        .unwrap();
+    let bb_div = self_compiler
+        .context
+        .append_basic_block(parent_fn, "div_bb");
+    let bb_err = self_compiler
+        .context
+        .append_basic_block(parent_fn, "div_zero_err");
+
+    let zero = self_compiler.context.i64_type().const_int(0, false);
+    let is_zero = self_compiler
+        .builder
+        .build_int_compare(inkwell::IntPredicate::EQ, r_val, zero, "is_zero")
+        .unwrap();
+    let _ = self_compiler
+        .builder
+        .build_conditional_branch(is_zero, bb_err, bb_div);
+
+    // Error: division by zero
+    self_compiler.builder.position_at_end(bb_err);
+    let settings = PanicErrorSettings {
+        is_const: true,
+        is_global: true,
+    };
+    let _ = create_panic_err(self_compiler, "Division by zero", module, settings)?;
+    self_compiler.builder.build_unreachable().unwrap();
+
+    // Div
+    self_compiler.builder.position_at_end(bb_div);
+    let result = self_compiler
+        .builder
+        .build_int_signed_div(l_val, r_val, "quotient")
+        .unwrap();
+
+    let res_ptr = create_entry_block_alloca(self_compiler, "res_alloc");
+    self_compiler.build_runtime_value_store(
+        res_ptr,
+        StoreTag::Int(Tag::Integer as u64),
+        StoreValue::Int(result),
+        "div_res_store",
+    );
+    Ok(res_ptr.into())
 }
 
 pub fn create_mod_expr<'ctx>(
@@ -1538,21 +1600,81 @@ pub fn create_mod_expr<'ctx>(
     rhs: &ast::Expr,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
-    create_binary_int_op(
-        self_compiler,
-        lhs,
-        rhs,
-        module,
-        IntBinOp::Mod,
-        |builder, l_val, r_val, name| Ok(builder.build_int_signed_rem(l_val, r_val, name).unwrap()),
-    )
+    let l_ptr = self_compiler.compile_expr(lhs, module)?.into_pointer_value();
+    let r_ptr = self_compiler.compile_expr(rhs, module)?.into_pointer_value();
+
+    let l_data_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, l_ptr, 1, "l_data_ptr")
+        .unwrap();
+    let l_val = self_compiler
+        .builder
+        .build_load(self_compiler.context.i64_type(), l_data_ptr, "l_val")
+        .unwrap()
+        .into_int_value();
+
+    let r_data_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, r_ptr, 1, "r_data_ptr")
+        .unwrap();
+    let r_val = self_compiler
+        .builder
+        .build_load(self_compiler.context.i64_type(), r_data_ptr, "r_val")
+        .unwrap()
+        .into_int_value();
+
+    // Zero-division check
+    let parent_fn = self_compiler
+        .builder
+        .get_insert_block()
+        .unwrap()
+        .get_parent()
+        .unwrap();
+    let bb_mod = self_compiler
+        .context
+        .append_basic_block(parent_fn, "mod_bb");
+    let bb_err = self_compiler
+        .context
+        .append_basic_block(parent_fn, "mod_zero_err");
+
+    let zero = self_compiler.context.i64_type().const_int(0, false);
+    let is_zero = self_compiler
+        .builder
+        .build_int_compare(inkwell::IntPredicate::EQ, r_val, zero, "is_zero")
+        .unwrap();
+    let _ = self_compiler
+        .builder
+        .build_conditional_branch(is_zero, bb_err, bb_mod);
+
+    // Error: modulo by zero
+    self_compiler.builder.position_at_end(bb_err);
+    let settings = PanicErrorSettings {
+        is_const: true,
+        is_global: true,
+    };
+    let _ = create_panic_err(self_compiler, "Modulo by zero", module, settings)?;
+    self_compiler.builder.build_unreachable().unwrap();
+
+    // Mod
+    self_compiler.builder.position_at_end(bb_mod);
+    let result = self_compiler
+        .builder
+        .build_int_signed_rem(l_val, r_val, "remainder")
+        .unwrap();
+
+    let res_ptr = create_entry_block_alloca(self_compiler, "res_alloc");
+    self_compiler.build_runtime_value_store(
+        res_ptr,
+        StoreTag::Int(Tag::Integer as u64),
+        StoreValue::Int(result),
+        "mod_res_store",
+    );
+    Ok(res_ptr.into())
 }
 
 enum IntBinOp {
     Sub,
     Mul,
-    Div,
-    Mod,
 }
 
 fn create_binary_int_op<'ctx, F>(
@@ -1605,11 +1727,8 @@ where
         match op {
             IntBinOp::Sub => "difference",
             IntBinOp::Mul => "product",
-            IntBinOp::Div => "quotient",
-            IntBinOp::Mod => "remainder",
         },
     )?;
-
     let res_ptr = create_entry_block_alloca(self_compiler, "res_alloc");
 
     self_compiler.build_runtime_value_store(
