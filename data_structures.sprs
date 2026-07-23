@@ -1,0 +1,101 @@
+pkg data_structures;
+
+# === Lists (list_push only, no index — create_index bug) ===
+
+pub fn list_push_and_print() >> i64 {
+    var y = [];
+    @list_push(y, 42);
+    @list_push(y, 100);
+    @list_push(y, 200);
+    return 1;
+}
+
+pub fn list_with_vars() >> i64 {
+    var y = [];
+    var z = 20;
+    @list_push(y, z);
+    var w = 30;
+    @list_push(y, w);
+    return 1;
+}
+
+pub fn list_build_loop() >> i64 {
+    var y = [];
+    var i = 0;
+    while i < 5 {
+        @list_push(y, i);
+        i = i + 1;
+    }
+    return 1;
+}
+
+pub fn list_empty() >> i64 {
+    var y = [];
+    return 1;
+}
+
+# === Struct ===
+
+struct Point {
+    x >> i64,
+    y >> i64
+}
+
+pub fn struct_create_x() >> i64 {
+    var p = Point {
+        x = 10,
+        y = 20
+    };
+    return p.x;
+}
+
+pub fn struct_create_y() >> i64 {
+    var p = Point {
+        x = 100,
+        y = 200
+    };
+    return p.y;
+}
+
+pub fn struct_both_fields() >> i64 {
+    var p = Point {
+        x = 5,
+        y = 15
+    };
+    return p.x + p.y;
+}
+
+pub fn struct_in_function() >> i64 {
+    var p = Point {
+        x = 1,
+        y = 2
+    };
+    var sum = p.x + p.y;
+    return sum;
+}
+
+# === Enum ===
+
+enum Color {
+    Red,
+    Green,
+    Blue
+}
+
+pub fn enum_access() >> i64 {
+    var c = Color.Red;
+    return 1;
+}
+
+pub fn enum_multiple() >> i64 {
+    var a = Color.Red;
+    var b = Color.Green;
+    var c = Color.Blue;
+    return 3;
+}
+
+pub fn enum_in_list() >> i64 {
+    var y = [];
+    @list_push(y, Color.Green);
+    return 1;
+}

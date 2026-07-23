@@ -155,24 +155,17 @@ pub fn create_string<'ctx>(
     str: &String,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
-    // Deduplicate the LLVM global string constant (NUL-terminated) — the
-    // runtime copies these bytes into an owned Rust `String` slot, so the
-    // global itself is read-only and can be shared across all uses.
-    let global = if let Some(existing) = self_compiler.string_constants.get(str) {
-        *existing
-    } else {
-        let str_val = self_compiler.context.const_string(str.as_bytes(), true);
-        let global = module.add_global(
-            str_val.get_type(),
-            Some(AddressSpace::default()),
-            &format!("str_const_{}", self_compiler.string_constants.len()),
-        );
-        global.set_initializer(&str_val);
-        global.set_linkage(Linkage::Internal);
-        global.set_constant(true);
-        self_compiler.string_constants.insert(str.clone(), global);
-        global
-    };
+    let idx = self_compiler.string_counter;
+    self_compiler.string_counter += 1;
+    let str_val = self_compiler.context.const_string(str.as_bytes(), true);
+    let global = module.add_global(
+        str_val.get_type(),
+        Some(AddressSpace::default()),
+        &format!("str_const_{}", idx),
+    );
+    global.set_initializer(&str_val);
+    global.set_linkage(Linkage::Internal);
+    global.set_constant(true);
 
     // Build a runtime String slot that owns a proper Rust `String` (with
     // length tracking — no NUL-termination assumption). The slot is freed

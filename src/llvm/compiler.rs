@@ -33,7 +33,7 @@ pub struct Compiler<'ctx> {
     pub function_signatures: Option<FunctionValue<'ctx>>,
     pub runtime_value_type: StructType<'ctx>,
     pub target_os: OS,
-    pub string_constants: HashMap<String, inkwell::values::GlobalValue<'ctx>>,
+    pub string_counter: usize,
     pub malloc_type: inkwell::types::FunctionType<'ctx>,
     pub source_path: String,
     pub struct_defs: HashMap<String, StructDef<'ctx>>, // struct name -> struct definition
@@ -196,14 +196,12 @@ impl<'ctx> Compiler<'ctx> {
         is_global: bool,
         is_const: bool,
     ) -> Option<StrConstantResult<'ctx>> {
-        if let Some(global) = self.string_constants.get(s) {
-            return Some(StrConstantResult::Global(*global));
-        }
-
+        let idx = self.string_counter;
+        self.string_counter += 1;
         let global_name = if is_global {
-            format!("str_const_global_{}", self.string_constants.len())
+            format!("str_const_global_{}", idx)
         } else {
-            format!("str_const_const_{}", self.string_constants.len())
+            format!("str_const_const_{}", idx)
         };
         let str_const = self.context.const_string(s.as_bytes(), true);
         let global_str = module.add_global(
@@ -220,8 +218,6 @@ impl<'ctx> Compiler<'ctx> {
         } else {
             Linkage::Internal
         });
-
-        self.string_constants.insert(s.to_string(), global_str);
         Some(StrConstantResult::Global(global_str))
     }
 }
@@ -300,7 +296,7 @@ impl<'ctx> Compiler<'ctx> {
             function_signatures: None,
             runtime_value_type,
             target_os: OS::Unknown,
-            string_constants: HashMap::new(),
+            string_counter: 0,
             malloc_type,
             source_path,
             struct_defs: HashMap::new(),

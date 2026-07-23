@@ -1,0 +1,48 @@
+pkg variables;
+
+# === Variables ===
+
+pub fn var_assign() >> i64 {
+    var x = 10;
+    x = 20;
+    return x;
+}
+
+pub fn var_reassign() >> i64 {
+    var x = 1;
+    x = 2;
+    x = 3;
+    return x;
+}
+
+pub fn multiple_vars() >> i64 {
+    var a = 1;
+    var b = 2;
+    var c = 3;
+    return a + b + c;
+}
+
+pub fn var_shadow() >> i64 {
+    var x = 1;
+    var x = 2;
+    return x;
+}
+
+pub fn var_in_loop() >> i64 {
+    var total = 0;
+    var i = 0;
+    while i < 5 {
+        var temp = i * 2;
+        total = total + temp;
+        i = i + 1;
+    }
+    return total;
+}
+
+pub fn var_math() >> i64 {
+    var a = 10;
+    var b = 20;
+    var c = a + b;
+    var d = c * 2;
+    return d;
+}

@@ -1,0 +1,125 @@
+pkg types;
+
+# === Cast ===
+
+pub fn cast_i8() >> i64 {
+    return @cast(100, i8);
+}
+
+pub fn cast_u8() >> i64 {
+    return @cast(200, u8);
+}
+
+pub fn cast_i16() >> i64 {
+    return @cast(1000, i16);
+}
+
+pub fn cast_u16() >> i64 {
+    return @cast(50000, u16);
+}
+
+pub fn cast_i32() >> i64 {
+    return @cast(100000, i32);
+}
+
+pub fn cast_u32() >> i64 {
+    return @cast(3000000000, u32);
+}
+
+pub fn cast_i64() >> i64 {
+    return @cast(999999999999, i64);
+}
+
+pub fn cast_u64() >> i64 {
+    return @cast(99999999999, u64);
+}
+
+pub fn cast_arithmetic() >> i64 {
+    return @cast(10, i32) + @cast(5, i32);
+}
+
+pub fn cast_loop() >> i64 {
+    var i = @cast(0, i8);
+    var count = 0;
+    while i < @cast(5, i8) {
+        count = count + 1;
+        i = i + @cast(1, i8);
+    }
+    return count;
+}
+
+# XFAIL: @cast + @cast with different types (infer_type Call bug)
+# fn cast_mixed() >> i64 { return @cast(1, i8) + @cast(2, i16) + @cast(3, i32); }
+
+
+# === Float ===
+
+pub fn float_add() >> fp {
+    return 1.5 + 2.5;
+}
+
+pub fn float_sub() >> fp {
+    return 10.0 - 3.5;
+}
+
+pub fn float_mul() >> fp {
+    return 2.5 * 4.0;
+}
+
+pub fn float_div() >> fp {
+    return 10.0 / 4.0;
+}
+
+pub fn float_complex() >> fp {
+    return (1.5 + 2.5) * 2.0;
+}
+
+pub fn float_var_arith() >> fp {
+    # XFAIL: return var (move semantics resets tag)
+    var a = 5.2;
+    var b = 7.3;
+    return a + b;
+}
+
+# XFAIL: >> fp + @cast return (infer_type @cast bug)
+# fn float_cast_f16() >> fp { return @cast(1.5, fp16); }
+# fn float_cast_f32() >> fp { return @cast(3.14, fp32); }
+# fn float_cast_f64() >> fp { return @cast(2.71828, fp64); }
+
+pub fn float_while_loop() >> i64 {
+    var v = @cast(0.0, fp16);
+    var count = 0;
+    while v < @cast(1.0, fp16) {
+        count = count + 1;
+        v = v + @cast(0.25, fp16);
+    }
+    return count;
+}
+
+pub fn float_nested() >> fp {
+    return (1.0 + 2.0) * (3.0 + 4.0);
+}
+
+pub fn float_mixed() >> fp {
+    # XFAIL: return var (move semantics resets tag)
+    var x = 12.3;
+    return x + 0.1;
+}
+
+# === String ===
+
+pub fn get_greeting() >> str {
+    return "hello" + " world";
+}
+
+pub fn get_static_str() >> str {
+    return "sprs";
+}
+
+pub fn call_str_fn() >> i64 {
+    var s = get_greeting();
+    @println(s);
+    var s2 = get_static_str();
+    @println(s2);
+    return 1;
+}
