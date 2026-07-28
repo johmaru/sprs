@@ -1,7 +1,7 @@
-//! ソースコード位置情報の表現。
+//! Source location tracking for AST nodes.
 
-/// ソースコード上の範囲をバイトオフセットで表現。
-/// lexer.rs の logos::span と互換。
+/// Byte-offset range in the source text.
+/// Compatible with logos::span used in lexer.rs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Span {
     pub start: usize,
@@ -9,7 +9,7 @@ pub struct Span {
 }
 
 impl Span {
-    /// 空スパン（位置不明・合成ノード用）
+    /// Empty span for unknown or synthetic nodes.
     pub const DUMMY: Span = Span { start: 0, end: 0 };
 
     pub fn new(start: usize, end: usize) -> Self {
@@ -17,7 +17,7 @@ impl Span {
     }
 }
 
-/// AST ノードに span を付与するラッパー。
+/// Wrapper that attaches a Span to an AST node.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Spanned<T> {
     pub node: T,

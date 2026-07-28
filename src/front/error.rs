@@ -1,9 +1,9 @@
-//! 構造化エラーレポートの型定義と出力。
+//! Structured error reporting: type definitions and output rendering.
 
 use crate::front::span::Span;
 
-/// 安定エラーコード。仕様変更で変わらない ID。
-/// 形式: SPRS-<CAT>-<NNN>
+/// Stable error code that does not change across spec revisions.
+/// Format: SPRS-<CAT>-<NNN>
 #[derive(Debug, Clone)]
 pub struct ErrorCode {
     pub category: ErrorCategory,
@@ -12,27 +12,27 @@ pub struct ErrorCode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorCategory {
-    /// 構文エラー: lalrpop がパース失敗
+    /// Syntax error: lalrpop failed to parse.
     Syntax,
-    /// 型エラー: 関数の戻り値型注釈と実際の戻り値の不一致等
+    /// Type error: e.g. return-type annotation does not match actual return value.
     Type,
-    /// 意味エラー: 未定義変数、未定義関数、未知のマクロ等
+    /// Semantic error: undefined variable, unknown macro, etc.
     Semantic,
 }
 
 impl ErrorCode {
-    /// SPRS-SYN-001 形式の文字列表現
+    /// Returns the string representation, e.g. "SPRS-SYN-001".
     pub fn as_string(&self) -> String {
-        let cat = match self.category {
+        let error_cat = match self.category {
             ErrorCategory::Syntax => "SYN",
             ErrorCategory::Type => "TYP",
             ErrorCategory::Semantic => "SEM",
         };
-        format!("SPRS-{}-{:03}", cat, self.number)
+        format!("SPRS-{}-{:03}", error_cat, self.number)
     }
 }
 
-/// エラーの発生元ファイルと位置
+/// Source file and span where an error occurred.
 #[derive(Debug, Clone)]
 pub struct Location {
     pub file: String,
@@ -45,10 +45,10 @@ impl Location {
     }
 }
 
-/// 構造化エラー
+/// Structured error emitted by the compiler.
 #[derive(Debug, Clone)]
 pub enum SprsError {
-    /// lalrpop の ParseError を構造化したもの
+    /// Structured form of lalrpop's ParseError.
     Parse {
         code: ErrorCode,
         location: Location,
@@ -56,14 +56,14 @@ pub enum SprsError {
         expected: Vec<String>,
         help: Option<String>,
     },
-    /// 意味エラー（未定義変数、未知のマクロ等）
+    /// Semantic error (undefined variable, unknown macro, etc.)
     Semantic {
         code: ErrorCode,
         location: Location,
         message: String,
         help: Option<String>,
     },
-    /// 型エラー（戻り値型不一致等）
+    /// Type error (return-type mismatch, etc.)
     Type {
         code: ErrorCode,
         location: Location,
@@ -72,7 +72,7 @@ pub enum SprsError {
         actual_type: Option<String>,
         help: Option<String>,
     },
-    /// コンパイラ内部エラー（バグ）
+    /// Compiler-internal error (bug).
     Internal {
         message: String,
         location: Option<Location>,
@@ -80,20 +80,28 @@ pub enum SprsError {
 }
 
 impl std::fmt::Display for SprsError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SprsError::Parse { code, message, .. } => write!(f, "{}: {}", code.as_string(), message),
-            SprsError::Semantic { code, message, .. } => write!(f, "{}: {}", code.as_string(), message),
-            SprsError::Type { code, message, .. } => write!(f, "{}: {}", code.as_string(), message),
-            SprsError::Internal { message, .. } => write!(f, "Internal error: {}", message),
+            SprsError::Parse { code, message, .. } => {
+                write!(formatter, "{}: {}", code.as_string(), message)
+            }
+            SprsError::Semantic { code, message, .. } => {
+                write!(formatter, "{}: {}", code.as_string(), message)
+            }
+            SprsError::Type { code, message, .. } => {
+                write!(formatter, "{}: {}", code.as_string(), message)
+            }
+            SprsError::Internal { message, .. } => {
+                write!(formatter, "Internal error: {}", message)
+            }
         }
     }
 }
 
 impl std::error::Error for SprsError {}
 
-/// 既存の String ベースエラーからの移行用。
-/// Phase 2 で全サイトが SprsError に置き換わったら削除可能。
+/// Legacy conversion from String-based errors.
+/// Can be removed once all call sites use SprsError directly.
 impl From<String> for SprsError {
     fn from(msg: String) -> Self {
         SprsError::Internal {
@@ -103,7 +111,7 @@ impl From<String> for SprsError {
     }
 }
 
-/// エラー出力フォーマット
+/// Output format for error rendering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorFormat {
     Human,
@@ -111,27 +119,27 @@ pub enum ErrorFormat {
 }
 
 impl ErrorFormat {
-    pub fn from_str(s: &str) -> Result<Self, String> {
-        match s {
+    pub fn from_str(format_str: &str) -> Result<Self, String> {
+        match format_str {
             "human" => Ok(ErrorFormat::Human),
             "json" => Ok(ErrorFormat::Json),
             _ => Err(format!(
                 "Unknown error format: {} (use 'human' or 'json')",
-                s
+                format_str
             )),
         }
     }
 }
 
-/// バイトオフセットから行番号と列番号を計算
+/// Convert a byte offset to 1-based (line, column) in the source text.
 fn get_line_col(source: &str, offset: usize) -> (usize, usize) {
     let mut line = 1;
     let mut col = 1;
-    for (i, c) in source.char_indices() {
+    for (i, ch) in source.char_indices() {
         if i == offset {
             break;
         }
-        if c == '\n' {
+        if ch == '\n' {
             line += 1;
             col = 1;
         } else {
@@ -141,7 +149,7 @@ fn get_line_col(source: &str, offset: usize) -> (usize, usize) {
     (line, col)
 }
 
-/// 指定行のソースコードスニペットを取得
+/// Return the source line at the given 1-based line number.
 fn get_snippet(source: &str, line_number: usize) -> String {
     source
         .lines()
@@ -150,7 +158,7 @@ fn get_snippet(source: &str, line_number: usize) -> String {
         .to_string()
 }
 
-/// SprsError を文字列として出力
+/// Render a SprsError as a string in the requested format.
 pub fn render(error: &SprsError, format: ErrorFormat, source: &str) -> String {
     match format {
         ErrorFormat::Json => render_json(error, source),
@@ -172,11 +180,11 @@ fn render_json(error: &SprsError, source: &str) -> String {
             let snippet = get_snippet(source, line);
             let expected_json = expected
                 .iter()
-                .map(|e| format!("\"{}\"", e.replace('"', "\\\"")))
+                .map(|expected_token| format!("\"{}\"", expected_token.replace('"', "\\\"")))
                 .collect::<Vec<_>>()
                 .join(",");
             let help_json = match help {
-                Some(h) => format!("\"{}\"", h.replace('"', "\\\"")),
+                Some(help_text) => format!("\"{}\"", help_text.replace('"', "\\\"")),
                 None => "null".to_string(),
             };
             format!(
@@ -203,7 +211,7 @@ fn render_json(error: &SprsError, source: &str) -> String {
             let (end_line, end_col) = get_line_col(source, location.span.end);
             let snippet = get_snippet(source, line);
             let help_json = match help {
-                Some(h) => format!("\"{}\"", h.replace('"', "\\\"")),
+                Some(help_text) => format!("\"{}\"", help_text.replace('"', "\\\"")),
                 None => "null".to_string(),
             };
             format!(
@@ -230,16 +238,16 @@ fn render_json(error: &SprsError, source: &str) -> String {
             let (line, col) = get_line_col(source, location.span.start);
             let (end_line, end_col) = get_line_col(source, location.span.end);
             let snippet = get_snippet(source, line);
-            let et = match expected_type {
-                Some(t) => format!("\"{}\"", t.replace('"', "\\\"")),
+            let expected_type_json = match expected_type {
+                Some(type_name) => format!("\"{}\"", type_name.replace('"', "\\\"")),
                 None => "null".to_string(),
             };
-            let at = match actual_type {
-                Some(t) => format!("\"{}\"", t.replace('"', "\\\"")),
+            let actual_type_json = match actual_type {
+                Some(type_name) => format!("\"{}\"", type_name.replace('"', "\\\"")),
                 None => "null".to_string(),
             };
             let help_json = match help {
-                Some(h) => format!("\"{}\"", h.replace('"', "\\\"")),
+                Some(help_text) => format!("\"{}\"", help_text.replace('"', "\\\"")),
                 None => "null".to_string(),
             };
             format!(
@@ -252,16 +260,16 @@ fn render_json(error: &SprsError, source: &str) -> String {
                 end_line,
                 end_col,
                 snippet.replace('"', "\\\"").replace('\n', "\\n"),
-                et,
-                at,
+                expected_type_json,
+                actual_type_json,
                 help_json
             )
         }
         SprsError::Internal { message, location } => {
             let (line, col, file) = match location {
                 Some(loc) => {
-                    let (l, c) = get_line_col(source, loc.span.start);
-                    (l, c, loc.file.clone())
+                    let (line_num, col_num) = get_line_col(source, loc.span.start);
+                    (line_num, col_num, loc.file.clone())
                 }
                 None => (0, 0, "<unknown>".to_string()),
             };
@@ -288,7 +296,7 @@ fn render_human(error: &SprsError, source: &str) -> String {
             let (line, col) = get_line_col(source, location.span.start);
             let snippet = get_snippet(source, line);
             let pointer = " ".repeat(col) + "^";
-            let mut out = format!(
+            let mut output = format!(
                 "error[{}]: {}\n  --> {}:{}:{}\n   |\n{: >3} | {}\n   | {}\n",
                 code.as_string(),
                 message,
@@ -300,12 +308,12 @@ fn render_human(error: &SprsError, source: &str) -> String {
                 pointer
             );
             if !expected.is_empty() {
-                out.push_str(&format!("   |\n   = expected: {}\n", expected.join(", ")));
+                output.push_str(&format!("   |\n   = expected: {}\n", expected.join(", ")));
             }
-            if let Some(h) = help {
-                out.push_str(&format!("help: {}\n", h));
+            if let Some(help_text) = help {
+                output.push_str(&format!("help: {}\n", help_text));
             }
-            out
+            output
         }
         SprsError::Semantic {
             code,
@@ -316,7 +324,7 @@ fn render_human(error: &SprsError, source: &str) -> String {
             let (line, col) = get_line_col(source, location.span.start);
             let snippet = get_snippet(source, line);
             let pointer = " ".repeat(col) + "^";
-            let mut out = format!(
+            let mut output = format!(
                 "error[{}]: {}\n  --> {}:{}:{}\n   |\n{: >3} | {}\n   | {}\n",
                 code.as_string(),
                 message,
@@ -327,10 +335,10 @@ fn render_human(error: &SprsError, source: &str) -> String {
                 snippet,
                 pointer
             );
-            if let Some(h) = help {
-                out.push_str(&format!("help: {}\n", h));
+            if let Some(help_text) = help {
+                output.push_str(&format!("help: {}\n", help_text));
             }
-            out
+            output
         }
         SprsError::Type {
             code,
@@ -343,7 +351,7 @@ fn render_human(error: &SprsError, source: &str) -> String {
             let (line, col) = get_line_col(source, location.span.start);
             let snippet = get_snippet(source, line);
             let pointer = " ".repeat(col) + "^";
-            let mut out = format!(
+            let mut output = format!(
                 "error[{}]: {}\n  --> {}:{}:{}\n   |\n{: >3} | {}\n   | {}\n",
                 code.as_string(),
                 message,
@@ -354,13 +362,16 @@ fn render_human(error: &SprsError, source: &str) -> String {
                 snippet,
                 pointer
             );
-            if let (Some(et), Some(at)) = (expected_type, actual_type) {
-                out.push_str(&format!("   |\n   = expected: {}, found: {}\n", et, at));
+            if let (Some(expected_type_str), Some(actual_type_str)) = (expected_type, actual_type) {
+                output.push_str(&format!(
+                    "   |\n   = expected: {}, found: {}\n",
+                    expected_type_str, actual_type_str
+                ));
             }
-            if let Some(h) = help {
-                out.push_str(&format!("help: {}\n", h));
+            if let Some(help_text) = help {
+                output.push_str(&format!("help: {}\n", help_text));
             }
-            out
+            output
         }
         SprsError::Internal { message, location } => match location {
             Some(loc) => {

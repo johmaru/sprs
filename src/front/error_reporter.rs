@@ -3,7 +3,7 @@ use crate::front::lexer::Token;
 use crate::front::span::Span;
 use lalrpop_util::ParseError;
 
-/// lalrpop の ParseError を SprsError::Parse に変換
+/// Convert lalrpop's ParseError into SprsError::Parse.
 pub fn to_sprs_error(
     source: &str,
     file_path: &str,
@@ -63,7 +63,7 @@ pub fn to_sprs_error(
             }
         }
         ParseError::User { error } => {
-            // User error はメッセージ内容でコード判定
+            // Determine error code from message content.
             let code = if error.contains("Invalid assignment target") {
                 ErrorCode {
                     category: ErrorCategory::Syntax,
