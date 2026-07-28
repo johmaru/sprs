@@ -6,7 +6,6 @@ pub mod compiler;
 pub mod module_loader;
 pub mod control_flow;
 pub mod data_structures;
-pub mod error_helper;
 pub mod llvm_executer;
 pub mod macros;
 pub mod parser;
