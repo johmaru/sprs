@@ -1,4 +1,6 @@
 use crate::front::ast;
+use crate::front::error::{ErrorCategory, ErrorCode, Location, SprsError};
+use crate::front::span::Span;
 use crate::front::type_helper;
 use crate::front::type_helper::Type;
 use crate::llvm::builder_helper;
@@ -17,7 +19,7 @@ impl<'ctx> Compiler<'ctx> {
         &mut self,
         module_name: &str,
         main_path: Option<&String>,
-    ) -> Result<(), String> {
+    ) -> Result<(), SprsError> {
         if self.modules.contains_key(module_name) {
             return Ok(());
         }
@@ -30,8 +32,15 @@ impl<'ctx> Compiler<'ctx> {
             }
         }
 
-        let source = std::fs::read_to_string(&path)
-            .map_err(|e| format!("Failed to read module file {}: {}", path, e))?;
+        let source = std::fs::read_to_string(&path).map_err(|e| SprsError::Semantic {
+            code: ErrorCode {
+                category: ErrorCategory::Semantic,
+                number: 10,
+            },
+            location: Location::new(path.clone(), Span::DUMMY),
+            message: format!("Failed to read module file {}: {}", path, e),
+            help: None,
+        })?;
 
         let items = parse_only(&source, &path)?;
 

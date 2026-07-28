@@ -79,6 +79,28 @@ pub enum SprsError {
     },
 }
 
+impl std::fmt::Display for SprsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SprsError::Parse { code, message, .. } => write!(f, "{}: {}", code.as_string(), message),
+            SprsError::Semantic { code, message, .. } => write!(f, "{}: {}", code.as_string(), message),
+            SprsError::Type { code, message, .. } => write!(f, "{}: {}", code.as_string(), message),
+            SprsError::Internal { message, .. } => write!(f, "Internal error: {}", message),
+        }
+    }
+}
+
+/// 既存の String ベースエラーからの移行用。
+/// Phase 2 で全サイトが SprsError に置き換わったら削除可能。
+impl From<String> for SprsError {
+    fn from(msg: String) -> Self {
+        SprsError::Internal {
+            message: msg,
+            location: None,
+        }
+    }
+}
+
 /// エラー出力フォーマット
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorFormat {
