@@ -1,3 +1,4 @@
+use crate::front::error::SprsError;
 use inkwell::{
     values::{BasicValueEnum, PointerValue},
     builder::Builder,
@@ -178,7 +179,7 @@ pub fn create_if_expr<'ctx>(
     then_expr: &Spanned<ast::Expr>,
     else_expr: &Spanned<ast::Expr>,
     module: &inkwell::module::Module<'ctx>,
-) -> Result<BasicValueEnum<'ctx>, String> {
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
     let parent_fn = self_compiler
         .builder
         .get_insert_block()

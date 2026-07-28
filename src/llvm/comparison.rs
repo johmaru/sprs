@@ -1,3 +1,4 @@
+use crate::front::error::SprsError;
 use inkwell::values::{BasicValueEnum, PointerValue};
 use crate::{
     front::ast,
@@ -16,7 +17,7 @@ pub fn create_increment_or_decrement<'ctx>(
     expr: &Spanned<ast::Expr>,
     mode: UpDown,
     module: &inkwell::module::Module<'ctx>,
-) -> Result<BasicValueEnum<'ctx>, String> {
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
     let val_ptr = self_compiler
         .compile_expr(expr, module)?
         .into_pointer_value();
@@ -84,14 +85,14 @@ pub fn create_eq_or_neq<'ctx, F>(
     module: &inkwell::module::Module<'ctx>,
     mode: EqNeq,
     op_fn: F,
-) -> Result<BasicValueEnum<'ctx>, String>
+) -> Result<BasicValueEnum<'ctx>, SprsError>
 where
     F: Fn(
         &inkwell::builder::Builder<'ctx>,
         inkwell::values::IntValue<'ctx>,
         inkwell::values::IntValue<'ctx>,
         &str,
-    ) -> Result<inkwell::values::IntValue<'ctx>, String>,
+    ) -> Result<inkwell::values::IntValue<'ctx>, SprsError>,
 {
     let l_ptr = self_compiler
         .compile_expr(lhs, module)?
@@ -156,14 +157,14 @@ pub fn create_comparison<'ctx, F>(
     module: &inkwell::module::Module<'ctx>,
     mode: Comparison,
     comp_fn: F,
-) -> Result<BasicValueEnum<'ctx>, String>
+) -> Result<BasicValueEnum<'ctx>, SprsError>
 where
     F: Fn(
         &inkwell::builder::Builder<'ctx>,
         inkwell::values::IntValue<'ctx>,
         inkwell::values::IntValue<'ctx>,
         &str,
-    ) -> Result<inkwell::values::IntValue<'ctx>, String>,
+    ) -> Result<inkwell::values::IntValue<'ctx>, SprsError>,
 {
     let l_ptr = self_compiler
         .compile_expr(lhs, module)?

@@ -79,7 +79,7 @@ pub fn build_and_run(dest: Option<&str>, mode: ExecuteMode, error_format: crate:
             crate::front::error::ErrorFormat::Json => println!("{}", rendered),
             crate::front::error::ErrorFormat::Human => eprintln!("{}", rendered),
         }
-        return Err(format!("Compile Error: {}", e).into());
+        std::process::exit(1);
     }
 
     Target::initialize_x86(&InitializationConfig::default());

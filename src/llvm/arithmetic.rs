@@ -1,3 +1,5 @@
+use crate::front::error::{SprsError, ErrorCode, ErrorCategory, Location};
+use crate::front::span::Span;
 use inkwell::{
     AddressSpace,
     values::{BasicValueEnum, IntValue, PointerValue, ValueKind},
@@ -16,7 +18,7 @@ pub fn create_add_expr<'ctx>(
     lhs: &Spanned<ast::Expr>,
     rhs: &Spanned<ast::Expr>,
     module: &inkwell::module::Module<'ctx>,
-) -> Result<BasicValueEnum<'ctx>, String> {
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
     if let Ok(val) = create_add_expr_type_check(self_compiler, lhs, rhs, module) {
         return Ok(val);
     }
@@ -175,7 +177,7 @@ fn create_add_expr_type_check<'ctx>(
     lhs: &Spanned<ast::Expr>,
     rhs: &Spanned<ast::Expr>,
     module: &inkwell::module::Module<'ctx>,
-) -> Result<BasicValueEnum<'ctx>, String> {
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
     let is_type = |expr: &Spanned<ast::Expr>, ty: &str| -> bool {
         match self_compiler.get_known_type_from_expr(expr) {
             Ok(t) => t == ty,
@@ -227,14 +229,14 @@ fn create_add_expr_type_check<'ctx>(
         return create_float64_add_logic(self_compiler, lhs, rhs, module);
     }
 
-    Err("Unsupported types for addition".to_string())
+    Err(SprsError::Semantic { code: ErrorCode { category: ErrorCategory::Semantic, number: 14 }, location: Location::new(String::new(), Span::DUMMY), message: "Unsupported types for addition".to_string(), help: None })
 }
 
 fn create_add_expr_check_int<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
     l_tag: IntValue<'ctx>,
     r_tag: IntValue<'ctx>,
-) -> Result<IntValue<'ctx>, String> {
+) -> Result<IntValue<'ctx>, SprsError> {
     let int_tag = self_compiler
         .context
         .i32_type()
@@ -359,7 +361,7 @@ fn create_add_expr_check_string<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
     l_tag: IntValue<'ctx>,
     r_tag: IntValue<'ctx>,
-) -> Result<IntValue<'ctx>, String> {
+) -> Result<IntValue<'ctx>, SprsError> {
     let string_tag = self_compiler
         .context
         .i32_type()
@@ -385,7 +387,7 @@ fn create_add_expr_check_float<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
     l_tag: IntValue<'ctx>,
     r_tag: IntValue<'ctx>,
-) -> Result<IntValue<'ctx>, String> {
+) -> Result<IntValue<'ctx>, SprsError> {
     let float_tag = self_compiler
         .context
         .i32_type()
@@ -466,7 +468,7 @@ fn create_add_expr_build_int_branch<'ctx>(
     l_ptr: PointerValue<'ctx>,
     r_ptr: PointerValue<'ctx>,
     l_tag: IntValue<'ctx>,
-) -> Result<PointerValue<'ctx>, String> {
+) -> Result<PointerValue<'ctx>, SprsError> {
     let l_int_data_ptr = self_compiler
         .builder
         .build_struct_gep(self_compiler.runtime_value_type, l_ptr, 1, "l_int_data_ptr")
@@ -517,7 +519,7 @@ fn create_add_expr_build_float_branch<'ctx>(
     l_ptr: PointerValue<'ctx>,
     r_ptr: PointerValue<'ctx>,
     float_tag: IntValue<'ctx>,
-) -> Result<PointerValue<'ctx>, String> {
+) -> Result<PointerValue<'ctx>, SprsError> {
     let l_float_data_ptr = self_compiler
         .builder
         .build_struct_gep(
@@ -764,7 +766,7 @@ fn create_add_expr_build_string_branch<'ctx>(
     l_ptr: PointerValue<'ctx>,
     r_ptr: PointerValue<'ctx>,
     module: &inkwell::module::Module<'ctx>,
-) -> Result<PointerValue<'ctx>, String> {
+) -> Result<PointerValue<'ctx>, SprsError> {
     // Load the slab handles from both operands' `data` fields. With the slab
     // ABI, `data` is an i64 handle into the slot pool, not a raw pointer.
     let l_str_data_ptr = self_compiler
@@ -809,7 +811,7 @@ fn create_add_expr_build_string_branch<'ctx>(
         .unwrap();
     let result_handle = match concat_call.try_as_basic_value() {
         ValueKind::Basic(val) => val.into_int_value(),
-        _ => return Err("Expected i64 handle from __string_concat".to_string()),
+        _ => return Err(SprsError::Internal { message: "Expected i64 handle from __string_concat".to_string(), location: None }),
     };
 
     // Pack the new handle into a fresh runtime value of tag String.
@@ -829,7 +831,7 @@ fn create_int8_add_logic<'ctx>(
     lhs: &Spanned<ast::Expr>,
     rhs: &Spanned<ast::Expr>,
     module: &inkwell::module::Module<'ctx>,
-) -> Result<BasicValueEnum<'ctx>, String> {
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
     let l_ptr = self_compiler
         .compile_expr(lhs, module)?
         .into_pointer_value();
@@ -891,7 +893,7 @@ fn create_uint8_add_logic<'ctx>(
     lhs: &Spanned<ast::Expr>,
     rhs: &Spanned<ast::Expr>,
     module: &inkwell::module::Module<'ctx>,
-) -> Result<BasicValueEnum<'ctx>, String> {
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
     let l_ptr = self_compiler
         .compile_expr(lhs, module)?
         .into_pointer_value();
@@ -953,7 +955,7 @@ fn create_int16_add_logic<'ctx>(
     _lhs: &Spanned<ast::Expr>,
     _rhs: &Spanned<ast::Expr>,
     _module: &inkwell::module::Module<'ctx>,
-) -> Result<BasicValueEnum<'ctx>, String> {
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
     let l_ptr = _self_compiler
         .compile_expr(_lhs, _module)?
         .into_pointer_value();
@@ -1014,7 +1016,7 @@ fn create_uint16_add_logic<'ctx>(
     _lhs: &Spanned<ast::Expr>,
     _rhs: &Spanned<ast::Expr>,
     _module: &inkwell::module::Module<'ctx>,
-) -> Result<BasicValueEnum<'ctx>, String> {
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
     let l_ptr = _self_compiler
         .compile_expr(_lhs, _module)?
         .into_pointer_value();
@@ -1075,7 +1077,7 @@ fn create_int32_add_logic<'ctx>(
     _lhs: &Spanned<ast::Expr>,
     _rhs: &Spanned<ast::Expr>,
     _module: &inkwell::module::Module<'ctx>,
-) -> Result<BasicValueEnum<'ctx>, String> {
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
     let l_ptr = _self_compiler
         .compile_expr(_lhs, _module)?
         .into_pointer_value();
@@ -1136,7 +1138,7 @@ fn create_uint32_add_logic<'ctx>(
     _lhs: &Spanned<ast::Expr>,
     _rhs: &Spanned<ast::Expr>,
     _module: &inkwell::module::Module<'ctx>,
-) -> Result<BasicValueEnum<'ctx>, String> {
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
     let l_ptr = _self_compiler
         .compile_expr(_lhs, _module)?
         .into_pointer_value();
@@ -1197,7 +1199,7 @@ fn create_int64_add_logic<'ctx>(
     lhs: &Spanned<ast::Expr>,
     rhs: &Spanned<ast::Expr>,
     module: &inkwell::module::Module<'ctx>,
-) -> Result<BasicValueEnum<'ctx>, String> {
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
     let l_ptr = self_compiler
         .compile_expr(lhs, module)?
         .into_pointer_value();
@@ -1247,7 +1249,7 @@ fn create_uint64_add_logic<'ctx>(
     lhs: &Spanned<ast::Expr>,
     rhs: &Spanned<ast::Expr>,
     module: &inkwell::module::Module<'ctx>,
-) -> Result<BasicValueEnum<'ctx>, String> {
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
     let l_ptr = self_compiler
         .compile_expr(lhs, module)?
         .into_pointer_value();
@@ -1296,7 +1298,7 @@ fn create_float16_add_logic<'ctx>(
     _lhs: &Spanned<ast::Expr>,
     _rhs: &Spanned<ast::Expr>,
     _module: &inkwell::module::Module<'ctx>,
-) -> Result<BasicValueEnum<'ctx>, String> {
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
     let l_ptr = _self_compiler
         .compile_expr(_lhs, _module)?
         .into_pointer_value();
@@ -1373,7 +1375,7 @@ fn create_float32_add_logic<'ctx>(
     lhs: &Spanned<ast::Expr>,
     rhs: &Spanned<ast::Expr>,
     module: &inkwell::module::Module<'ctx>,
-) -> Result<BasicValueEnum<'ctx>, String> {
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
     let l_ptr = self_compiler
         .compile_expr(lhs, module)?
         .into_pointer_value();
@@ -1453,7 +1455,7 @@ fn create_float64_add_logic<'ctx>(
     lhs: &Spanned<ast::Expr>,
     rhs: &Spanned<ast::Expr>,
     module: &inkwell::module::Module<'ctx>,
-) -> Result<BasicValueEnum<'ctx>, String> {
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
     let l_ptr = self_compiler
         .compile_expr(lhs, module)?
         .into_pointer_value();
@@ -1518,7 +1520,7 @@ pub fn create_mul_expr<'ctx>(
     lhs: &Spanned<ast::Expr>,
     rhs: &Spanned<ast::Expr>,
     module: &inkwell::module::Module<'ctx>,
-) -> Result<BasicValueEnum<'ctx>, String> {
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
     create_binary_int_op(
         self_compiler,
         lhs,
@@ -1534,7 +1536,7 @@ pub fn create_minus_expr<'ctx>(
     lhs: &Spanned<ast::Expr>,
     rhs: &Spanned<ast::Expr>,
     module: &inkwell::module::Module<'ctx>,
-) -> Result<BasicValueEnum<'ctx>, String> {
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
     create_binary_int_op(
         self_compiler,
         lhs,
@@ -1550,7 +1552,7 @@ pub fn create_div_expr<'ctx>(
     lhs: &Spanned<ast::Expr>,
     rhs: &Spanned<ast::Expr>,
     module: &inkwell::module::Module<'ctx>,
-) -> Result<BasicValueEnum<'ctx>, String> {
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
     let l_ptr = self_compiler.compile_expr(lhs, module)?.into_pointer_value();
     let r_ptr = self_compiler.compile_expr(rhs, module)?.into_pointer_value();
 
@@ -1628,7 +1630,7 @@ pub fn create_mod_expr<'ctx>(
     lhs: &Spanned<ast::Expr>,
     rhs: &Spanned<ast::Expr>,
     module: &inkwell::module::Module<'ctx>,
-) -> Result<BasicValueEnum<'ctx>, String> {
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
     let l_ptr = self_compiler.compile_expr(lhs, module)?.into_pointer_value();
     let r_ptr = self_compiler.compile_expr(rhs, module)?.into_pointer_value();
 
@@ -1713,14 +1715,14 @@ fn create_binary_int_op<'ctx, F>(
     module: &inkwell::module::Module<'ctx>,
     op: IntBinOp,
     op_fn: F,
-) -> Result<BasicValueEnum<'ctx>, String>
+) -> Result<BasicValueEnum<'ctx>, SprsError>
 where
     F: Fn(
         &inkwell::builder::Builder<'ctx>,
         inkwell::values::IntValue<'ctx>,
         inkwell::values::IntValue<'ctx>,
         &str,
-    ) -> Result<inkwell::values::IntValue<'ctx>, String>,
+    ) -> Result<inkwell::values::IntValue<'ctx>, SprsError>,
 {
     let l_ptr = self_compiler
         .compile_expr(lhs, module)?

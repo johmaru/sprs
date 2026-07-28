@@ -1,3 +1,5 @@
+use crate::front::error::{SprsError, ErrorCode, ErrorCategory, Location};
+use crate::front::span::Span;
 use crate::front::ast;
 use crate::front::span::Spanned;
 use crate::front::type_helper;
@@ -312,7 +314,7 @@ impl<'ctx> Compiler<'ctx> {
         self.scopes.push(Scope::new());
     }
 
-    pub(crate) fn exit_scope(&mut self, module: &Module<'ctx>) -> Result<(), String> {
+    pub(crate) fn exit_scope(&mut self, module: &Module<'ctx>) -> Result<(), SprsError> {
         let scope = self.scopes.pop().unwrap();
 
         if self
@@ -357,7 +359,7 @@ impl<'ctx> Compiler<'ctx> {
         }
     }
 
-    pub(crate) fn emit_drop_for_return(&mut self, module: &Module<'ctx>) -> Result<(), String> {
+    pub(crate) fn emit_drop_for_return(&mut self, module: &Module<'ctx>) -> Result<(), SprsError> {
         let drop_fn = self.get_runtime_fn(module, "__drop")?;
 
         let mut vars_to_drop: Vec<(PointerValue<'ctx>, String)> = Vec::new();
@@ -430,15 +432,15 @@ impl<'ctx> Compiler<'ctx> {
     /// rust-analyzer may report `Result<u32, ()>` (E0308) on this function due to
     /// incomplete type resolution of `inkwell`'s FFI types (see `analysis-stats`:
     /// `??ty` unresolved types). `cargo check` passes, so this is a false positive.
-    pub fn get_field_index(&self, struct_name: &str, field_name: &str) -> Result<u32, String> {
+    pub fn get_field_index(&self, struct_name: &str, field_name: &str) -> Result<u32, SprsError> {
         self.struct_defs
             .get(struct_name)
             .and_then(|def| def.field_indices.get(field_name).cloned())
-            .ok_or_else(|| {
-                format!(
-                    "Field '{}' not found in struct '{}'",
-                    field_name, struct_name
-                )
+            .ok_or_else(|| SprsError::Semantic {
+                code: ErrorCode { category: ErrorCategory::Semantic, number: 7 },
+                location: Location::new(String::new(), Span::DUMMY),
+                message: format!("Field '{}' not found in struct '{}'", field_name, struct_name),
+                help: None,
             })
     }
 
@@ -446,12 +448,12 @@ impl<'ctx> Compiler<'ctx> {
         &mut self,
         elements: &[Spanned<ast::Expr>],
         module: &Module<'ctx>,
-    ) -> Result<IntValue<'ctx>, String> {
+    ) -> Result<IntValue<'ctx>, SprsError> {
         let create = builder_helper::create_list_from_expr(self, elements, module);
         create
     }
 
-    pub fn get_runtime_fn(&self, module: &Module<'ctx>, name: &str) -> Result<FunctionValue<'ctx>, String> {
+    pub fn get_runtime_fn(&self, module: &Module<'ctx>, name: &str) -> Result<FunctionValue<'ctx>, SprsError> {
         if let Some(func) = module.get_function(name) {
             return Ok(func);
         }
@@ -531,7 +533,7 @@ impl<'ctx> Compiler<'ctx> {
                 ],
                 false,
             ),
-            _ => return Err(format!("Unknown runtime function: {}", name)),
+            _ => return Err(SprsError::Semantic { code: ErrorCode { category: ErrorCategory::Semantic, number: 6 }, location: Location::new(String::new(), Span::DUMMY), message: format!("Unknown runtime function: {}", name), help: None }),
         };
 
         Ok(module.add_function(name, fn_type, None))

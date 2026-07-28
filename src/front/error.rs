@@ -90,6 +90,8 @@ impl std::fmt::Display for SprsError {
     }
 }
 
+impl std::error::Error for SprsError {}
+
 /// 既存の String ベースエラーからの移行用。
 /// Phase 2 で全サイトが SprsError に置き換わったら削除可能。
 impl From<String> for SprsError {

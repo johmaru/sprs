@@ -4,7 +4,8 @@ use inkwell::{
 };
 use crate::{
     front::ast,
-    front::span::Spanned,
+    front::error::{SprsError, ErrorCode, ErrorCategory, Location},
+    front::span::{Span, Spanned},
     llvm::compiler::{Compiler, StoreTag, StoreValue, Tag},
 };
 use crate::llvm::value::{create_entry_block_alloca, create_panic_err, PanicErrorSettings, box_return_value};
@@ -13,7 +14,7 @@ pub fn create_list<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
     elements: &Vec<Spanned<ast::Expr>>,
     module: &inkwell::module::Module<'ctx>,
-) -> Result<BasicValueEnum<'ctx>, String> {
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
     let list_handle = self_compiler.build_list_from_exprs(elements, module)?;
 
     let res_ptr = create_entry_block_alloca(self_compiler, "list_res_alloc")?;
@@ -50,7 +51,7 @@ pub fn create_index<'ctx>(
     collection_expr: &Spanned<ast::Expr>,
     index_expr: &Spanned<ast::Expr>,
     module: &inkwell::module::Module<'ctx>,
-) -> Result<BasicValueEnum<'ctx>, String> {
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
     let get_fn = self_compiler.get_runtime_fn(module, "__list_get")?;
 
     let collection_var_ptr = self_compiler
@@ -111,7 +112,7 @@ pub fn create_index<'ctx>(
 
     match get_call.try_as_basic_value() {
         ValueKind::Basic(val) => Ok(val),
-        ValueKind::Instruction(_) => Err("Expected basic value from __list_get".to_string()),
+        ValueKind::Instruction(_) => Err(SprsError::Internal { message: "Expected basic value from __list_get".to_string(), location: None }),
     }
 }
 
@@ -120,7 +121,7 @@ pub fn create_range<'ctx>(
     start_expr: &Spanned<ast::Expr>,
     end_expr: &Spanned<ast::Expr>,
     module: &inkwell::module::Module<'ctx>,
-) -> Result<BasicValueEnum<'ctx>, String> {
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
     let range_fn = self_compiler.get_runtime_fn(module, "__range_new")?;
     let start_val_ptr = self_compiler
         .compile_expr(start_expr, module)?
@@ -169,7 +170,7 @@ pub fn create_range<'ctx>(
     let range_handle = match range_call.try_as_basic_value() {
         ValueKind::Basic(val) => val.into_int_value(),
         ValueKind::Instruction(_) => {
-            return Err("Expected i64 handle from __range_new".to_string());
+            return Err(SprsError::Internal { message: "Expected i64 handle from __range_new".to_string(), location: None });
         }
     };
 
@@ -208,17 +209,22 @@ pub fn create_module_access<'ctx>(
     function_name: &str,
     args: &Vec<Spanned<ast::Expr>>,
     module: &inkwell::module::Module<'ctx>,
-) -> Result<BasicValueEnum<'ctx>, String> {
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
     let target_module = self_compiler
         .modules
         .get(module_name)
-        .ok_or_else(|| format!("Module '{}' not found", module_name))?;
+        .ok_or_else(|| SprsError::Semantic { code: ErrorCode { category: ErrorCategory::Semantic, number: 13 }, location: Location::new(String::new(), Span::DUMMY), message: format!("Module '{}' not found", module_name), help: None })?;
 
     let target_func = target_module.get_function(&function_name).ok_or_else(|| {
-        format!(
-            "Function '{}' not found in module '{}'",
-            function_name, module_name
-        )
+        SprsError::Semantic {
+            code: ErrorCode { category: ErrorCategory::Semantic, number: 13 },
+            location: Location::new(String::new(), Span::DUMMY),
+            message: format!(
+                "Function '{}' not found in module '{}'",
+                function_name, module_name
+            ),
+            help: None,
+        }
     })?;
 
     let func_in_current_module = if let Some(func) = module.get_function(&function_name) {
@@ -247,7 +253,7 @@ pub fn create_module_access<'ctx>(
     let result_val = match call_site.try_as_basic_value() {
         ValueKind::Basic(val) => val,
         ValueKind::Instruction(_) => {
-            return Err("Expected basic value from module function call".to_string());
+            return Err(SprsError::Internal { message: "Expected basic value from module function call".to_string(), location: None });
         }
     };
 
@@ -260,7 +266,7 @@ pub fn create_field_access<'ctx>(
     field_index: u32,
     struct_name: &str,
     module: &inkwell::module::Module<'ctx>,
-) -> Result<BasicValueEnum<'ctx>, String> {
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
     let struct_ptr = self_compiler
         .compile_expr(struct_expr, module)?
         .into_pointer_value();
@@ -298,21 +304,16 @@ pub fn create_field_access<'ctx>(
         .unwrap();
     let heap_ptr = match borrow_call.try_as_basic_value() {
         ValueKind::Basic(val) => val.into_pointer_value(),
-        _ => return Err("Expected pointer from __struct_borrow".to_string()),
+        _ => return Err(SprsError::Internal { message: "Expected pointer from __struct_borrow".to_string(), location: None }),
     };
 
     let struct_def = self_compiler
         .struct_defs
         .get(struct_name)
-        .ok_or_else(|| format!("Undefined struct : {}", struct_name))?;
+        .ok_or_else(|| SprsError::Semantic { code: ErrorCode { category: ErrorCategory::Semantic, number: 13 }, location: Location::new(String::new(), Span::DUMMY), message: format!("Undefined struct : {}", struct_name), help: None })?;
     let llvm_type = struct_def.llvm_type;
     if field_index as usize >= struct_def.fields.len() {
-        return Err(format!(
-            "Field index {} out of bounds for struct '{}' ({} fields)",
-            field_index,
-            struct_name,
-            struct_def.fields.len()
-        ));
+        return Err(SprsError::Semantic { code: ErrorCode { category: ErrorCategory::Semantic, number: 7 }, location: Location::new(String::new(), Span::DUMMY), message: format!("Field index {} out of bounds for struct '{}' ({} fields)", field_index, struct_name, struct_def.fields.len()), help: None });
     }
     let field_def = &struct_def.fields[field_index as usize];
 
@@ -415,7 +416,7 @@ pub fn create_field_access<'ctx>(
 
 pub fn create_unit<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-) -> Result<BasicValueEnum<'ctx>, String> {
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
     let res_ptr = create_entry_block_alloca(self_compiler, "unit_res_alloc")?;
     self_compiler.tag_only_runtime_value_store(res_ptr, Tag::Unit as u64, "unit_res");
     Ok(res_ptr.into())
@@ -426,11 +427,11 @@ pub fn create_struct_init<'ctx>(
     struct_name: &str,
     field_exprs: &[(String, Spanned<ast::Expr>)],
     module: &inkwell::module::Module<'ctx>,
-) -> Result<BasicValueEnum<'ctx>, String> {
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
     let struct_def = self_compiler
         .struct_defs
         .get(struct_name)
-        .ok_or_else(|| format!("Undefined struct : {}", struct_name))?;
+        .ok_or_else(|| SprsError::Semantic { code: ErrorCode { category: ErrorCategory::Semantic, number: 13 }, location: Location::new(String::new(), Span::DUMMY), message: format!("Undefined struct : {}", struct_name), help: None })?;
 
     let llvm_type = struct_def.llvm_type;
     let field_indices = struct_def.field_indices.clone();
@@ -440,7 +441,7 @@ pub fn create_struct_init<'ctx>(
     // recognize it as a slab-owned Struct (not a raw malloc pointer).
     let struct_size = llvm_type
         .size_of()
-        .ok_or_else(|| "struct type has no size".to_string())?;
+        .ok_or_else(|| SprsError::Internal { message: "struct type has no size".to_string(), location: None })?;
     let struct_new_fn = self_compiler.get_runtime_fn(module, "__struct_new")?;
     let struct_new_call = self_compiler
         .builder
@@ -452,7 +453,7 @@ pub fn create_struct_init<'ctx>(
         .unwrap();
     let struct_handle = match struct_new_call.try_as_basic_value() {
         ValueKind::Basic(val) => val.into_int_value(),
-        _ => return Err("Expected i64 handle from __struct_new".to_string()),
+        _ => return Err(SprsError::Internal { message: "Expected i64 handle from __struct_new".to_string(), location: None }),
     };
     let struct_borrow_fn = self_compiler.get_runtime_fn(module, "__struct_borrow")?;
     let borrow_call = self_compiler
@@ -465,7 +466,7 @@ pub fn create_struct_init<'ctx>(
         .unwrap();
     let struct_ptr = match borrow_call.try_as_basic_value() {
         ValueKind::Basic(val) => val.into_pointer_value(),
-        _ => return Err("Expected pointer from __struct_borrow".to_string()),
+        _ => return Err(SprsError::Internal { message: "Expected pointer from __struct_borrow".to_string(), location: None }),
     };
     // `__struct_borrow` returns `*mut u8`; cast to the struct's typed pointer
     // so `build_struct_gep` can index fields.
@@ -480,20 +481,30 @@ pub fn create_struct_init<'ctx>(
 
     for (field_name, field_expr) in field_exprs {
         let index = field_indices.get(field_name).ok_or_else(|| {
-            format!(
-                "Field '{}' not found in struct '{}'",
-                field_name, struct_name
-            )
+            SprsError::Semantic {
+                code: ErrorCode { category: ErrorCategory::Semantic, number: 13 },
+                location: Location::new(String::new(), Span::DUMMY),
+                message: format!(
+                    "Field '{}' not found in struct '{}'",
+                    field_name, struct_name
+                ),
+                help: None,
+            }
         })?;
 
         let field_def = def_fields
             .iter()
             .find(|f| f.ident == *field_name)
             .ok_or_else(|| {
-                format!(
-                    "Field definition for '{}' not found in struct '{}'",
-                    field_name, struct_name
-                )
+                SprsError::Semantic {
+                    code: ErrorCode { category: ErrorCategory::Semantic, number: 13 },
+                    location: Location::new(String::new(), Span::DUMMY),
+                    message: format!(
+                        "Field definition for '{}' not found in struct '{}'",
+                        field_name, struct_name
+                    ),
+                    help: None,
+                }
             })?;
 
         let value = self_compiler.compile_expr(field_expr, module)?;
@@ -501,7 +512,7 @@ pub fn create_struct_init<'ctx>(
         let field_ptr = self_compiler
             .builder
             .build_struct_gep(llvm_type, struct_ptr, *index, "field_ptr")
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| SprsError::Internal { message: e.to_string(), location: None })?;
 
         if let Some(ty) = &field_def.ty {
             match ty {

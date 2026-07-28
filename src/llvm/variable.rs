@@ -1,3 +1,4 @@
+use crate::front::error::SprsError;
 use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
 
 use crate::llvm::compiler::{Compiler, Tag};
@@ -62,7 +63,7 @@ pub fn var_load_at_init_variable<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
     init_value: PointerValue<'ctx>,
     name: &str,
-) -> Result<PointerValue<'ctx>, String> {
+) -> Result<PointerValue<'ctx>, SprsError> {
     let ptr = create_entry_block_alloca(self_compiler, name)?;
 
     let val = self_compiler.build_load(self_compiler.runtime_value_type, init_value, name);

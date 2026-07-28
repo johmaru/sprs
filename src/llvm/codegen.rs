@@ -1,6 +1,7 @@
 use crate::front::ast;
 use crate::front::span::Spanned;
 use crate::front::span::Span;
+use crate::front::error::{SprsError, ErrorCode, ErrorCategory, Location};
 use crate::front::type_helper;
 use crate::front::type_helper::Type;
 use crate::llvm::builder_helper;
@@ -15,7 +16,7 @@ use crate::llvm::compiler::{Compiler, OS, Tag};
 use crate::naming;
 
 impl<'ctx> Compiler<'ctx> {
-    pub fn get_known_type_from_expr(&self, expr: &Spanned<ast::Expr>) -> Result<String, String> {
+    pub fn get_known_type_from_expr(&self, expr: &Spanned<ast::Expr>) -> Result<String, SprsError> {
         match &expr.node {
             ast::Expr::TypeI8 => Ok("i8".to_string()),
             ast::Expr::TypeU8 => Ok("u8".to_string()),
@@ -31,11 +32,12 @@ impl<'ctx> Compiler<'ctx> {
             ast::Expr::TypeF64 => Ok("fp64".to_string()),
 
             ast::Expr::Number(_) => Ok("default(i64)".to_string()),
-            ast::Expr::Float(_) => Ok("default(f64)".to_string()),
-            _ => Err(format!(
-                "Unknown type expression for known type: {:?}",
-                expr
-            )),
+            _ => Err(SprsError::Semantic {
+                code: ErrorCode { category: ErrorCategory::Semantic, number: 1 },
+                location: Location::new(String::new(), expr.span),
+                message: format!("Unknown type expression for known type: {:?}", expr),
+                help: None,
+            }),
         }
     }
 
@@ -118,7 +120,7 @@ impl<'ctx> Compiler<'ctx> {
         &mut self,
         func: &ast::Function,
         module: &Module<'ctx>,
-    ) -> Result<FunctionValue<'ctx>, String> {
+    ) -> Result<FunctionValue<'ctx>, SprsError> {
         let arg_types: Vec<BasicMetadataTypeEnum> = (0..func.params.len())
             .map(|_| self.context.ptr_type(AddressSpace::default()).into())
             .collect();
@@ -131,7 +133,7 @@ impl<'ctx> Compiler<'ctx> {
 
         let fn_val = module
             .get_function(func_name)
-            .ok_or_else(|| format!("Function {} not declared", func_name))?;
+            .ok_or_else(|| SprsError::Internal { message: format!("Function {} not declared", func_name), location: None })?;
 
         let entry = self.context.append_basic_block(fn_val, "entry");
         self.builder.position_at_end(entry);
@@ -148,7 +150,7 @@ impl<'ctx> Compiler<'ctx> {
                 .unwrap();
             self.builder
                 .build_store(alloca, arg_val)
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| SprsError::Internal { message: e.to_string(), location: None })?;
             self.add_variable(param.ident.clone(), alloca.into(), Type::Any);
         }
 
@@ -169,7 +171,7 @@ impl<'ctx> Compiler<'ctx> {
             unsafe {
                 fn_val.delete();
             }
-            Err("Invalid generated function".to_string())
+            Err(SprsError::Internal { message: "Invalid generated function".to_string(), location: None })
         }
     }
 
@@ -179,7 +181,7 @@ impl<'ctx> Compiler<'ctx> {
         &mut self,
         expr_opt: &Option<Spanned<ast::Expr>>,
         module: &Module<'ctx>,
-    ) -> Result<(), String> {
+    ) -> Result<(), SprsError> {
         let ret_val = if let Some(expr) = expr_opt {
             let ptr = self.compile_expr(expr, module)?.into_pointer_value();
 
@@ -218,41 +220,69 @@ impl<'ctx> Compiler<'ctx> {
         return_type: Option<BasicTypeEnum<'ctx>>,
         expr_type: Type,
         expr: &Spanned<ast::Expr>,
-    ) -> Result<(), String> {
+    ) -> Result<(), SprsError> {
         if let Some(ret_ty) = return_type {
             if ret_ty.is_pointer_type() {
                 let llvm_int_ty = type_helper::is_int_type_in_llvm();
                 if llvm_int_ty.contains(&expr_type) {
-                    return Err(format!(
-                        "Type mismatch: Function expects pointer type (e.g. str) but got {:?} from expression {:?}",
-                        expr_type, expr
-                    ));
+                    return Err(SprsError::Type {
+                        code: ErrorCode { category: ErrorCategory::Type, number: 1 },
+                        location: Location::new(String::new(), expr.span),
+                        message: format!(
+                            "Type mismatch: Function expects pointer type (e.g. str) but got {:?} from expression {:?}",
+                            expr_type, expr
+                        ),
+                        expected_type: Some("pointer".to_string()),
+                        actual_type: Some(format!("{:?}", expr_type)),
+                        help: None,
+                    });
                 }
             } else if ret_ty.is_int_type() {
                 let width = ret_ty.into_int_type().get_bit_width();
                 if width == 1 {
                     if expr_type != Type::Bool {
-                        return Err(format!(
-                            "Type mismatch: Function expects Bool but got {:?} from expression {:?}",
-                            expr_type, expr
-                        ));
+                        return Err(SprsError::Type {
+                            code: ErrorCode { category: ErrorCategory::Type, number: 2 },
+                            location: Location::new(String::new(), expr.span),
+                            message: format!(
+                                "Type mismatch: Function expects Bool but got {:?} from expression {:?}",
+                                expr_type, expr
+                            ),
+                            expected_type: Some("Bool".to_string()),
+                            actual_type: Some(format!("{:?}", expr_type)),
+                            help: None,
+                        });
                     }
                 } else {
                     let llvm_not_int = type_helper::not_int_type_in_llvm();
                     if llvm_not_int.contains(&expr_type) {
-                        return Err(format!(
-                            "Type mismatch: Function expects Int type but got {:?} from expression {:?}",
-                            expr_type, expr
-                        ));
+                        return Err(SprsError::Type {
+                            code: ErrorCode { category: ErrorCategory::Type, number: 3 },
+                            location: Location::new(String::new(), expr.span),
+                            message: format!(
+                                "Type mismatch: Function expects Int type but got {:?} from expression {:?}",
+                                expr_type, expr
+                            ),
+                            expected_type: Some("Int".to_string()),
+                            actual_type: Some(format!("{:?}", expr_type)),
+                            help: None,
+                        });
                     }
                 }
             } else if ret_ty.is_float_type() {
                 let llvm_float_ty = type_helper::is_float_type_in_llvm();
                 if !llvm_float_ty.contains(&expr_type) {
-                    return Err(format!(
-                        "Type mismatch: Function expects Float type but got {:?} from expression {:?}",
-                        expr_type, expr
-                    ));
+                    return Err(SprsError::Type {
+                        code: ErrorCode { category: ErrorCategory::Type, number: 4 },
+                        location: Location::new(String::new(), expr.span),
+                        message: format!(
+                            "Type mismatch: Function expects Float type but got {:?} from expression {:?}",
+                            expr_type, expr
+                        ),
+                        expected_type: Some("Float".to_string()),
+                        actual_type: Some(format!("{:?}", expr_type)),
+                        help: None,
+                    });
                 }
             }
         }
@@ -264,7 +294,7 @@ impl<'ctx> Compiler<'ctx> {
         &mut self,
         return_type: Option<BasicTypeEnum<'ctx>>,
         ptr: PointerValue<'ctx>,
-    ) -> Result<Option<BasicValueEnum<'ctx>>, String> {
+    ) -> Result<Option<BasicValueEnum<'ctx>>, SprsError> {
         if let Some(ret_ty) = return_type {
             if ret_ty == self.runtime_value_type.into() {
                 let val = self
@@ -315,7 +345,7 @@ impl<'ctx> Compiler<'ctx> {
                         .unwrap()
                         .into()
                 } else {
-                    return Err("Unsupported return type conversion".to_string());
+                    return Err(SprsError::Internal { message: "Unsupported return type conversion".to_string(), location: None });
                 };
                 Ok(Some(casted_val))
             }
@@ -328,7 +358,7 @@ impl<'ctx> Compiler<'ctx> {
         &mut self,
         stmts: &Vec<Spanned<ast::Stmt>>,
         module: &Module<'ctx>,
-    ) -> Result<(), String> {
+    ) -> Result<(), SprsError> {
         self.enter_scope(); // New scope for the block
 
         for stmt in stmts {
@@ -426,16 +456,10 @@ impl<'ctx> Compiler<'ctx> {
         &mut self,
         expr: &Spanned<ast::Expr>,
         module: &Module<'ctx>,
-    ) -> Result<BasicValueEnum<'ctx>, String> {
+    ) -> Result<BasicValueEnum<'ctx>, SprsError> {
         match &expr.node {
-            ast::Expr::Number(n) => {
-                let result = builder_helper::create_integer(self, n);
-                result
-            }
-            ast::Expr::Float(fp) => {
-                let result = builder_helper::create_float(self, *fp);
-                result
-            }
+            ast::Expr::Number(n) => Ok(builder_helper::create_integer(self, n)?),
+            ast::Expr::Float(fp) => Ok(builder_helper::create_float(self, *fp)?),
             ast::Expr::TypeI8 => builder_helper::create_int8(self),
             ast::Expr::TypeU8 => builder_helper::create_uint8(self),
             ast::Expr::TypeI16 => builder_helper::create_int16(self),
@@ -447,36 +471,42 @@ impl<'ctx> Compiler<'ctx> {
             ast::Expr::TypeF16 => builder_helper::create_float16(self),
             ast::Expr::TypeF32 => builder_helper::create_float32(self),
             ast::Expr::TypeF64 => builder_helper::create_float64(self),
-            ast::Expr::Str(str) => {
-                let result = builder_helper::create_string(self, str, module);
-                result
-            }
-            ast::Expr::Bool(boolean) => {
-                let result = builder_helper::create_bool(self, boolean);
-                result
-            }
+            ast::Expr::Str(str) => Ok(builder_helper::create_string(self, str, module)?),
+            ast::Expr::Bool(boolean) => Ok(builder_helper::create_bool(self, boolean)?),
             ast::Expr::Var(ident) => {
                 if let Some((var_addr, _)) = self.get_variables(ident) {
                     Ok(var_addr)
                 } else {
-                    Err(format!("Undefined variable: {}", ident))
+                    Err(SprsError::Semantic {
+                        code: ErrorCode { category: ErrorCategory::Semantic, number: 2 },
+                        location: Location::new(String::new(), expr.span),
+                        message: format!("Undefined variable: {}", ident),
+                        help: None,
+                    })
                 }
             }
-            ast::Expr::Call(ident, args, _) => {
-                let result = builder_helper::create_call_expr(self, ident, args, module);
-                result
-            }
+            ast::Expr::Call(ident, args, _) => Ok(builder_helper::create_call_expr(self, ident, args, module)?),
             ast::Expr::Macro(ident, args) => {
                 match ident.as_str() {
-                    "println" => builder_helper::call_builtin_macro_println(self, args, module),
-                    "list_push" => builder_helper::call_builtin_macro_list_push(self, args, module),
-                    "clone" => builder_helper::call_builtin_macro_clone(self, args, module),
-                    "cast" => builder_helper::call_builtin_macro_cast(self, args, module),
-                    "lshift" => builder_helper::call_builtin_macro_lshift(self, args, module),
-                    "rshift" => builder_helper::call_builtin_macro_rshift(self, args, module),
-                    "not" => builder_helper::call_builtin_macro_not(self, args, module),
-                    "init" => Err("struct initialization requires @init(TypeName { field: value, ... }) syntax".to_string()),
-                    _ => Err(format!("Unknown macro: {}", ident)),
+                    "println" => Ok(builder_helper::call_builtin_macro_println(self, args, module)?),
+                    "list_push" => Ok(builder_helper::call_builtin_macro_list_push(self, args, module)?),
+                    "clone" => Ok(builder_helper::call_builtin_macro_clone(self, args, module)?),
+                    "cast" => Ok(builder_helper::call_builtin_macro_cast(self, args, module)?),
+                    "lshift" => Ok(builder_helper::call_builtin_macro_lshift(self, args, module)?),
+                    "rshift" => Ok(builder_helper::call_builtin_macro_rshift(self, args, module)?),
+                    "not" => Ok(builder_helper::call_builtin_macro_not(self, args, module)?),
+                    "init" => Err(SprsError::Semantic {
+                        code: ErrorCode { category: ErrorCategory::Semantic, number: 5 },
+                        location: Location::new(String::new(), expr.span),
+                        message: "struct initialization requires @init(TypeName { field: value, ... }) syntax".to_string(),
+                        help: None,
+                    }),
+                    _ => Err(SprsError::Semantic {
+                        code: ErrorCode { category: ErrorCategory::Semantic, number: 3 },
+                        location: Location::new(String::new(), expr.span),
+                        message: format!("Unknown macro: {}", ident),
+                        help: None,
+                    }),
                 }
             }
             ast::Expr::FieldAccess(lhs, rhs) => {
@@ -486,7 +516,12 @@ impl<'ctx> Compiler<'ctx> {
                         if let Some((var_addr, _)) = self.get_variables(&full_name) {
                             return Ok(var_addr);
                         } else {
-                            return Err(format!("Undefined enum variant: {}", full_name));
+                            return Err(SprsError::Semantic {
+                                code: ErrorCode { category: ErrorCategory::Semantic, number: 4 },
+                                location: Location::new(String::new(), expr.span),
+                                message: format!("Undefined enum variant: {}", full_name),
+                                help: None,
+                            });
                         }
                     }
                 }
@@ -496,61 +531,44 @@ impl<'ctx> Compiler<'ctx> {
                 let struct_name = match lhs_type {
                     Type::Struct(name) => name,
                     _ => {
-                        return Err(format!(
-                            "Undefined variable: {}",
-                            self.get_expr_name(lhs).unwrap_or_default()
-                        ));
+                        return Err(SprsError::Semantic {
+                            code: ErrorCode { category: ErrorCategory::Semantic, number: 2 },
+                            location: Location::new(String::new(), lhs.span),
+                            message: format!(
+                                "Undefined variable: {}",
+                                self.get_expr_name(lhs).unwrap_or_default()
+                            ),
+                            help: None,
+                        });
                     }
                 };
 
                 let index = self.get_field_index(&struct_name, rhs)?;
 
-                let result =
-                    builder_helper::create_field_access(self, lhs, index, &struct_name, module);
-                result
+                Ok(builder_helper::create_field_access(self, lhs, index, &struct_name, module)?)
             }
-            ast::Expr::Add(lhs, rhs) => {
-                let result = builder_helper::create_add_expr(self, lhs, rhs, module);
-                result
-            }
-            ast::Expr::Mul(lhs, rhs) => {
-                let result = builder_helper::create_mul_expr(self, lhs, rhs, module);
-                result
-            }
-            ast::Expr::Minus(lhs, rhs) => {
-                let result = builder_helper::create_minus_expr(self, lhs, rhs, module);
-                result
-            }
-            ast::Expr::Div(lhs, rhs) => {
-                let result = builder_helper::create_div_expr(self, lhs, rhs, module);
-                result
-            }
-            ast::Expr::Mod(lhs, rhs) => {
-                let result = builder_helper::create_mod_expr(self, lhs, rhs, module);
-                result
-            }
+            ast::Expr::Add(lhs, rhs) => Ok(builder_helper::create_add_expr(self, lhs, rhs, module)?),
+            ast::Expr::Mul(lhs, rhs) => Ok(builder_helper::create_mul_expr(self, lhs, rhs, module)?),
+            ast::Expr::Minus(lhs, rhs) => Ok(builder_helper::create_minus_expr(self, lhs, rhs, module)?),
+            ast::Expr::Div(lhs, rhs) => Ok(builder_helper::create_div_expr(self, lhs, rhs, module)?),
+            ast::Expr::Mod(lhs, rhs) => Ok(builder_helper::create_mod_expr(self, lhs, rhs, module)?),
             ast::Expr::Increment(expr) => {
-                let result =
-                    builder_helper::create_increment_or_decrement(self, expr, UpDown::Up, module);
-                result
+                Ok(builder_helper::create_increment_or_decrement(self, expr, UpDown::Up, module)?)
             }
             ast::Expr::Decrement(expr) => {
-                let result =
-                    builder_helper::create_increment_or_decrement(self, expr, UpDown::Down, module);
-                result
+                Ok(builder_helper::create_increment_or_decrement(self, expr, UpDown::Down, module)?)
             }
             ast::Expr::Neg(expr) => {
                 let zero = Spanned::new(ast::Expr::Number(0), Span::DUMMY);
-                let result = builder_helper::create_minus_expr(
+                Ok(builder_helper::create_minus_expr(
                     self,
                     &zero,
                     expr,
                     module,
-                );
-                result
+                )?)
             }
             ast::Expr::Eq(lhs, rhs) => {
-                let result = builder_helper::create_eq_or_neq(
+                Ok(builder_helper::create_eq_or_neq(
                     self,
                     lhs,
                     rhs,
@@ -561,11 +579,10 @@ impl<'ctx> Compiler<'ctx> {
                             .build_int_compare(inkwell::IntPredicate::EQ, l_val, r_val, name)
                             .unwrap())
                     },
-                );
-                result
+                )?)
             }
             ast::Expr::Neq(lhs, rhs) => {
-                let result = builder_helper::create_eq_or_neq(
+                Ok(builder_helper::create_eq_or_neq(
                     self,
                     lhs,
                     rhs,
@@ -576,11 +593,10 @@ impl<'ctx> Compiler<'ctx> {
                             .build_int_compare(inkwell::IntPredicate::NE, l_val, r_val, name)
                             .unwrap())
                     },
-                );
-                result
+                )?)
             }
             ast::Expr::Gt(lhs, rhs) => {
-                let result = builder_helper::create_comparison(
+                Ok(builder_helper::create_comparison(
                     self,
                     lhs,
                     rhs,
@@ -591,11 +607,10 @@ impl<'ctx> Compiler<'ctx> {
                             .build_int_compare(inkwell::IntPredicate::SGT, l_val, r_val, name)
                             .unwrap())
                     },
-                );
-                result
+                )?)
             }
             ast::Expr::Lt(lhs, rhs) => {
-                let result = builder_helper::create_comparison(
+                Ok(builder_helper::create_comparison(
                     self,
                     lhs,
                     rhs,
@@ -606,11 +621,10 @@ impl<'ctx> Compiler<'ctx> {
                             .build_int_compare(inkwell::IntPredicate::SLT, l_val, r_val, name)
                             .unwrap())
                     },
-                );
-                result
+                )?)
             }
             ast::Expr::Ge(lhs, rhs) => {
-                let result = builder_helper::create_comparison(
+                Ok(builder_helper::create_comparison(
                     self,
                     lhs,
                     rhs,
@@ -621,11 +635,10 @@ impl<'ctx> Compiler<'ctx> {
                             .build_int_compare(inkwell::IntPredicate::SGE, l_val, r_val, name)
                             .unwrap())
                     },
-                );
-                result
+                )?)
             }
             ast::Expr::Le(lhs, rhs) => {
-                let result = builder_helper::create_comparison(
+                Ok(builder_helper::create_comparison(
                     self,
                     lhs,
                     rhs,
@@ -636,45 +649,27 @@ impl<'ctx> Compiler<'ctx> {
                             .build_int_compare(inkwell::IntPredicate::SLE, l_val, r_val, name)
                             .unwrap())
                     },
-                );
-                result
+                )?)
             }
             ast::Expr::If(cond, then_expr, else_expr) => {
-                let result =
-                    builder_helper::create_if_expr(self, cond, then_expr, else_expr, module);
-                result
+                Ok(builder_helper::create_if_expr(self, cond, then_expr, else_expr, module)?)
             }
-            ast::Expr::List(elements) => {
-                let result = builder_helper::create_list(self, elements, module);
-                result
-            }
+            ast::Expr::List(elements) => Ok(builder_helper::create_list(self, elements, module)?),
             ast::Expr::Index(collection_expr, index_expr) => {
-                let result =
-                    builder_helper::create_index(self, collection_expr, index_expr, module);
-                result
+                Ok(builder_helper::create_index(self, collection_expr, index_expr, module)?)
             }
-            ast::Expr::Range(start_expr, end_expr) => {
-                let result = builder_helper::create_range(self, start_expr, end_expr, module);
-                result
-            }
+            ast::Expr::Range(start_expr, end_expr) => Ok(builder_helper::create_range(self, start_expr, end_expr, module)?),
             ast::Expr::ModuleAccess(module_name, function_name, args) => {
-                let result = builder_helper::create_module_access(
+                Ok(builder_helper::create_module_access(
                     self,
                     module_name,
                     function_name,
                     args,
                     module,
-                );
-                result
+                )?)
             }
-            ast::Expr::Unit() => {
-                let result = builder_helper::create_unit(self);
-                result
-            }
-            ast::Expr::StructInit(struct_name, fields) => {
-                let result = builder_helper::create_struct_init(self, struct_name, fields, module);
-                result
-            }
+            ast::Expr::Unit() => Ok(builder_helper::create_unit(self)?),
+            ast::Expr::StructInit(struct_name, fields) => Ok(builder_helper::create_struct_init(self, struct_name, fields, module)?),
         }
     }
 }

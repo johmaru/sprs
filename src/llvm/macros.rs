@@ -4,7 +4,8 @@ use inkwell::{
 };
 use crate::{
     front::ast,
-    front::span::Spanned,
+    front::error::{SprsError, ErrorCode, ErrorCategory, Location},
+    front::span::{Span, Spanned},
     llvm::compiler::{Compiler, StoreTag, StoreValue, Tag},
 };
 use crate::llvm::value::{create_entry_block_alloca, create_panic_err, PanicErrorSettings};
@@ -13,7 +14,7 @@ pub fn call_builtin_macro_println<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
     args: &Vec<Spanned<ast::Expr>>,
     module: &inkwell::module::Module<'ctx>,
-) -> Result<BasicValueEnum<'ctx>, String> {
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
     let print_fn = self_compiler.get_runtime_fn(module, "__println")?;
 
     let list_ptr = self_compiler.build_list_from_exprs(args, module)?;
@@ -33,9 +34,9 @@ pub fn call_builtin_macro_list_push<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
     args: &Vec<Spanned<ast::Expr>>,
     module: &inkwell::module::Module<'ctx>,
-) -> Result<BasicValueEnum<'ctx>, String> {
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
     if args.len() != 2 {
-        return Err("list_push expects 2 arguments".to_string());
+        return Err(SprsError::Semantic { code: ErrorCode { category: ErrorCategory::Semantic, number: 13 }, location: Location::new(String::new(), Span::DUMMY), message: "list_push expects 2 arguments".to_string(), help: None });
     }
     let list_ptr = self_compiler
         .compile_expr(&args[0], module)?
@@ -106,9 +107,9 @@ pub fn call_builtin_macro_clone<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
     args: &Vec<Spanned<ast::Expr>>,
     module: &inkwell::module::Module<'ctx>,
-) -> Result<BasicValueEnum<'ctx>, String> {
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
     if args.len() != 1 {
-        return Err("@clone expects 1 argument".to_string());
+        return Err(SprsError::Semantic { code: ErrorCode { category: ErrorCategory::Semantic, number: 13 }, location: Location::new(String::new(), Span::DUMMY), message: "@clone expects 1 argument".to_string(), help: None });
     }
     let arg_ptr = self_compiler
         .compile_expr(&args[0], module)?
@@ -151,7 +152,7 @@ pub fn call_builtin_macro_clone<'ctx>(
         .unwrap();
     let result_val = match call_site.try_as_basic_value() {
         ValueKind::Basic(val) => Ok(val),
-        ValueKind::Instruction(_) => Err("Expected basic value from clone function".to_string()),
+        ValueKind::Instruction(_) => Err(SprsError::Internal { message: "Expected basic value from clone function".to_string(), location: None }),
     };
 
     let result_ptr = create_entry_block_alloca(self_compiler, "clone_res_alloc")?;
@@ -168,9 +169,9 @@ pub fn call_builtin_macro_cast<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
     args: &Vec<Spanned<ast::Expr>>,
     module: &inkwell::module::Module<'ctx>,
-) -> Result<BasicValueEnum<'ctx>, String> {
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
     if args.len() != 2 {
-        return Err("@cast expects 2 arguments".to_string());
+        return Err(SprsError::Semantic { code: ErrorCode { category: ErrorCategory::Semantic, number: 13 }, location: Location::new(String::new(), Span::DUMMY), message: "@cast expects 2 arguments".to_string(), help: None });
     }
 
     let value_ptr = self_compiler
@@ -193,10 +194,7 @@ pub fn call_builtin_macro_cast<'ctx>(
         ast::Expr::TypeF32 => "fp32",
         ast::Expr::TypeF64 => "fp64",
         _ => {
-            return Err(format!(
-                "@cast second argument must be a type identifier : {:?}",
-                target_type_expr
-            ));
+            return Err(SprsError::Semantic { code: ErrorCode { category: ErrorCategory::Semantic, number: 8 }, location: Location::new(String::new(), target_type_expr.span), message: format!("@cast second argument must be a type identifier : {:?}", target_type_expr), help: None });
         }
     };
 
@@ -635,10 +633,7 @@ pub fn call_builtin_macro_cast<'ctx>(
             (new_tag, new_data)
         }
         _ => {
-            return Err(format!(
-                "Unsupported target type for @cast: {:?}",
-                target_type
-            ));
+            return Err(SprsError::Semantic { code: ErrorCode { category: ErrorCategory::Semantic, number: 9 }, location: Location::new(String::new(), Span::DUMMY), message: format!("Unsupported target type for @cast: {:?}", target_type), help: None });
         }
     };
 
@@ -656,9 +651,9 @@ pub fn call_builtin_macro_lshift<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
     args: &Vec<Spanned<ast::Expr>>,
     module: &inkwell::module::Module<'ctx>,
-) -> Result<BasicValueEnum<'ctx>, String> {
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
     if args.len() != 2 {
-        return Err("@lshift expects 2 arguments (value, shift_amount)".to_string());
+        return Err(SprsError::Semantic { code: ErrorCode { category: ErrorCategory::Semantic, number: 13 }, location: Location::new(String::new(), Span::DUMMY), message: "@lshift expects 2 arguments (value, shift_amount)".to_string(), help: None });
     }
     shift_impl(self_compiler, args, module, ShiftDir::Left)
 }
@@ -667,9 +662,9 @@ pub fn call_builtin_macro_rshift<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
     args: &Vec<Spanned<ast::Expr>>,
     module: &inkwell::module::Module<'ctx>,
-) -> Result<BasicValueEnum<'ctx>, String> {
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
     if args.len() != 2 {
-        return Err("@rshift expects 2 arguments (value, shift_amount)".to_string());
+        return Err(SprsError::Semantic { code: ErrorCode { category: ErrorCategory::Semantic, number: 13 }, location: Location::new(String::new(), Span::DUMMY), message: "@rshift expects 2 arguments (value, shift_amount)".to_string(), help: None });
     }
     shift_impl(self_compiler, args, module, ShiftDir::Right)
 }
@@ -684,7 +679,7 @@ fn shift_impl<'ctx>(
     args: &Vec<Spanned<ast::Expr>>,
     module: &inkwell::module::Module<'ctx>,
     dir: ShiftDir,
-) -> Result<BasicValueEnum<'ctx>, String> {
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
     let value_ptr = self_compiler
         .compile_expr(&args[0], module)?
         .into_pointer_value();
@@ -852,9 +847,9 @@ pub fn call_builtin_macro_not<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
     args: &Vec<Spanned<ast::Expr>>,
     module: &inkwell::module::Module<'ctx>,
-) -> Result<BasicValueEnum<'ctx>, String> {
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
     if args.len() != 1 {
-        return Err("@not expects 1 argument".to_string());
+        return Err(SprsError::Semantic { code: ErrorCode { category: ErrorCategory::Semantic, number: 13 }, location: Location::new(String::new(), Span::DUMMY), message: "@not expects 1 argument".to_string(), help: None });
     }
 
     let value_ptr = self_compiler
