@@ -137,10 +137,10 @@
 //! }
 //!
 //! fn main() {
-//!  var p = Point {
+//!  var p = @init(Point {
 //!   x = 10,
 //!   y = 20
-//!  };
+//!  });
 //!
 //! @println(p.x); # prints 10
 //! @println(p.y); # prints 20
@@ -349,32 +349,37 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     match command.as_str() {
         "init" => {
+            let mut proj_name: Option<String> = None;
+            let mut force = false;
             if argc > 2 {
-                let args = &argv[2..];
-                let mut iter = args.iter();
+                let mut iter = argv[2..].iter().peekable();
                 while let Some(arg) = iter.next() {
                     if arg == "--name" {
-                        if let Some(proj_name) = iter.next() {
-                            command_helper::init_project(Some(proj_name))?;
-                            return Ok(());
-                        } else {
+                        proj_name = iter.next().cloned();
+                        if proj_name.is_none() {
                             eprintln!("Usage: {} init --name <project_name>", naming::LANG_NAME);
                             return Err("missing value for --name".into());
                         }
+                    } else if arg == "--force" {
+                        force = true;
                     } else {
-                        eprintln!("Usage: {} init --name <project_name>", naming::LANG_NAME);
-                        return Err("invalid argument for init".into());
+                        eprintln!(
+                            "Usage: {} init --name <project_name> [--force]",
+                            naming::LANG_NAME
+                        );
+                        return Err(format!("invalid argument for init: {}", arg).into());
                     }
                 }
-            } else {
-                println!("Initializing project without arguments.");
-                command_helper::init_project(None)?;
-                return Ok(());
             }
+            if proj_name.is_none() {
+                println!("Initializing project without arguments.");
+            }
+            command_helper::init_project(proj_name.as_deref(), force)?;
             Ok(())
         }
         "build" | "run" | "debug" => {
             let mut dest: Option<String> = None;
+            let mut error_format = crate::front::error::ErrorFormat::Human;
             if argc > 2 {
                 let mut iter = argv[2..].iter();
                 while let Some(arg) = iter.next() {
@@ -383,6 +388,18 @@ fn main() -> Result<(), Box<dyn Error>> {
                         if dest.is_none() {
                             eprintln!("Usage: {} {} --dest <path>", naming::LANG_NAME, command);
                             return Err("missing value for --dest".into());
+                        }
+                    } else if arg == "--error-format" {
+                        let fmt_str = iter.next().cloned();
+                        match fmt_str {
+                            Some(s) => {
+                                error_format = crate::front::error::ErrorFormat::from_str(&s)
+                                    .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+                            }
+                            None => {
+                                eprintln!("Usage: {} {} --error-format <json|human>", naming::LANG_NAME, command);
+                                return Err("missing value for --error-format".into());
+                            }
                         }
                     } else {
                         eprintln!("Unknown argument: {}", arg);
@@ -396,7 +413,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 "debug" => llvm_executer::ExecuteMode::Debug,
                 _ => unreachable!(),
             };
-            llvm_executer::build_and_run(dest.as_deref(), mode)?;
+            llvm_executer::build_and_run(dest.as_deref(), mode, error_format)?;
             Ok(())
         }
         "help" => {

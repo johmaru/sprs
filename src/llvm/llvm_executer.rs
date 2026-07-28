@@ -7,7 +7,7 @@ use inkwell::{
 };
 
 use crate::{
-    command_helper::ProjectConfig,
+    command_helper::{validate_name, validate_subpath, ProjectConfig},
     llvm::compiler::{self, OS},
 };
 use crate::naming;
@@ -21,7 +21,7 @@ pub enum ExecuteMode {
     Debug,
 }
 
-pub fn build_and_run(dest: Option<&str>, mode: ExecuteMode) -> Result<(), Box<dyn std::error::Error>> {
+pub fn build_and_run(dest: Option<&str>, mode: ExecuteMode, error_format: crate::front::error::ErrorFormat) -> Result<(), Box<dyn std::error::Error>> {
     let context = Context::create();
     let builder = context.create_builder();
 
@@ -29,13 +29,16 @@ pub fn build_and_run(dest: Option<&str>, mode: ExecuteMode) -> Result<(), Box<dy
 
     let toml_path = format!("{}/{}", base, naming::CONFIG_FILE);
     let setting_toml_content =
-        std::fs::read_to_string(&toml_path).unwrap_or_else(|_| "".to_string());
+        std::fs::read_to_string(&toml_path).unwrap_or_else(|e| {
+            eprintln!("Failed to read {}: {}", naming::CONFIG_FILE, e);
+            "".to_string()
+        });
 
     let config: Option<ProjectConfig> = if !setting_toml_content.is_empty() {
         match toml::from_str(&setting_toml_content) {
             Ok(cfg) => Some(cfg),
             Err(e) => {
-        eprintln!("Failed to parse {}: {}", naming::CONFIG_FILE, e);
+                eprintln!("Failed to parse {}: {}", naming::CONFIG_FILE, e);
                 None
             }
         }
@@ -47,6 +50,7 @@ pub fn build_and_run(dest: Option<&str>, mode: ExecuteMode) -> Result<(), Box<dy
         .as_ref()
         .map(|c| c.src_dir.clone())
         .unwrap_or_else(|| "src".to_string());
+    validate_subpath(&src_dir)?;
     let src_path = format!("{}/{}", base, src_dir);
 
     let mut compiler = compiler::Compiler::new(&context, builder, src_path.clone());
@@ -56,16 +60,25 @@ pub fn build_and_run(dest: Option<&str>, mode: ExecuteMode) -> Result<(), Box<dy
         .as_ref()
         .map(|c| c.name.clone())
         .unwrap_or_else(|| naming::DEFAULT_PROJECT_NAME.to_string());
-    let out_dir = format!("{}/{}", base, config
+    validate_name(&proj_name)?;
+    let out_dir_raw = config
         .as_ref()
         .map(|c| c.out_dir.clone())
-        .unwrap_or_else(|| "build".to_string()));
+        .unwrap_or_else(|| "build".to_string());
+    validate_subpath(&out_dir_raw)?;
+    let out_dir = format!("{}/{}", base, out_dir_raw);
 
     if !Path::new(&out_dir).exists() {
         std::fs::create_dir_all(&out_dir)?;
     }
 
     if let Err(e) = compiler.load_and_compile_module("main", Some(&path)) {
+        let source = std::fs::read_to_string(&path).unwrap_or_default();
+        let rendered = crate::front::error::render(&e, error_format, &source);
+        match error_format {
+            crate::front::error::ErrorFormat::Json => println!("{}", rendered),
+            crate::front::error::ErrorFormat::Human => eprintln!("{}", rendered),
+        }
         return Err(format!("Compile Error: {}", e).into());
     }
 
@@ -92,6 +105,7 @@ pub fn build_and_run(dest: Option<&str>, mode: ExecuteMode) -> Result<(), Box<dy
         .ok_or("Failed to create target machine")?;
 
     let mut object_files = Vec::new();
+    let mut temp_ll_files = Vec::new();
 
     for (name, module) in &compiler.modules {
         module.set_data_layout(&target_machine.get_target_data().get_data_layout());
@@ -99,12 +113,15 @@ pub fn build_and_run(dest: Option<&str>, mode: ExecuteMode) -> Result<(), Box<dy
 
         // mem2reg
         let pass_options = PassBuilderOptions::create();
-        let _ = module.run_passes("mem2reg", &target_machine, pass_options);
+        if let Err(e) = module.run_passes("mem2reg", &target_machine, pass_options) {
+            eprintln!("Warning: LLVM run_passes failed for module '{}': {}", name, e);
+        }
 
         let ll_filename = format!("{}/{}.ll", out_dir, name);
         if let Err(e) = module.print_to_file(Path::new(&ll_filename)) {
             eprintln!("Failed to write LLVM IR to {}: {}", ll_filename, e);
         }
+        temp_ll_files.push(ll_filename.clone());
         println!("Generated: {}", ll_filename);
 
         let filename = format!("{}/{}.o", out_dir, name);
@@ -184,19 +201,42 @@ pub fn build_and_run(dest: Option<&str>, mode: ExecuteMode) -> Result<(), Box<dy
         println!("Successfully created executable: ./{}", exec_filename);
         if mode == ExecuteMode::Run {
             println!("--- Running ---");
-            if compiler.target_os == OS::Linux
-                || (compiler.target_os == OS::Unknown || cfg!(target_os = "linux"))
-            {
+            let can_run = match compiler.target_os {
+                OS::Linux => cfg!(target_os = "linux"),
+                OS::Windows => cfg!(target_os = "windows"),
+                OS::Unknown => true,
+            };
+            if can_run {
                 let status = Command::new(format!("./{}/{}", out_dir, exec_filename))
                     .status()
                     .map_err(|e| format!("Failed to run executable: {}", e))?;
                 if !status.success() {
                     return Err("Executable returned non-zero status".into());
                 }
+            } else {
+                println!(
+                    "[Skip] Target OS ({}) differs from host OS ({}). Skipping execution.",
+                    match compiler.target_os {
+                        OS::Windows => "Windows",
+                        OS::Linux => "Linux",
+                        OS::Unknown => "Unknown",
+                    },
+                    if cfg!(target_os = "windows") { "Windows" } else { "Linux" }
+                );
             }
         }
     } else {
         return Err("Linker (clang) returned non-zero status".into());
+    }
+    // Clean up intermediate files in release builds (BUG-M10).
+    if !cfg!(debug_assertions) {
+        for ll in &temp_ll_files {
+            let _ = std::fs::remove_file(ll);
+        }
+        for obj in &object_files {
+            let _ = std::fs::remove_file(obj);
+        }
+        let _ = std::fs::remove_file(&runtime_src_path);
     }
     Ok(())
 }
