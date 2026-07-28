@@ -4,13 +4,14 @@ use inkwell::{
 };
 use crate::{
     front::ast,
+    front::span::Spanned,
     llvm::compiler::{Compiler, StoreTag, StoreValue, Tag},
 };
 use crate::llvm::value::{create_entry_block_alloca, create_panic_err, PanicErrorSettings};
 
 pub fn call_builtin_macro_println<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    args: &Vec<ast::Expr>,
+    args: &Vec<Spanned<ast::Expr>>,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
     let print_fn = self_compiler.get_runtime_fn(module, "__println")?;
@@ -22,7 +23,7 @@ pub fn call_builtin_macro_println<'ctx>(
         .build_call(print_fn, &[list_ptr.into()], "println_call")
         .unwrap();
 
-    let res_ptr = create_entry_block_alloca(self_compiler, "println_res_alloc");
+    let res_ptr = create_entry_block_alloca(self_compiler, "println_res_alloc")?;
     self_compiler.tag_only_runtime_value_store(res_ptr, Tag::Unit as u64, "unit_res");
 
     return Ok(res_ptr.into());
@@ -30,7 +31,7 @@ pub fn call_builtin_macro_println<'ctx>(
 
 pub fn call_builtin_macro_list_push<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    args: &Vec<ast::Expr>,
+    args: &Vec<Spanned<ast::Expr>>,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
     if args.len() != 2 {
@@ -95,7 +96,7 @@ pub fn call_builtin_macro_list_push<'ctx>(
         )
         .unwrap();
 
-    let res_ptr = create_entry_block_alloca(self_compiler, "list_push_res_alloc");
+    let res_ptr = create_entry_block_alloca(self_compiler, "list_push_res_alloc")?;
     self_compiler.tag_only_runtime_value_store(res_ptr, Tag::Unit as u64, "unit_res");
 
     return Ok(res_ptr.into());
@@ -103,7 +104,7 @@ pub fn call_builtin_macro_list_push<'ctx>(
 
 pub fn call_builtin_macro_clone<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    args: &Vec<ast::Expr>,
+    args: &Vec<Spanned<ast::Expr>>,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
     if args.len() != 1 {
@@ -153,7 +154,7 @@ pub fn call_builtin_macro_clone<'ctx>(
         ValueKind::Instruction(_) => Err("Expected basic value from clone function".to_string()),
     };
 
-    let result_ptr = create_entry_block_alloca(self_compiler, "clone_res_alloc");
+    let result_ptr = create_entry_block_alloca(self_compiler, "clone_res_alloc")?;
 
     self_compiler
         .builder
@@ -165,7 +166,7 @@ pub fn call_builtin_macro_clone<'ctx>(
 
 pub fn call_builtin_macro_cast<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    args: &Vec<ast::Expr>,
+    args: &Vec<Spanned<ast::Expr>>,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
     if args.len() != 2 {
@@ -177,7 +178,7 @@ pub fn call_builtin_macro_cast<'ctx>(
         .into_pointer_value();
     let target_type_expr = &args[1];
 
-    let target_type = match target_type_expr {
+    let target_type = match &target_type_expr.node {
         ast::Expr::Var(ident) => ident.as_str(),
         ast::Expr::TypeI8 => "i8",
         ast::Expr::TypeU8 => "u8",
@@ -259,6 +260,9 @@ pub fn call_builtin_macro_cast<'ctx>(
     let marge = self_compiler
         .context
         .append_basic_block(parent, "cast_merge_bb");
+    let error_bb = self_compiler
+        .context
+        .append_basic_block(parent, "cast_error_bb");
 
     let i32_type = self_compiler.context.i32_type();
     let cases = vec![
@@ -282,8 +286,22 @@ pub fn call_builtin_macro_cast<'ctx>(
 
     self_compiler
         .builder
-        .build_switch(current_tag, bb_f64, &cases)
+        .build_switch(current_tag, error_bb, &cases)
         .unwrap();
+
+    // error branch: unknown tag → panic
+    self_compiler.builder.position_at_end(error_bb);
+    let settings = PanicErrorSettings {
+        is_const: true,
+        is_global: true,
+    };
+    let _ = create_panic_err(
+        self_compiler,
+        "TypeError: unexpected tag in @cast",
+        module,
+        settings,
+    )?;
+    let _ = self_compiler.builder.build_unreachable();
 
     // Integer -> f64
     self_compiler.builder.position_at_end(bb_int);
@@ -624,7 +642,7 @@ pub fn call_builtin_macro_cast<'ctx>(
         }
     };
 
-    let result_ptr = create_entry_block_alloca(self_compiler, "cast_res_alloc");
+    let result_ptr = create_entry_block_alloca(self_compiler, "cast_res_alloc")?;
     self_compiler.build_runtime_value_store(
         result_ptr,
         StoreTag::Dynamic(new_tag),
@@ -636,7 +654,7 @@ pub fn call_builtin_macro_cast<'ctx>(
 
 pub fn call_builtin_macro_lshift<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    args: &Vec<ast::Expr>,
+    args: &Vec<Spanned<ast::Expr>>,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
     if args.len() != 2 {
@@ -647,7 +665,7 @@ pub fn call_builtin_macro_lshift<'ctx>(
 
 pub fn call_builtin_macro_rshift<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    args: &Vec<ast::Expr>,
+    args: &Vec<Spanned<ast::Expr>>,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
     if args.len() != 2 {
@@ -663,7 +681,7 @@ enum ShiftDir {
 
 fn shift_impl<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    args: &Vec<ast::Expr>,
+    args: &Vec<Spanned<ast::Expr>>,
     module: &inkwell::module::Module<'ctx>,
     dir: ShiftDir,
 ) -> Result<BasicValueEnum<'ctx>, String> {
@@ -820,7 +838,7 @@ fn shift_impl<'ctx>(
         phi.as_basic_value().into_int_value()
     };
 
-    let result_ptr = create_entry_block_alloca(self_compiler, "shift_res");
+    let result_ptr = create_entry_block_alloca(self_compiler, "shift_res")?;
     self_compiler.build_runtime_value_store(
         result_ptr,
         StoreTag::Dynamic(value_tag),
@@ -832,7 +850,7 @@ fn shift_impl<'ctx>(
 
 pub fn call_builtin_macro_not<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    args: &Vec<ast::Expr>,
+    args: &Vec<Spanned<ast::Expr>>,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
     if args.len() != 1 {
@@ -867,7 +885,7 @@ pub fn call_builtin_macro_not<'ctx>(
         )
         .unwrap();
 
-    let result_ptr = create_entry_block_alloca(self_compiler, "not_res");
+    let result_ptr = create_entry_block_alloca(self_compiler, "not_res")?;
     self_compiler.build_runtime_value_store(
         result_ptr,
         StoreTag::Int(Tag::Boolean as u64),

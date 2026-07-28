@@ -9,122 +9,21 @@
 ## 1. フロントエンド (lexer / parser / AST)
 
 
-#### BUG-F04b: 単項マイナス (Unary Minus) が未実装 【Low】
-- **ファイル**: `src/grammar.lalrpop` (Unary 規則), `src/front/ast.rs` (Expr enum)
-- **症状**: `-5` や `-x` のような単項マイナスが書けない。現在は `0 - 5` で回避している。
-- **原因**: `Unary` 規則が `<p: Postfix> => p` のみで、前置 `-` (negation) の規則が無い。`Expr` にも `Neg(Box<Expr>)` バリアントが存在しない。
-- **推奨修正**: `Unary` 規則に `Minus <p:Unary> => Expr::Neg(Box::new(p))` を追加し、`Expr::Neg(Box<Expr>)` を追加。compiler では `build_int_neg` で実装。
-
-
-#### BUG-F06: `FunctionParam` に型フィールドがなく、関数パラメータの型注釈が不可能 【Medium】
-- **ファイル**: `src/front/ast.rs`
-- **推奨修正**: `ty: Option<Type>` フィールドを追加。
-
-
-#### BUG-F08: `Num` / `Float` の正規表現が指数表記・16 進・`1.` 形式に未対応 【Medium】
-- **ファイル**: `src/front/lexer.rs`
-- **推奨修正**: Float に指数表記、Num に 16 進/2 進/8 進を追加。
-
-#### BUG-F09: `ModuleAccess` で `base` が `Expr::Var` 以外の場合に破棄される 【Medium】
-- **ファイル**: `src/grammar.lalrpop`
-- **推奨修正**: `Expr::MethodCall(Box<Expr>, String, Vec<Expr>)` ノードを追加。
-
-
-#### BUG-F11: `Preprocessor` トークンが `#define` のみで他の指令がエラー 【Low】
-- **ファイル**: `src/front/lexer.rs`
-- **推奨修正**: `#[regex(r"#[a-z]+")]` で一般化。
-
-#### BUG-F12: `var x;` で未初期化変数が許可され、デフォルト値が未規定 【Low】
-- **ファイル**: `src/grammar.lalrpop`, `src/front/ast.rs`
-- **推奨修正**: Unit 型でゼロ初期化するか、型注釈必須にする。
-
-
-#### BUG-F14: `ExprNoStruct` 系が `Expr` 系と重複定義 【Low】
-- **ファイル**: `src/grammar.lalrpop`
-- **推奨修正**: LALRPOP の `precedence` 宣言に移行。
-
 #### BUG-F15: `Stmt` で連鎖代入 (`a = b = c;`) が不可 【Low】
 - **ファイル**: `src/grammar.lalrpop`
 - **推奨修正**: `Assign` を `Expr` に昇格。
-
 ---
 
 ## 2. LLVM コード生成
 
-#### BUG-L04: `create_panic_err` が `build_call` のみで `build_unreachable` を生成しない 【Medium】
-- **ファイル**: `src/llvm/value.rs`
-- **推奨修正**: `create_panic_err` の最後に `build_unreachable` を追加。
-
-#### BUG-L05: `create_add_expr` のエラーメッセージが `Box::leak` でメモリリーク 【Low】
-- **ファイル**: `src/llvm/arithmetic.rs`
-- **推奨修正**: モジュールの global constant として登録。
-
-#### BUG-L06: 整数加算全般で `nsw`/`nuw` フラグ未使用、オーバーフロー時に wrap-around 【Medium】
-- **ファイル**: `src/llvm/arithmetic.rs`
-- **推奨修正**: 仕様に応じてオーバーフローチェックまたはフラグ追加。
-
-
-#### BUG-L09: `create_field_access` で `field_index` の境界チェックなし 【Medium】
-- **ファイル**: `src/llvm/data_structures.rs`
-- **推奨修正**: `field_index` を検証し、範囲外なら `Err` を返す。
-
-#### BUG-L13: `create_entry_block_alloca` が `get_insert_block().unwrap()` で panic 【Medium】
-- **ファイル**: `src/llvm/value.rs`
-- **推奨修正**: `None` の場合は `Err` を返す。
-
-
-#### BUG-L15: `compile_block` が early-return 時にスコープをリーク / `emit_drop_for_return` の drop 順序が逆 【High】
-- **ファイル**: `src/llvm/codegen.rs`, `src/llvm/compiler.rs`
-- **推奨修正**: early-return 時もスコープ退出を保証。drop 順序を内側→外側に修正。
-
-
-#### BUG-L17: `create_add_expr_build_float_branch` の switch default が `bb_f64` 【Medium】
-- **ファイル**: `src/llvm/arithmetic.rs`
-- **推奨修正**: default を `error_bb` に変更。
-
-#### BUG-L21: `llvm_executer.rs` が `sprs.toml` の `out_dir` / `name` / `src_dir` をサニタイズせず、パストラバーサルで任意ファイル上書き 【High】
-- **ファイル**: `src/llvm/llvm_executer.rs`
-- **推奨修正**: `out_dir` / `name` をバリデーション。
-
-#### BUG-L24: `PassBuilderOptions` の `run_passes` 結果を無視 【Low】
-- **ファイル**: `src/llvm/llvm_executer.rs`
-- **推奨修正**: エラーをログ出力。
+（なし）
 
 ---
 
 ## 3. CLI / エントリポイント (`src/main.rs`, `src/command_helper.rs`, `build.rs`)
 
-#### BUG-M03: `init_project` が既存の `sprs.toml` / `src/main.sprs` を無条件で上書き 【High】
-- **ファイル**: `src/command_helper.rs`
-- **推奨修正**: `Path::exists()` でチェックし `--force` フラグなしには上書きしない。
+（なし）
 
-#### BUG-M04: `init_project` が `name` をサニタイズせず、パストラバーサルで任意ディレクトリにファイル作成の可能性 【High】
-- **ファイル**: `src/command_helper.rs`
-- **推奨修正**: `name` を `[A-Za-z0-9_-]+` にバリデーション。
-
-#### BUG-M06: `help` コマンドで `--all` 以外の引数を無視 【Low】
-- **ファイル**: `src/main.rs`
-- **推奨修正**: 不明な引数にエラーメッセージを表示。
-
-#### BUG-M08: `build.rs` が `expect` で panic 【Low】
-- **ファイル**: `build.rs`
-- **推奨修正**: `expect` に具体的なメッセージを追加。
-
-#### BUG-M09: `llvm_executer.rs` の `_full_path` パラメータが未使用 【Low】
-- **ファイル**: `src/llvm/llvm_executer.rs`
-- **推奨修正**: パラメータを削除。
-
-#### BUG-M10: 一時ファイル (`.ll`, `.o`, `runtime.rs`) のクリーンアップがない 【Low】
-- **ファイル**: `src/llvm/llvm_executer.rs`
-- **推奨修正**: `.ll` と `.o` を `out_dir` に書き出すか、`Debug` モード以外で削除。
-
-#### BUG-M11: `sprs.toml` 読み込み失敗を黙殺 【Low】
-- **ファイル**: `src/llvm/llvm_executer.rs`
-- **推奨修正**: エラーの種類に応じたログ出力。
-
-#### BUG-M12: Windows 上で Linux ターゲットの実行ファイルを実行しようとする可能性 【Medium】
-- **ファイル**: `src/llvm/llvm_executer.rs`
-- **推奨修正**: ホストとターゲットが異なる場合は実行をスキップ。
 
 ---
 
@@ -133,11 +32,22 @@
 | 深刻度 | 件数 | バグ ID |
 |--------|------|--------|
 | **Critical** | 0 | — |
-| **High** | 4 | L15, L21, M03, M04 |
-| **Medium** | 9 | F06, F08, F09, L04, L06, L09, L13, L17, M12 |
-- **Low** | 12 | F04b, F11, F12, F14, F15, L05, L24, M06, M08, M09, M10, M11 |
+| **High** | 0 | — |
+| **Medium** | 0 | — |
+| **Low** | 1 | F15 |
+合計: 1 件 (ユニーク)。
 
-合計: 25 件 (ユニーク)。
+---
+
+## 4.5 issue に移管したバグ（未対応・設計議論中）
+
+これらはコード修正で解消したものではなく、issue で設計議論中のもの。集計表の「未対応」件数には含まれない。
+
+| バグ ID | 深刻度 | 内容 | issue |
+|---|---|---|---|
+| **BUG-L06** | Medium | 整数加算で `nsw`/`nuw` フラグ未使用、オーバーフロー時に wrap-around。`nsw`/`nuw` 付けると UB になるため却下。Zig ライクな `Result` ベース（`@AnyError(x)` / `@WhatError(x) == OVERFLOW`）で設計中。#26（catchable エラー機構）に依存。 | [#27](https://github.com/johmaru/sprs/issues/27) |
+| **BUG-L04** | Medium | `create_panic_err` が `build_unreachable` を生成しない。動作上のバグではなく設計上の好みの問題（全呼び出し元が直後に `build_unreachable` を置いているため IR 上は問題ない）。`__panic` が回復可能になった時に `build_unreachable` の位置を見直す必要があるため、issue #26 の実装時に合わせて対応する。 | [#26](https://github.com/johmaru/sprs/issues/26) |
+| **BUG-F09** | Medium | `Postfix` 規則で `base` が `Expr::Var` 以外のとき、レシーバが破棄されて `Expr::Call` に変換される。メソッドチェーン（`list[0].method()` 等）が使えない。現在は `ModuleAccess`（`test.hello()`）のみ使い、メソッドチェーンを使わないため発火しない。メソッド呼び出しのセマンティクス（`self` の有無等）を決める設計判断が必要。 | [#28](https://github.com/johmaru/sprs/issues/28) |
 
 ---
 
@@ -208,6 +118,39 @@
 
 - **BUG-L14**: `get_runtime_fn` が未知関数で `panic!` → `Result<FunctionValue, String>` を返すよう変更し、`_ => return Err(format!("Unknown runtime function: {}", name))` でエラー伝播。全17箇所の呼び出し箇所 (`arithmetic.rs:1`, `codegen.rs:1`, `compiler.rs:2`, `data_structures.rs:5`, `macros.rs:3`, `value.rs:5`) に `?` を追加。`exit_scope` / `emit_drop_for_return` も `()` → `Result<(), String>` にシグネチャ変更し、呼び出し側3箇所 (`compile_fn`, `compile_return`, `compile_block`) に `?` を追加。`src/llvm/compiler.rs`, `src/llvm/codegen.rs`, `src/llvm/arithmetic.rs`, `src/llvm/data_structures.rs`, `src/llvm/macros.rs`, `src/llvm/value.rs`
 - **BUG-L08**: `cast` マクロの switch cases に `Int8/Int16/Int32/Int64/Uint8/Uint16/Uint32/Uint64` が未登録 → 整数タグ値を cast すると default `bb_f64` にフォールスルーし bit_cast で f64 として誤解釈。修正: 8タグを cases に追加。符号付き (Int8/16/32/64) は `bb_int` (SITOFP) へ、符号なし (Uint8/16/32/64) は新設の `bb_uint` (UITOFP) へルーティング。merge PHI に `bb_uint` の incoming を追加。検証: `@cast(@cast(4294967295, u32), fp64)` → `4294967295` (UITOFP 正解、SITOFP なら `-1`、bit_cast なら非正規化数)。`src/llvm/macros.rs`
+### パストラバーサル対策で解消
+
+- **BUG-L21**: `llvm_executer.rs` が `sprs.toml` の `out_dir` / `name` / `src_dir` をサニタイズせず、パストラバーサルで任意ファイル上書き可能だった問題 → `command_helper.rs` に `validate_name` (`[A-Za-z0-9_-]+` のみ許可、空文字拒否) と `validate_subpath` (絶対パス・`..` 成分拒否、未存在パスでも検証可能) を追加。`build_and_run` で `src_dir` / `out_dir` / `name` を検証。`--dest` (CLI引数) は信頼できるユーザー入力のため検証対象外。検証: `name = "../../../tmp/evil"` / `out_dir = "../../../tmp/evil_out"` / `src_dir = "../../../etc"` / `out_dir = "/tmp/evil_abs"` の全パストラバーサル攻撃を拒否することを確認。`src/llvm/llvm_executer.rs`, `src/command_helper.rs`
+- **BUG-M04**: `init_project` が `name` をサニタイズせず、パストラバーサルで任意ディレクトリにファイル作成可能だった問題 → `init_project` で `validate_name(name)?` を呼び出し。`init --name "../../../tmp/evil"` と `init --name ""` を拒否することを確認。`src/command_helper.rs`
+- **BUG-M03**: `init_project` が既存の `sprs.toml` / `src/main.sprs` を無条件で上書きしていた問題 → `init_project` に `force: bool` パラメータを追加し、`--force` なしでは `Path::exists()` で既存ファイルを検出してエラー終了するよう修正。`main.rs` の `init` コマンド解析で `--force` と `--name` を任意順序で受け付けるよう拡張。存在チェックを `println!` の前に配置し、エラー時に「Initializing project」と出力されないよう UX 整理。検証: 既存ファイルありで `init` を拒否、`--force` で上書き成功、`--force --name` と `--name --force` の両順序で動作することを確認。`src/command_helper.rs`, `src/main.rs`
+- **BUG-L15**: `emit_drop_for_return` の drop 順序が外側→内側（RAII 違反）だった問題 → 実行ループの `vars_to_drop.into_iter().rev()` から `.rev()` を削除し、内側→外側の正しい RAII 順序に修正。`skip(1)` は `scopes[0]`（グローバルスコープ）を除外する意図的な設計のため維持。検証: `struct_in_function`（変数 `p`/`sum`）の LLVM IR で、修正前は `p`→`sum`（外→内）だった drop 順序が、修正後は `sum`→`p`（内→外）に変化したことを確認。`sum` が `p` のフィールドを参照する場合、修正前は use-after-free の可能性があった。`src/llvm/compiler.rs`
+- **BUG-L17**: `create_add_expr_build_float_branch` の switch default が `bb_f64` で、想定外のタグが整数を f64 として誤解釈する問題 → default を `error_bb`（`__panic` 呼び出し）に変更。同時に `Tag::Float = 1`（デフォルト f64）を cases に追加し、正常系の float 加算が `error_bb` に飛ばないよう修正。`error_message` は静的文字列（`IntValue` は実行時値ではないため埋め込めない）。同パターンの修正を `@cast` マクロ (macros.rs) にも適用: switch default を `bb_f64` から `error_bb` に変更し、`create_panic_err` + `build_unreachable` を追加。検証: 全テストパス（Float 加算含む）、`Tag::Float` が `bb_f64` に正しくルーティングされることを確認。`src/llvm/arithmetic.rs`, `src/llvm/macros.rs`
+- **BUG-L13**: `create_entry_block_alloca` が `get_insert_block().unwrap()` / `get_parent().unwrap()` / `get_first_basic_block().unwrap()` の3箇所で `None` の場合 panic する問題 → シグネチャを `PointerValue` から `Result<PointerValue, String>` に変更し、3つの `.unwrap()` を `.ok_or(...)?` に変換。`get_first_instruction()` の `None` は空のエントリブロックを意味するため `position_at_end` のまま維持（バグではない）。連鎖修正: `create_dummy_for_no_return` と `var_load_at_init_variable` も `Result` 返しに変更し、全41箇所の呼び出し元に `?` を追加（ast_edit で一括適用）。検証: 全テストパス。`src/llvm/value.rs`, `src/llvm/variable.rs`, `src/llvm/arithmetic.rs`, `src/llvm/comparison.rs`, `src/llvm/control_flow.rs`, `src/llvm/data_structures.rs`, `src/llvm/macros.rs`
+- **BUG-L09**: `create_field_access` が `field_index` の配列境界チェックなしに `struct_def.fields[field_index as usize]` と `build_struct_gep(..., field_index, ...)` に渡す問題（CWE-125 out-of-bounds read）→ `struct_def` 取得後に `field_index as usize >= struct_def.fields.len()` で境界チェックし、範囲外は `Err` を返すよう修正。現状の唯一の呼び出しパス（codegen.rs:499）は `get_field_index` で既にフィールド名の存在を検証しているため発火しないが、将来の呼び出しパス追加時の安全網として機能。検証: 全テストパス。`src/llvm/data_structures.rs`
+- **BUG-F08**: `Float` 正規表現 `[0-9]+\.[0-9]+` が指数表記（`1e10`, `1.5e-3`）に未対応だった問題 → 2つの `#[regex]` を追加: `[0-9]+\.[0-9]+([eE][+-]?[0-9]+)?`（小数部+指数）と `[0-9]+[eE][+-]?[0-9]+`（整数部+指数）。`1.`/`.5`（小数部/整数部の省略）は `..` 範囲構文と衝突するため見送り。16進/2進/8進は `@cast(255, u8)` で回避可能なため見送り。検証: `1.5e3`→1500, `1e10`→10000000000, `1.5e-3`→0.0015, `2.0e2`→200, 既存形式（`1.5`, `42`）も維持されることを確認。`src/front/lexer.rs`
+- **BUG-M12**: ホストとターゲット OS が異なる場合でも実行を試み、実行失敗のエラーになる問題 → 実行判定を `match compiler.target_os` で整理: `OS::Linux => cfg!(target_os = "linux")`, `OS::Windows => cfg!(target_os = "windows")`, `OS::Unknown => true`（default triple = host triple）。不一致時は実行をスキップし `[Skip]` メッセージを出力。ビルド（clang cross-link）は維持。検証: 全テストパス（Linux ホストで `OS::Unknown`→実行、`OS::Linux`→実行）。`src/llvm/llvm_executer.rs`
+- **BUG-F04b**: 単項マイナス（Unary Minus）が未実装で `-5` や `-x` が書けなかった問題 → `Expr::Neg(Box<Expr>)` バリアントを追加し、`Unary`/`UnaryNoStruct` 規則に `Minus <p:Unary> => Expr::Neg(Box::new(p))` を追加。`compile_expr` で `Neg(expr)` を `Minus(Number(0), expr)` として `create_minus_expr` に渡すよう実装。`infer_type` にも `Neg` 分岐を追加。検証: `-5`→-5, `-(-5)`→5, `-x`(x=10)→-10, `-(x+3)`→-13, `-1`→-1。浮動小数点の単項マイナス（`-3.14`）は二項演算子 `Minus` と同じ制限（浮動小数点分岐なし）で未対応、別バグとして扱う。`src/front/ast.rs`, `src/grammar.lalrpop`, `src/llvm/codegen.rs`
+- **BUG-F12**: `var x;` で未初期化変数が許可され、デフォルト値が未規定だった問題 → 既に `compile_block` で `var.expr.as_ref().unwrap_or(&ast::Expr::Unit())` により `Unit()` で初期化されていた。`create_unit` が `Tag::Unit` を設定し、`data` は無視される。BUG_REPORT.md の記載が古かっただけ。`src/llvm/codegen.rs`
+- **BUG-M09**: `llvm_executer.rs` の `_full_path` パラメータが未使用だった問題 → 既に削除済み。`build_and_run` のシグネチャは `(dest: Option<&str>, mode: ExecuteMode)` になり、`_full_path` は存在しない。`src/llvm/llvm_executer.rs`
+- **BUG-M11**: `sprs.toml` 読み込み失敗を黙殺していた問題 → `toml::from_str` のパース失敗は `eprintln!("Failed to parse ...")` で出力済みだったが、`std::fs::read_to_string` の失敗（ファイル不在・権限エラー・IO エラー）が `unwrap_or_else(|_| ...)` で無言で空文字に潰されていた。`|e|` でエラーを受け取り `eprintln!("Failed to read ...")` を出力するよう修正。併せて L41 のインデント不正（8→16スペース）も修正。`src/llvm/llvm_executer.rs`
+
+### 構文体リファクタリングで解消
+
+- **BUG-F14**: `ExprNoStruct` 系が `Expr` 系と重複定義されていた問題 → 構造体初期化構文を `Foo { ... }` から `@init(Foo { ... })` マクロ構文に変更。`Atom` から `Ident LBrace <fields> RBrace => Expr::StructInit` 規則を削除し、`@init` 専用規則 (`MacroName LParen Ident LBrace StructInitFields RBrace RParen`) を追加。これにより `if`/`while` 条件部での `{` 衝突が解消し、`ExprNoStruct`/`RangeExprNoStruct`/`ComparisonNoStruct`/`AddAndMinusNoStruct`/`MulAndDivAndModNoStruct`/`UnaryNoStruct`/`PostfixNoStruct`/`AtomNoStruct` の12規則を削除。`if`/`while` 条件部を `ExprNoStruct` から `Expr` に変更。`@init(Foo)` のように波括弧を省略した場合は codegen.rs の `Expr::Macro` 分岐で明示的エラーメッセージを返すよう対応。検証: 全テストパス（Struct = 10/200/20/3、Enum = 1/3/1、Module Import = hello world/()）。`src/grammar.lalrpop`, `src/llvm/codegen.rs`, `tests/src/data_structures.sprs`, `README.md`, `src/main.rs`
+
+### メモリリーク修正で解消
+
+- **BUG-L05**: `create_add_expr` のエラーメッセージが `Box::leak` でメモリリークしていた問題 → `create_panic_err` のシグネチャを `message: &'ctx str` から `message: &str` に変更。`set_global_constant_str` は元々 `&str` を受け取るため `'ctx` ライフタイムは不要だった。これにより `arithmetic.rs:123` の `Box::leak(error_message.into_boxed_str())` が不要になり、`&error_message` の直接参照渡しに変更。コンパイル時の Rust ヒープリークが解消。実行時の LLVM IR には影響無し（文字列は `set_global_constant_str` でグローバル定数として埋め込み済み）。検証: 全テストパス。`src/llvm/value.rs`, `src/llvm/arithmetic.rs`
+
+### エラーハンドリング・クリーンアップ修正で解消
+
+- **BUG-F06**: `FunctionParam` に型フィールドがなく、関数パラメータの型注釈が不可能だった問題 → `FunctionParam` に `ty: Option<Type>` フィールドを追加。grammar.lalrpop の `FunctionParamNode` で `Ident GtGt Type` 構文をパース可能にし `fn foo(x >> i64, y >> fp) { ... }` のように型注釈を書けるよう対応。ただし sprs はデフォルト動的型付け設計のため、型注釈は「書けるけど無視される」。静的型チェック全面導入時に見直す。検証: 全テストパス。`src/front/ast.rs`, `src/grammar.lalrpop`
+- **BUG-F11**: `Preprocessor` トークンが `#define` のみで他の指令（`#include` 等）がエラーだった問題 → `#[token("#define")]` を `#[regex(r"#[a-z]+")]` に変更し、`#` で始まる小文字アルファベットの指令を一般化してパース可能に。検証: 全テストパス。`src/front/lexer.rs`
+- **BUG-L24**: `PassBuilderOptions` の `run_passes` 結果を無視していた問題 → `let _ = module.run_passes(...)` を `if let Err(e) = ...` でエラーハンドリングし、`eprintln!` で警告ログを出力するよう修正。検証: 全テストパス。`src/llvm/llvm_executer.rs`
+- **BUG-M06**: `help` コマンドで `--all` 以外の引数を無視していた問題 → 既に修正済み。`--all` 以外の引数が渡された場合 `eprintln!("Unknown help argument. Use --all.")` でエラーメッセージを表示し `Err` を返すよう対応済みだった。BUG_REPORT.md の記載が古かっただけ。検証: 該当コードパス確認。`src/main.rs`
+- **BUG-M08**: `build.rs` の `expect` が汎用メッセージで panic していた問題 → `expect` に具体的なメッセージを追加: `"Failed to process grammar.lalrpop. Ensure lalrpop is configured correctly and the grammar file is valid."`。検証: ビルド成功。`build.rs`
+- **BUG-M10**: 一時ファイル (`.ll`, `.o`, `runtime.rs`) のクリーンアップがなかった問題 → `cfg!(debug_assertions)` でDebugビルドか判定し、Releaseビルドではリンク後に `.ll`/`.o`/`runtime.rs` を `std::fs::remove_file` で削除するよう修正。Debugビルドではデバッグ用に一時ファイルを残す。検証: 全テストパス（Debugビルドで一時ファイルが生成されることを確認）。`src/llvm/llvm_executer.rs`
+
 ## 6. 詳細テストスイートで発見されたバグ (XFAIL)
 
 LLVM 22.1.8 移行後のスモークテスト実装中に発見されたバグ群。

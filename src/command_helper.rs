@@ -1,5 +1,6 @@
 use crate::naming;
 use std::fs::File;
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
@@ -11,6 +12,42 @@ pub struct ProjectConfig {
     pub out_dir: String,
 }
 
+/// Validate a project/executable name: must match `[A-Za-z0-9_-]+`.
+/// Rejects path separators and traversal characters (BUG-L21 / BUG-M04).
+pub fn validate_name(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("name must not be empty".to_string());
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err(format!(
+            "name contains invalid characters (allowed: A-Z a-z 0-9 _ -): {:?}",
+            name
+        ));
+    }
+    Ok(())
+}
+
+/// Validate a subpath under the project base directory.
+/// Rejects absolute paths and any `..` component so that
+/// `format!("{}/{}", base, subpath)` cannot escape `base` (BUG-L21).
+/// The path need not exist on disk.
+pub fn validate_subpath(subpath: &str) -> Result<(), String> {
+    let path = Path::new(subpath);
+    if path.is_absolute() {
+        return Err(format!("subpath must be relative: {:?}", subpath));
+    }
+    if path.components().any(|c| match c {
+        std::path::Component::ParentDir => true,
+        _ => false,
+    }) {
+        return Err(format!("subpath must not contain `..`: {:?}", subpath));
+    }
+    Ok(())
+}
+
 pub fn get_all_arguments(args: Vec<String>) -> Vec<String> {
     args.iter()
         .filter(|arg| arg.starts_with("--"))
@@ -18,7 +55,10 @@ pub fn get_all_arguments(args: Vec<String>) -> Vec<String> {
         .collect()
 }
 
-pub fn init_project(mut name: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+pub fn init_project(
+    mut name: Option<&str>,
+    force: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     use std::io::Write;
 
     if name.is_none() {
@@ -26,6 +66,28 @@ pub fn init_project(mut name: Option<&str>) -> Result<(), Box<dyn std::error::Er
     }
 
     let name = name.unwrap();
+    validate_name(name)?;
+    let toml_path = naming::CONFIG_FILE;
+    let src_path = format!("src/{}", naming::SOURCE_FILE);
+
+    // Protect existing files unless --force was given (BUG-M03).
+    if !force {
+        if Path::new(toml_path).exists() {
+            return Err(format!(
+                "{} already exists. Use --force to overwrite.",
+                toml_path
+            )
+            .into());
+        }
+        if Path::new(&src_path).exists() {
+            return Err(format!(
+                "{} already exists. Use --force to overwrite.",
+                src_path
+            )
+            .into());
+        }
+    }
+
     println!("Initializing project with name: {}", name);
 
     let config = ProjectConfig {
@@ -36,7 +98,7 @@ pub fn init_project(mut name: Option<&str>) -> Result<(), Box<dyn std::error::Er
     };
 
     let toml_str = toml::to_string_pretty(&config)?;
-    let mut file = File::create(naming::CONFIG_FILE)?;
+    let mut file = File::create(toml_path)?;
     file.write_all(toml_str.as_bytes())?;
     println!("Project initialized successfully with {}", naming::CONFIG_FILE);
 
@@ -46,7 +108,7 @@ pub fn init_project(mut name: Option<&str>) -> Result<(), Box<dyn std::error::Er
         "fn main() {{\n    @println(\"Hello, {}!\");\n}}\n",
         naming::LANG_DISPLAY_NAME
     );
-    let mut src_file = File::create(format!("src/{}", naming::SOURCE_FILE))?;
+    let mut src_file = File::create(&src_path)?;
     src_file.write_all(default_code.as_bytes())?;
     println!("Created src/{} with default code.", naming::SOURCE_FILE);
 

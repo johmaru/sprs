@@ -13,6 +13,7 @@ use crate::front::ast::{
     StructField,
     Suffix,
 };
+use crate::front::span::{Span, Spanned};
 use crate::front::lexer::Token;
 use crate::front::type_helper::Type;
 use lalrpop_util::ParseError;
@@ -95,12 +96,12 @@ pub Start: Vec<Item> =
 
 ItemNode: Item = {
     FunctionDef,
-    <v:VarDecl> => Item::VarItem(v),
-    <p:PreprocessorDirective> => Item::Preprocessor(p),
-    <i:ImportDirective> => Item::Import(i),
-    <p:PackageDirective> => Item::Package(p),
-    <e:EnumDef> => Item::EnumItem(e),
-    <s:StructDef> => Item::StructItem(s),
+    <start:@L> <v:VarDecl> <end:@R> => Item::VarItem(v),
+    <start:@L> <p:PreprocessorDirective> <end:@R> => Item::Preprocessor(p),
+    <start:@L> <i:ImportDirective> <end:@R> => Item::Import(i),
+    <start:@L> <p:PackageDirective> <end:@R> => Item::Package(p),
+    <start:@L> <e:EnumDef> <end:@R> => Item::EnumItem(e),
+    <start:@L> <s:StructDef> <end:@R> => Item::StructItem(s),
 };
 
 PreprocessorDirective: String = {
@@ -116,22 +117,24 @@ PackageDirective: String = {
 };
 
 EnumDef: Enum = 
-    <is_pub:PublicKw> Enum <name:Ident> LBrace <variants:EnumVariantList> RBrace => {
+    <start:@L> <is_pub:PublicKw> Enum <name:Ident> LBrace <variants:EnumVariantList> RBrace <end:@R> => {
         Enum {
             ident: name,
             variants,
             is_public: is_pub,
+            span: Span::new(start, end),
         }
     };
 
 
 StructDef: Struct =
-    <is_pub:PublicKw> Struct <name:Ident> LBrace <fields:StructFieldList> RBrace => {
+    <start:@L> <is_pub:PublicKw> Struct <name:Ident> LBrace <fields:StructFieldList> RBrace <end:@R> => {
         Struct {
             ident: name,
             fields,
             is_public: is_pub,
             _methods: vec![],
+            span: Span::new(start, end),
         }
 };
 
@@ -146,10 +149,11 @@ StructFieldList: Vec<StructField> = {
 
 
 StructFieldNode: StructField = {
-    <id:Ident> <ty:FieldType?> <def:FieldDefault?> => StructField {
+    <start:@L> <id:Ident> <ty:FieldType?> <def:FieldDefault?> <end:@R> => StructField {
         ident: id,
         ty,
         default_value: def,
+        span: Span::new(start, end),
     }
 };
 
@@ -180,7 +184,7 @@ FieldType: Type = {
     GtGt <t:Type> => t,
 };
 
-FieldDefault: Expr = {
+FieldDefault: Spanned<Expr> = {
     Assign <e:Expr> => e,
 };
 
@@ -192,13 +196,14 @@ PublicKw: bool = {
 };
 
 FunctionDef: Item =
-   <is_pub:PublicKw> FnKw <name:Ident> LParen <params:ParamList> RParen <ret:ReturnType> <body:Block> => {
+   <start:@L> <is_pub:PublicKw> FnKw <name:Ident> LParen <params:ParamList> RParen <ret:ReturnType> <body:Block> <end:@R> => {
         Item::FunctionItem(Function {
             ident: name,
             params,
             ret_ty: ret,
             blk: body,
             is_public: is_pub,
+            span: Span::new(start, end),
         })
     };
 
@@ -211,8 +216,10 @@ ParamList: Vec<FunctionParam> = {
     }
 };
 
-FunctionParamNode: FunctionParam =
-    <id:Ident> => FunctionParam { ident: id };
+FunctionParamNode: FunctionParam = {
+    <start:@L> <id:Ident> GtGt <t:Type> <end:@R> => FunctionParam { ident: id, ty: Some(t), span: Span::new(start, end) },
+    <start:@L> <id:Ident> <end:@R> => FunctionParam { ident: id, ty: None, span: Span::new(start, end) },
+};
 
 
 Type: Type = {
@@ -242,7 +249,7 @@ ReturnType: Option<Type> = {
     => None,
 };
 
-ArgList: Vec<Expr> = {
+ArgList: Vec<Spanned<Expr>> = {
     => vec![],
     <e:Expr> => vec![e],
     <first:Expr> Comma <rest:ArgListTail> => {
@@ -252,7 +259,7 @@ ArgList: Vec<Expr> = {
     }
 };
 
-ArgListTail: Vec<Expr> = {
+ArgListTail: Vec<Spanned<Expr>> = {
     <e:Expr> => vec![e],
     <first:Expr> Comma <rest:ArgListTail> => {
         let mut v = vec![first];
@@ -261,22 +268,22 @@ ArgListTail: Vec<Expr> = {
     }
 };
 
-Block: Vec<Stmt> =
+Block: Vec<Spanned<Stmt>> =
     LBrace <stmts:Stmts> RBrace => stmts;
 
-Stmts: Vec<Stmt> = {
+Stmts: Vec<Spanned<Stmt>> = {
     => vec![],
     <mut stmts:Stmts> <s:Stmt> => { stmts.push(s); stmts }
 };
 
-Stmt: Stmt = {
-    <v:VarDecl> => Stmt::Var(v),
-    <e:Expr> <tail:StmtTail> =>? {
+Stmt: Spanned<Stmt> = {
+    <start:@L> <v:VarDecl> <end:@R> => Spanned::new(Stmt::Var(v), Span::new(start, end)),
+    <start:@L> <e:Expr> <tail:StmtTail> <end:@R> =>? {
         match tail {
-            None => Ok(Stmt::Expr(e)),
+            None => Ok(Spanned::new(Stmt::Expr(e), Span::new(start, end))),
             Some(val) => {
-                if let Expr::Var(id) = e {
-                    Ok(Stmt::Assign(AssignStmt { name: id, expr: val }))
+                if let Expr::Var(id) = e.node {
+                    Ok(Spanned::new(Stmt::Assign(AssignStmt { name: id, expr: val, span: Span::new(start, end) }), Span::new(start, end)))
                 } else {
                     Err(ParseError::User { error: "Invalid assignment target".to_string() })
                 }
@@ -284,38 +291,38 @@ Stmt: Stmt = {
         }
     },
     IfStmt,
-    While <c:ExprNoStruct> <body:Block> =>
-        Stmt::While {
+    <start:@L> While <c:Expr> <body:Block> <end:@R> =>
+        Spanned::new(Stmt::While {
             cond: c,
             body: body,
-        },
-    Return <e:Expr> Semi => Stmt::Return(Some(e)),
-    Return Semi => Stmt::Return(None),
+        }, Span::new(start, end)),
+    <start:@L> Return <e:Expr> Semi <end:@R> => Spanned::new(Stmt::Return(Some(e)), Span::new(start, end)),
+    <start:@L> Return Semi <end:@R> => Spanned::new(Stmt::Return(None), Span::new(start, end)),
 }
 
 #[inline]
-IfStmt: Stmt = {
-    If <c:ExprNoStruct> <then:Block> => Stmt::If {
+IfStmt: Spanned<Stmt> = {
+    <start:@L> If <c:Expr> <then:Block> <end:@R> => Spanned::new(Stmt::If {
         cond: c,
         then_blk: then,
         else_blk: None,
-    },
-    If <c:ExprNoStruct> <then:Block> Else <else_blk:Block> => Stmt::If {
+    }, Span::new(start, end)),
+    <start:@L> If <c:Expr> <then:Block> Else <else_blk:Block> <end:@R> => Spanned::new(Stmt::If {
         cond: c,
         then_blk: then,
         else_blk: Some(else_blk),
-    },
+    }, Span::new(start, end)),
 };
 
-StmtTail: Option<Expr> = {
+StmtTail: Option<Spanned<Expr>> = {
     Semi => None,
     Assign <e:Expr> Semi => Some(e),
 };
 
 
 VarDecl: VarDecl = {
- Var <id:Ident> Assign <e:Expr> Semi => VarDecl { ident: id, expr: Some(e) },
- Var <id:Ident> Semi => VarDecl { ident: id, expr: None },
+ <start:@L> Var <id:Ident> Assign <e:Expr> Semi <end:@R> => VarDecl { ident: id, expr: Some(e), span: Span::new(start, end) },
+ <start:@L> Var <id:Ident> Semi <end:@R> => VarDecl { ident: id, expr: None, span: Span::new(start, end) },
 };
 
 Ident: String = <tok:IDENT> =>? {
@@ -348,216 +355,119 @@ BooleanLiteral: bool = {
 };
 
 
-Expr: Expr = RangeExpr;
+Expr: Spanned<Expr> = RangeExpr;
 
-RangeExpr: Expr = {
-    <l:Comparison> DotDot <r:Comparison> => Expr::Range(Box::new(l), Box::new(r)),
+RangeExpr: Spanned<Expr> = {
+    <start:@L> <l:Comparison> DotDot <r:Comparison> <end:@R> => Spanned::new(Expr::Range(Box::new(l), Box::new(r)), Span::new(start, end)),
     <e:Comparison> => e,
 }
 
-Comparison: Expr = {
-    <l:Comparison> EqEq <r:AddAndMinus> => Expr::Eq(Box::new(l), Box::new(r)),
-    <l:Comparison> Neq <r:AddAndMinus> => Expr::Neq(Box::new(l), Box::new(r)),
-    <l:Comparison> Lt <r:AddAndMinus> => Expr::Lt(Box::new(l), Box::new(r)),
-    <l:Comparison> Gt <r:AddAndMinus> => Expr::Gt(Box::new(l), Box::new(r)),
-    <l:Comparison> Le <r:AddAndMinus> => Expr::Le(Box::new(l), Box::new(r)),
-    <l:Comparison> Ge <r:AddAndMinus> => Expr::Ge(Box::new(l), Box::new(r)),
+Comparison: Spanned<Expr> = {
+    <start:@L> <l:Comparison> EqEq <r:AddAndMinus> <end:@R> => Spanned::new(Expr::Eq(Box::new(l), Box::new(r)), Span::new(start, end)),
+    <start:@L> <l:Comparison> Neq <r:AddAndMinus> <end:@R> => Spanned::new(Expr::Neq(Box::new(l), Box::new(r)), Span::new(start, end)),
+    <start:@L> <l:Comparison> Lt <r:AddAndMinus> <end:@R> => Spanned::new(Expr::Lt(Box::new(l), Box::new(r)), Span::new(start, end)),
+    <start:@L> <l:Comparison> Gt <r:AddAndMinus> <end:@R> => Spanned::new(Expr::Gt(Box::new(l), Box::new(r)), Span::new(start, end)),
+    <start:@L> <l:Comparison> Le <r:AddAndMinus> <end:@R> => Spanned::new(Expr::Le(Box::new(l), Box::new(r)), Span::new(start, end)),
+    <start:@L> <l:Comparison> Ge <r:AddAndMinus> <end:@R> => Spanned::new(Expr::Ge(Box::new(l), Box::new(r)), Span::new(start, end)),
     <a:AddAndMinus>                   => a,
 }
 
-AddAndMinus: Expr = {
-    <l:AddAndMinus> Plus <r:MulAndDivAndMod> => Expr::Add(Box::new(l), Box::new(r)),
-    <l:AddAndMinus> Minus <r:MulAndDivAndMod> => Expr::Minus(Box::new(l), Box::new(r)),
+AddAndMinus: Spanned<Expr> = {
+    <start:@L> <l:AddAndMinus> Plus <r:MulAndDivAndMod> <end:@R> => Spanned::new(Expr::Add(Box::new(l), Box::new(r)), Span::new(start, end)),
+    <start:@L> <l:AddAndMinus> Minus <r:MulAndDivAndMod> <end:@R> => Spanned::new(Expr::Minus(Box::new(l), Box::new(r)), Span::new(start, end)),
     <m:MulAndDivAndMod>              => m,
-};
+}
 
-MulAndDivAndMod: Expr = {
-    <l:MulAndDivAndMod> Star <r:Unary> => Expr::Mul(Box::new(l), Box::new(r)),
-    <l:MulAndDivAndMod> Div <r:Unary> => Expr::Div(Box::new(l), Box::new(r)),
-    <l:MulAndDivAndMod> Mod <r:Unary> => Expr::Mod(Box::new(l), Box::new(r)),
+MulAndDivAndMod: Spanned<Expr> = {
+    <start:@L> <l:MulAndDivAndMod> Star <r:Unary> <end:@R> => Spanned::new(Expr::Mul(Box::new(l), Box::new(r)), Span::new(start, end)),
+    <start:@L> <l:MulAndDivAndMod> Div <r:Unary> <end:@R> => Spanned::new(Expr::Div(Box::new(l), Box::new(r)), Span::new(start, end)),
+    <start:@L> <l:MulAndDivAndMod> Mod <r:Unary> <end:@R> => Spanned::new(Expr::Mod(Box::new(l), Box::new(r)), Span::new(start, end)),
     <u:Unary> => u,
-};
+}
 
-Unary: Expr = {
+Unary: Spanned<Expr> = {
+    <start:@L> Minus <p:Unary> <end:@R> => Spanned::new(Expr::Neg(Box::new(p)), Span::new(start, end)),
     <p: Postfix> => p,
 }
 
-Postfix: Expr = {
-    <base:Postfix> LBracket <index:Expr> RBracket => Expr::Index(Box::new(base), Box::new(index)),
-    <e:Postfix> PlusPlus => Expr::Increment(Box::new(e)),
-    <e:Postfix> MinusMinus => Expr::Decrement(Box::new(e)),
-    <base:Postfix> Dot <field:Ident> LParen RParen => {
-        if let Expr::Var(mod_name) = base {
-            Expr::ModuleAccess(mod_name, field, vec![])
+Postfix: Spanned<Expr> = {
+    <start:@L> <base:Postfix> LBracket <index:Expr> RBracket <end:@R> => Spanned::new(Expr::Index(Box::new(base), Box::new(index)), Span::new(start, end)),
+    <start:@L> <e:Postfix> PlusPlus <end:@R> => Spanned::new(Expr::Increment(Box::new(e)), Span::new(start, end)),
+    <start:@L> <e:Postfix> MinusMinus <end:@R> => Spanned::new(Expr::Decrement(Box::new(e)), Span::new(start, end)),
+    <start:@L> <base:Postfix> Dot <field:Ident> LParen RParen <end:@R> => {
+        if let Expr::Var(mod_name) = base.node {
+            Spanned::new(Expr::ModuleAccess(mod_name, field, vec![]), Span::new(start, end))
         } else {
-            Expr::Call(field, vec![], None)
+            Spanned::new(Expr::Call(field, vec![], None), Span::new(start, end))
         }
     },
-    <base:Postfix> Dot <field:Ident> LParen <first:Expr> <rest:(Comma <Expr>)*> RParen => {
+    <start:@L> <base:Postfix> Dot <field:Ident> LParen <first:Expr> <rest:(Comma <Expr>)*> RParen <end:@R> => {
         let mut args = vec![first];
         args.extend(rest);
-        if let Expr::Var(mod_name) = base {
-            Expr::ModuleAccess(mod_name, field, args)
+        if let Expr::Var(mod_name) = base.node {
+            Spanned::new(Expr::ModuleAccess(mod_name, field, args), Span::new(start, end))
         } else {
-            Expr::Call(field, args, None)
+            Spanned::new(Expr::Call(field, args, None), Span::new(start, end))
         }
     },
-    <base:Postfix> Dot <field:Ident> => {
-        if let Expr::Var(val) = base {
-            Expr::FieldAccess(Box::new(Expr::Var(val)), field)
+    <start:@L> <base:Postfix> Dot <field:Ident> <end:@R> => {
+        if let Expr::Var(val) = base.node {
+            Spanned::new(Expr::FieldAccess(Box::new(Spanned::new(Expr::Var(val), base.span)), field), Span::new(start, end))
         } else {
-            Expr::FieldAccess(Box::new(base), field)
+            Spanned::new(Expr::FieldAccess(Box::new(base), field), Span::new(start, end))
         }
     },
     <f:Atom> => f,
 }
 
-Atom: Expr = {
-    <m:MacroName> LParen RParen => Expr::Macro(m, vec![]),
-    <m:MacroName> LParen <first:Expr> <rest:(Comma <Expr>)*> RParen => {
+Atom: Spanned<Expr> = {
+    <start:@L> <m:MacroName> LParen RParen <end:@R> => Spanned::new(Expr::Macro(m, vec![]), Span::new(start, end)),
+    <start:@L> <m:MacroName> LParen <first:Expr> <rest:(Comma <Expr>)*> RParen <end:@R> => {
         let mut args = vec![first];
         args.extend(rest);
-        Expr::Macro(m, args)
+        Spanned::new(Expr::Macro(m, args), Span::new(start, end))
     },
-    <id:Ident> LParen RParen => Expr::Call(id, vec![], None),
-    <id:Ident> LParen <first:Expr> <rest:(Comma <Expr>)*> RParen => {
+    <start:@L> <m:MacroName> LParen <name:Ident> LBrace <fields:StructInitFields> RBrace RParen <end:@R> =>? {
+        if m == "init" {
+            Ok(Spanned::new(Expr::StructInit(name, fields), Span::new(start, end)))
+        } else {
+            Err(ParseError::User { error: format!("Macro '{}' does not support struct init syntax. Use @init for struct initialization.", m) })
+        }
+    },
+    <start:@L> <id:Ident> LParen RParen <end:@R> => Spanned::new(Expr::Call(id, vec![], None), Span::new(start, end)),
+    <start:@L> <id:Ident> LParen <first:Expr> <rest:(Comma <Expr>)*> RParen <end:@R> => {
         let mut args = vec![first];
         args.extend(rest);
-        Expr::Call(id, args, None)
+        Spanned::new(Expr::Call(id, args, None), Span::new(start, end))
     },
-    <id:Ident> LBrace <fields:StructInitFields> RBrace => {
-        Expr::StructInit(id, fields)
-    },
-    <id:Ident> => Expr::Var(id),
-    <n:Num> => Expr::Number(n),
-    <f:Float> => Expr::Float(f),
-    <s:StringLiteral> => Expr::Str(s),
-    <b:BooleanLiteral> => Expr::Bool(b),
-    <i:TypeI8> => Expr::TypeI8,
-    <u:TypeU8> => Expr::TypeU8,
-    <i:TypeI16> => Expr::TypeI16,
-    <u:TypeU16> => Expr::TypeU16,
-    <i:TypeI32> => Expr::TypeI32,
-    <u:TypeU32> => Expr::TypeU32,
-    <i:TypeI64> => Expr::TypeI64,
-    <u:TypeU64> => Expr::TypeU64,
-    <f:TypeF16> => Expr::TypeF16,
-    <f:TypeF32> => Expr::TypeF32,
-    <f:TypeF64> => Expr::TypeF64,
-    LParen RParen => Expr::Unit(),
-    LParen <e:Expr> RParen => e,
-    LBracket RBracket => Expr::List(vec![]),
-    LBracket <first:Expr> <rest:(Comma <Expr>)*> RBracket => {
+    <start:@L> <id:Ident> <end:@R> => Spanned::new(Expr::Var(id), Span::new(start, end)),
+    <start:@L> <n:Num> <end:@R> => Spanned::new(Expr::Number(n), Span::new(start, end)),
+    <start:@L> <f:Float> <end:@R> => Spanned::new(Expr::Float(f), Span::new(start, end)),
+    <start:@L> <s:StringLiteral> <end:@R> => Spanned::new(Expr::Str(s), Span::new(start, end)),
+    <start:@L> <b:BooleanLiteral> <end:@R> => Spanned::new(Expr::Bool(b), Span::new(start, end)),
+    <start:@L> <i:TypeI8> <end:@R> => Spanned::new(Expr::TypeI8, Span::new(start, end)),
+    <start:@L> <u:TypeU8> <end:@R> => Spanned::new(Expr::TypeU8, Span::new(start, end)),
+    <start:@L> <i:TypeI16> <end:@R> => Spanned::new(Expr::TypeI16, Span::new(start, end)),
+    <start:@L> <u:TypeU16> <end:@R> => Spanned::new(Expr::TypeU16, Span::new(start, end)),
+    <start:@L> <i:TypeI32> <end:@R> => Spanned::new(Expr::TypeI32, Span::new(start, end)),
+    <start:@L> <u:TypeU32> <end:@R> => Spanned::new(Expr::TypeU32, Span::new(start, end)),
+    <start:@L> <i:TypeI64> <end:@R> => Spanned::new(Expr::TypeI64, Span::new(start, end)),
+    <start:@L> <u:TypeU64> <end:@R> => Spanned::new(Expr::TypeU64, Span::new(start, end)),
+    <start:@L> <f:TypeF16> <end:@R> => Spanned::new(Expr::TypeF16, Span::new(start, end)),
+    <start:@L> <f:TypeF32> <end:@R> => Spanned::new(Expr::TypeF32, Span::new(start, end)),
+    <start:@L> <f:TypeF64> <end:@R> => Spanned::new(Expr::TypeF64, Span::new(start, end)),
+    <start:@L> LParen RParen <end:@R> => Spanned::new(Expr::Unit(), Span::new(start, end)),
+    <start:@L> LParen <e:Expr> RParen <end:@R> => Spanned::new(e.node, Span::new(start, end)),
+    <start:@L> LBracket RBracket <end:@R> => Spanned::new(Expr::List(vec![]), Span::new(start, end)),
+    <start:@L> LBracket <first:Expr> <rest:(Comma <Expr>)*> RBracket <end:@R> => {
         let mut v = vec![first];
         v.extend(rest);
-        Expr::List(v)
+        Spanned::new(Expr::List(v), Span::new(start, end))
     },
 };
 
-ExprNoStruct: Expr = RangeExprNoStruct;
 
-RangeExprNoStruct: Expr = {
-    <l:ComparisonNoStruct> DotDot <r:ComparisonNoStruct> => Expr::Range(Box::new(l), Box::new(r)),
-    <e:ComparisonNoStruct> => e,
-}
-
-ComparisonNoStruct: Expr = {
-    <l:ComparisonNoStruct> EqEq <r:AddAndMinusNoStruct> => Expr::Eq(Box::new(l), Box::new(r)),
-    <l:ComparisonNoStruct> Neq <r:AddAndMinusNoStruct> => Expr::Neq(Box::new(l), Box::new(r)),
-    <l:ComparisonNoStruct> Lt <r:AddAndMinusNoStruct> => Expr::Lt(Box::new(l), Box::new(r)),
-    <l:ComparisonNoStruct> Gt <r:AddAndMinusNoStruct> => Expr::Gt(Box::new(l), Box::new(r)),
-    <l:ComparisonNoStruct> Le <r:AddAndMinusNoStruct> => Expr::Le(Box::new(l), Box::new(r)),
-    <l:ComparisonNoStruct> Ge <r:AddAndMinusNoStruct> => Expr::Ge(Box::new(l), Box::new(r)),
-    <a:AddAndMinusNoStruct>                   => a,
-}
-
-AddAndMinusNoStruct: Expr = {
-    <l:AddAndMinusNoStruct> Plus <r:MulAndDivAndModNoStruct> => Expr::Add(Box::new(l), Box::new(r)),
-    <l:AddAndMinusNoStruct> Minus <r:MulAndDivAndModNoStruct> => Expr::Minus(Box::new(l), Box::new(r)),
-    <m:MulAndDivAndModNoStruct>              => m,
-};
-
-MulAndDivAndModNoStruct: Expr = {
-    <l:MulAndDivAndModNoStruct> Star <r:UnaryNoStruct> => Expr::Mul(Box::new(l), Box::new(r)),
-    <l:MulAndDivAndModNoStruct> Div <r:UnaryNoStruct> => Expr::Div(Box::new(l), Box::new(r)),
-    <l:MulAndDivAndModNoStruct> Mod <r:UnaryNoStruct> => Expr::Mod(Box::new(l), Box::new(r)),
-    <u:UnaryNoStruct> => u,
-};
-
-UnaryNoStruct: Expr = {
-    <p: PostfixNoStruct> => p,
-}
-
-PostfixNoStruct: Expr = {
-    <base:PostfixNoStruct> LBracket <index:Expr> RBracket => Expr::Index(Box::new(base), Box::new(index)),
-    <e:PostfixNoStruct> PlusPlus => Expr::Increment(Box::new(e)),
-    <e:PostfixNoStruct> MinusMinus => Expr::Decrement(Box::new(e)),
-    <base:PostfixNoStruct> Dot <field:Ident> LParen RParen => {
-        if let Expr::Var(mod_name) = base {
-            Expr::ModuleAccess(mod_name, field, vec![])
-        } else {
-            Expr::Call(field, vec![], None)
-        }
-    },
-    <base:PostfixNoStruct> Dot <field:Ident> LParen <first:Expr> <rest:(Comma <Expr>)*> RParen => {
-        let mut args = vec![first];
-        args.extend(rest);
-        if let Expr::Var(mod_name) = base {
-            Expr::ModuleAccess(mod_name, field, args)
-        } else {
-            Expr::Call(field, args, None)
-        }
-    },
-    <base:PostfixNoStruct> Dot <field:Ident> => {
-        if let Expr::Var(val) = base {
-            Expr::FieldAccess(Box::new(Expr::Var(val)), field)
-        } else {
-            Expr::FieldAccess(Box::new(base), field)
-        }
-    },
-    <f:AtomNoStruct> => f,
-}
-
-AtomNoStruct: Expr = {
-    <m:MacroName> LParen RParen => Expr::Macro(m, vec![]),
-    <m:MacroName> LParen <first:Expr> <rest:(Comma <Expr>)*> RParen => {
-        let mut args = vec![first];
-        args.extend(rest);
-        Expr::Macro(m, args)
-    },
-    <id:Ident> LParen RParen => Expr::Call(id, vec![], None),
-    <id:Ident> LParen <first:Expr> <rest:(Comma <Expr>)*> RParen => {
-        let mut args = vec![first];
-        args.extend(rest);
-        Expr::Call(id, args, None)
-    },
-    <id:Ident> => Expr::Var(id),
-    <n:Num> => Expr::Number(n),
-    <f:Float> => Expr::Float(f),
-    <s:StringLiteral> => Expr::Str(s),
-    <b:BooleanLiteral> => Expr::Bool(b),
-    <i:TypeI8> => Expr::TypeI8,
-    <u:TypeU8> => Expr::TypeU8,
-    <i:TypeI16> => Expr::TypeI16,
-    <u:TypeU16> => Expr::TypeU16,
-    <i:TypeI32> => Expr::TypeI32,
-    <u:TypeU32> => Expr::TypeU32,
-    <i:TypeI64> => Expr::TypeI64,
-    <u:TypeU64> => Expr::TypeU64,
-    <f:TypeF16> => Expr::TypeF16,
-    <f:TypeF32> => Expr::TypeF32,
-    <f:TypeF64> => Expr::TypeF64,
-    LParen RParen => Expr::Unit(),
-    LParen <e:Expr> RParen => e,
-    LBracket RBracket => Expr::List(vec![]),
-    LBracket <first:Expr> <rest:(Comma <Expr>)*> RBracket => {
-        let mut v = vec![first];
-        v.extend(rest);
-        Expr::List(v)
-    },
-};
-
-StructInitFields: Vec<(String, Expr)> = {
+StructInitFields: Vec<(String, Spanned<Expr>)> = {
     => vec![],
     <f:StructInitField> => vec![f],
     <first:StructInitField> Comma <rest:StructInitFieldsTail> => {
@@ -567,7 +477,7 @@ StructInitFields: Vec<(String, Expr)> = {
     }
 };
 
-StructInitFieldsTail: Vec<(String, Expr)> = {
+StructInitFieldsTail: Vec<(String, Spanned<Expr>)> = {
     <f:StructInitField> => vec![f],
     <first:StructInitField> Comma <rest:StructInitFieldsTail> => {
         let mut v = vec![first];
@@ -576,6 +486,6 @@ StructInitFieldsTail: Vec<(String, Expr)> = {
     }
 };
 
-StructInitField: (String, Expr) = {
+StructInitField: (String, Spanned<Expr>) = {
     <id:Ident> Assign <e:Expr> => (id, e),
 };

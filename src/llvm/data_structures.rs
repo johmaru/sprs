@@ -4,18 +4,19 @@ use inkwell::{
 };
 use crate::{
     front::ast,
+    front::span::Spanned,
     llvm::compiler::{Compiler, StoreTag, StoreValue, Tag},
 };
 use crate::llvm::value::{create_entry_block_alloca, create_panic_err, PanicErrorSettings, box_return_value};
 
 pub fn create_list<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    elements: &Vec<ast::Expr>,
+    elements: &Vec<Spanned<ast::Expr>>,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
     let list_handle = self_compiler.build_list_from_exprs(elements, module)?;
 
-    let res_ptr = create_entry_block_alloca(self_compiler, "list_res_alloc");
+    let res_ptr = create_entry_block_alloca(self_compiler, "list_res_alloc")?;
     let res_tag_ptr = self_compiler
         .builder
         .build_struct_gep(self_compiler.runtime_value_type, res_ptr, 0, "res_tag_ptr")
@@ -46,8 +47,8 @@ pub fn create_list<'ctx>(
 
 pub fn create_index<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    collection_expr: &ast::Expr,
-    index_expr: &ast::Expr,
+    collection_expr: &Spanned<ast::Expr>,
+    index_expr: &Spanned<ast::Expr>,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
     let get_fn = self_compiler.get_runtime_fn(module, "__list_get")?;
@@ -116,8 +117,8 @@ pub fn create_index<'ctx>(
 
 pub fn create_range<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    start_expr: &ast::Expr,
-    end_expr: &ast::Expr,
+    start_expr: &Spanned<ast::Expr>,
+    end_expr: &Spanned<ast::Expr>,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
     let range_fn = self_compiler.get_runtime_fn(module, "__range_new")?;
@@ -172,7 +173,7 @@ pub fn create_range<'ctx>(
         }
     };
 
-    let res_ptr = create_entry_block_alloca(self_compiler, "range_res_alloc");
+    let res_ptr = create_entry_block_alloca(self_compiler, "range_res_alloc")?;
 
     let res_tag_ptr = self_compiler
         .builder
@@ -205,7 +206,7 @@ pub fn create_module_access<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
     module_name: &str,
     function_name: &str,
-    args: &Vec<ast::Expr>,
+    args: &Vec<Spanned<ast::Expr>>,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
     let target_module = self_compiler
@@ -255,7 +256,7 @@ pub fn create_module_access<'ctx>(
 
 pub fn create_field_access<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    struct_expr: &ast::Expr,
+    struct_expr: &Spanned<ast::Expr>,
     field_index: u32,
     struct_name: &str,
     module: &inkwell::module::Module<'ctx>,
@@ -305,6 +306,14 @@ pub fn create_field_access<'ctx>(
         .get(struct_name)
         .ok_or_else(|| format!("Undefined struct : {}", struct_name))?;
     let llvm_type = struct_def.llvm_type;
+    if field_index as usize >= struct_def.fields.len() {
+        return Err(format!(
+            "Field index {} out of bounds for struct '{}' ({} fields)",
+            field_index,
+            struct_name,
+            struct_def.fields.len()
+        ));
+    }
     let field_def = &struct_def.fields[field_index as usize];
 
     let struct_ptr_typed = self_compiler
@@ -333,7 +342,7 @@ pub fn create_field_access<'ctx>(
                     .into_int_value();
 
                 let res_ptr =
-                    create_entry_block_alloca(self_compiler, "int_field_access_res_alloc");
+                    create_entry_block_alloca(self_compiler, "int_field_access_res_alloc")?;
                 self_compiler.build_runtime_value_store(
                     res_ptr,
                     StoreTag::Int(Tag::Integer as u64),
@@ -354,7 +363,7 @@ pub fn create_field_access<'ctx>(
                     .into_int_value();
 
                 let res_ptr =
-                    create_entry_block_alloca(self_compiler, "bool_field_access_res_alloc");
+                    create_entry_block_alloca(self_compiler, "bool_field_access_res_alloc")?;
                 self_compiler.build_runtime_value_store(
                     res_ptr,
                     StoreTag::Int(Tag::Boolean as u64),
@@ -376,7 +385,7 @@ pub fn create_field_access<'ctx>(
                     .unwrap()
                     .into_int_value();
                 let res_ptr =
-                    create_entry_block_alloca(self_compiler, "str_field_access_res_alloc");
+                    create_entry_block_alloca(self_compiler, "str_field_access_res_alloc")?;
                 self_compiler.build_runtime_value_store(
                     res_ptr,
                     StoreTag::Int(Tag::String as u64),
@@ -394,7 +403,7 @@ pub fn create_field_access<'ctx>(
         .build_load(self_compiler.runtime_value_type, field_ptr, "field_val")
         .unwrap();
 
-    let res_ptr = create_entry_block_alloca(self_compiler, "field_access_res_alloc");
+    let res_ptr = create_entry_block_alloca(self_compiler, "field_access_res_alloc")?;
 
     self_compiler
         .builder
@@ -407,7 +416,7 @@ pub fn create_field_access<'ctx>(
 pub fn create_unit<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
-    let res_ptr = create_entry_block_alloca(self_compiler, "unit_res_alloc");
+    let res_ptr = create_entry_block_alloca(self_compiler, "unit_res_alloc")?;
     self_compiler.tag_only_runtime_value_store(res_ptr, Tag::Unit as u64, "unit_res");
     Ok(res_ptr.into())
 }
@@ -415,7 +424,7 @@ pub fn create_unit<'ctx>(
 pub fn create_struct_init<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
     struct_name: &str,
-    field_exprs: &[(String, ast::Expr)],
+    field_exprs: &[(String, Spanned<ast::Expr>)],
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
     let struct_def = self_compiler

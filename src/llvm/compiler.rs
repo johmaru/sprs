@@ -1,4 +1,5 @@
 use crate::front::ast;
+use crate::front::span::Spanned;
 use crate::front::type_helper;
 use crate::front::type_helper::Type;
 use crate::llvm::builder_helper;
@@ -443,7 +444,7 @@ impl<'ctx> Compiler<'ctx> {
 
     pub fn build_list_from_exprs(
         &mut self,
-        elements: &[ast::Expr],
+        elements: &[Spanned<ast::Expr>],
         module: &Module<'ctx>,
     ) -> Result<IntValue<'ctx>, String> {
         let create = builder_helper::create_list_from_expr(self, elements, module);

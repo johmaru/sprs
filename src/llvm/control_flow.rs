@@ -4,15 +4,16 @@ use inkwell::{
 };
 use crate::{
     front::ast,
+    front::span::Spanned,
     llvm::compiler::{Compiler, StoreTag, StoreValue, Tag},
 };
 use crate::llvm::value::{create_entry_block_alloca, create_panic_err, PanicErrorSettings};
 
 pub fn create_if_condition<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    cond: &ast::Expr,
-    then_blk: &Vec<ast::Stmt>,
-    else_blk: &Option<Vec<ast::Stmt>>,
+    cond: &Spanned<ast::Expr>,
+    then_blk: &Vec<Spanned<ast::Stmt>>,
+    else_blk: &Option<Vec<Spanned<ast::Stmt>>>,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let parent_fn = self_compiler
@@ -94,8 +95,8 @@ pub fn create_if_condition<'ctx>(
 
 pub fn create_while_condition<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    cond: &ast::Expr,
-    body: &Vec<ast::Stmt>,
+    cond: &Spanned<ast::Expr>,
+    body: &Vec<Spanned<ast::Stmt>>,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let parent_fn = self_compiler
@@ -173,9 +174,9 @@ pub fn create_while_condition<'ctx>(
 
 pub fn create_if_expr<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    cond: &ast::Expr,
-    then_expr: &ast::Expr,
-    else_expr: &ast::Expr,
+    cond: &Spanned<ast::Expr>,
+    then_expr: &Spanned<ast::Expr>,
+    else_expr: &Spanned<ast::Expr>,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
     let parent_fn = self_compiler

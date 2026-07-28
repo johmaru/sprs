@@ -4,6 +4,7 @@ use inkwell::{
 };
 use crate::{
     front::ast,
+    front::span::Spanned,
     front::type_helper,
     llvm::compiler::{Compiler, StoreTag, StoreValue, Tag},
 };
@@ -12,8 +13,8 @@ use crate::llvm::variable::move_variable;
 
 pub fn create_add_expr<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    lhs: &ast::Expr,
-    rhs: &ast::Expr,
+    lhs: &Spanned<ast::Expr>,
+    rhs: &Spanned<ast::Expr>,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
     if let Ok(val) = create_add_expr_type_check(self_compiler, lhs, rhs, module) {
@@ -120,7 +121,7 @@ pub fn create_add_expr<'ctx>(
 
     let _ = create_panic_err(
         self_compiler,
-        Box::leak(error_message.into_boxed_str()), // error message has memory leak but it's acceptable for now
+        &error_message,
         module,
         settings,
     )?;
@@ -138,7 +139,7 @@ pub fn create_add_expr<'ctx>(
 
     self_compiler.builder.position_at_end(float_bb);
 
-    let float_res_ptr = create_add_expr_build_float_branch(self_compiler, l_ptr, r_ptr, l_tag)?;
+    let float_res_ptr = create_add_expr_build_float_branch(self_compiler, module, l_ptr, r_ptr, l_tag)?;
     let float_end_bb = self_compiler.builder.get_insert_block().unwrap();
     let _ = self_compiler.builder.build_unconditional_branch(merge_bb);
     // string concatenation branch
@@ -171,11 +172,11 @@ pub fn create_add_expr<'ctx>(
 
 fn create_add_expr_type_check<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    lhs: &ast::Expr,
-    rhs: &ast::Expr,
+    lhs: &Spanned<ast::Expr>,
+    rhs: &Spanned<ast::Expr>,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
-    let is_type = |expr: &ast::Expr, ty: &str| -> bool {
+    let is_type = |expr: &Spanned<ast::Expr>, ty: &str| -> bool {
         match self_compiler.get_known_type_from_expr(expr) {
             Ok(t) => t == ty,
             Err(_) => false,
@@ -499,7 +500,7 @@ fn create_add_expr_build_int_branch<'ctx>(
         .build_int_add(l_int_val, r_int_val, "int_sum")
         .unwrap();
 
-    let int_res_ptr = create_entry_block_alloca(self_compiler, "int_res_alloc");
+    let int_res_ptr = create_entry_block_alloca(self_compiler, "int_res_alloc")?;
     self_compiler.build_runtime_value_store(
         int_res_ptr,
         StoreTag::Dynamic(l_tag),
@@ -512,6 +513,7 @@ fn create_add_expr_build_int_branch<'ctx>(
 
 fn create_add_expr_build_float_branch<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
+    module: &inkwell::module::Module<'ctx>,
     l_ptr: PointerValue<'ctx>,
     r_ptr: PointerValue<'ctx>,
     float_tag: IntValue<'ctx>,
@@ -572,7 +574,14 @@ fn create_add_expr_build_float_branch<'ctx>(
     let marge = self_compiler
         .context
         .append_basic_block(parent, "add_merge_bb");
+    let error_bb = self_compiler
+        .context
+        .append_basic_block(parent, "add_float_error_bb");
 
+    let float_tag_const = self_compiler
+        .context
+        .i32_type()
+        .const_int(Tag::Float as u64, false);
     let f16_tag = self_compiler
         .context
         .i32_type()
@@ -586,12 +595,32 @@ fn create_add_expr_build_float_branch<'ctx>(
         .i32_type()
         .const_int(Tag::Float64 as u64, false);
 
-    let cases = vec![(f16_tag, bb_f16), (f32_tag, bb_f32), (f64_tag, bb_f64)];
+    let cases = vec![
+        (float_tag_const, bb_f64),
+        (f16_tag, bb_f16),
+        (f32_tag, bb_f32),
+        (f64_tag, bb_f64),
+    ];
 
     self_compiler
         .builder
-        .build_switch(float_tag, bb_f64, &cases)
+        .build_switch(float_tag, error_bb, &cases)
         .unwrap();
+
+    // error branch (BUG-L17): unknown float tag → panic instead of falling through to bb_f64
+    self_compiler.builder.position_at_end(error_bb);
+    let error_message = "TypeError: unexpected float tag in add";
+    let settings = PanicErrorSettings {
+        is_const: true,
+        is_global: true,
+    };
+    let _ = create_panic_err(
+        self_compiler,
+        error_message,
+        module,
+        settings,
+    )?;
+    let _ = self_compiler.builder.build_unreachable();
 
     // Float16
     self_compiler.builder.position_at_end(bb_f16);
@@ -720,7 +749,7 @@ fn create_add_expr_build_float_branch<'ctx>(
     ]);
     let res_data = phi.as_basic_value().into_int_value();
 
-    let float_res_ptr = create_entry_block_alloca(self_compiler, "float_res_alloc");
+    let float_res_ptr = create_entry_block_alloca(self_compiler, "float_res_alloc")?;
     self_compiler.build_runtime_value_store(
         float_res_ptr,
         StoreTag::Dynamic(float_tag),
@@ -784,7 +813,7 @@ fn create_add_expr_build_string_branch<'ctx>(
     };
 
     // Pack the new handle into a fresh runtime value of tag String.
-    let str_res_ptr = create_entry_block_alloca(self_compiler, "str_res_alloc");
+    let str_res_ptr = create_entry_block_alloca(self_compiler, "str_res_alloc")?;
     self_compiler.build_runtime_value_store(
         str_res_ptr,
         StoreTag::Int(Tag::String as u64),
@@ -797,8 +826,8 @@ fn create_add_expr_build_string_branch<'ctx>(
 
 fn create_int8_add_logic<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    lhs: &ast::Expr,
-    rhs: &ast::Expr,
+    lhs: &Spanned<ast::Expr>,
+    rhs: &Spanned<ast::Expr>,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
     let l_ptr = self_compiler
@@ -845,7 +874,7 @@ fn create_int8_add_logic<'ctx>(
         .builder
         .build_int_s_extend(res_i8, self_compiler.context.i64_type(), "i8_sum_ext")
         .unwrap();
-    let res_ptr = create_entry_block_alloca(self_compiler, "int8_add_res_alloc");
+    let res_ptr = create_entry_block_alloca(self_compiler, "int8_add_res_alloc")?;
 
     self_compiler.build_runtime_value_store(
         res_ptr,
@@ -859,8 +888,8 @@ fn create_int8_add_logic<'ctx>(
 
 fn create_uint8_add_logic<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    lhs: &ast::Expr,
-    rhs: &ast::Expr,
+    lhs: &Spanned<ast::Expr>,
+    rhs: &Spanned<ast::Expr>,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
     let l_ptr = self_compiler
@@ -907,7 +936,7 @@ fn create_uint8_add_logic<'ctx>(
         .builder
         .build_int_z_extend(res_u8, self_compiler.context.i64_type(), "u8_sum_ext")
         .unwrap();
-    let res_ptr = create_entry_block_alloca(self_compiler, "uint8_add_res_alloc");
+    let res_ptr = create_entry_block_alloca(self_compiler, "uint8_add_res_alloc")?;
 
     self_compiler.build_runtime_value_store(
         res_ptr,
@@ -921,8 +950,8 @@ fn create_uint8_add_logic<'ctx>(
 
 fn create_int16_add_logic<'ctx>(
     _self_compiler: &mut Compiler<'ctx>,
-    _lhs: &ast::Expr,
-    _rhs: &ast::Expr,
+    _lhs: &Spanned<ast::Expr>,
+    _rhs: &Spanned<ast::Expr>,
     _module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
     let l_ptr = _self_compiler
@@ -969,7 +998,7 @@ fn create_int16_add_logic<'ctx>(
         .builder
         .build_int_s_extend(res_i16, _self_compiler.context.i64_type(), "i16_sum_ext")
         .unwrap();
-    let res_ptr = create_entry_block_alloca(_self_compiler, "int16_add_res_alloc");
+    let res_ptr = create_entry_block_alloca(_self_compiler, "int16_add_res_alloc")?;
     _self_compiler.build_runtime_value_store(
         res_ptr,
         StoreTag::Int(Tag::Int16 as u64),
@@ -982,8 +1011,8 @@ fn create_int16_add_logic<'ctx>(
 
 fn create_uint16_add_logic<'ctx>(
     _self_compiler: &mut Compiler<'ctx>,
-    _lhs: &ast::Expr,
-    _rhs: &ast::Expr,
+    _lhs: &Spanned<ast::Expr>,
+    _rhs: &Spanned<ast::Expr>,
     _module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
     let l_ptr = _self_compiler
@@ -1030,7 +1059,7 @@ fn create_uint16_add_logic<'ctx>(
         .builder
         .build_int_z_extend(res_u16, _self_compiler.context.i64_type(), "u16_sum_ext")
         .unwrap();
-    let res_ptr = create_entry_block_alloca(_self_compiler, "uint16_add_res_alloc");
+    let res_ptr = create_entry_block_alloca(_self_compiler, "uint16_add_res_alloc")?;
     _self_compiler.build_runtime_value_store(
         res_ptr,
         StoreTag::Int(Tag::Uint16 as u64),
@@ -1043,8 +1072,8 @@ fn create_uint16_add_logic<'ctx>(
 
 fn create_int32_add_logic<'ctx>(
     _self_compiler: &mut Compiler<'ctx>,
-    _lhs: &ast::Expr,
-    _rhs: &ast::Expr,
+    _lhs: &Spanned<ast::Expr>,
+    _rhs: &Spanned<ast::Expr>,
     _module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
     let l_ptr = _self_compiler
@@ -1091,7 +1120,7 @@ fn create_int32_add_logic<'ctx>(
         .builder
         .build_int_s_extend(res_i32, _self_compiler.context.i64_type(), "i32_sum_ext")
         .unwrap();
-    let res_ptr = create_entry_block_alloca(_self_compiler, "int32_add_res_alloc");
+    let res_ptr = create_entry_block_alloca(_self_compiler, "int32_add_res_alloc")?;
     _self_compiler.build_runtime_value_store(
         res_ptr,
         StoreTag::Int(Tag::Int32 as u64),
@@ -1104,8 +1133,8 @@ fn create_int32_add_logic<'ctx>(
 
 fn create_uint32_add_logic<'ctx>(
     _self_compiler: &mut Compiler<'ctx>,
-    _lhs: &ast::Expr,
-    _rhs: &ast::Expr,
+    _lhs: &Spanned<ast::Expr>,
+    _rhs: &Spanned<ast::Expr>,
     _module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
     let l_ptr = _self_compiler
@@ -1152,7 +1181,7 @@ fn create_uint32_add_logic<'ctx>(
         .builder
         .build_int_z_extend(res_u32, _self_compiler.context.i64_type(), "u32_sum_ext")
         .unwrap();
-    let res_ptr = create_entry_block_alloca(_self_compiler, "uint32_add_res_alloc");
+    let res_ptr = create_entry_block_alloca(_self_compiler, "uint32_add_res_alloc")?;
     _self_compiler.build_runtime_value_store(
         res_ptr,
         StoreTag::Int(Tag::Uint32 as u64),
@@ -1165,8 +1194,8 @@ fn create_uint32_add_logic<'ctx>(
 
 fn create_int64_add_logic<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    lhs: &ast::Expr,
-    rhs: &ast::Expr,
+    lhs: &Spanned<ast::Expr>,
+    rhs: &Spanned<ast::Expr>,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
     let l_ptr = self_compiler
@@ -1201,7 +1230,7 @@ fn create_int64_add_logic<'ctx>(
         .build_int_add(l_val, r_val, "i64_sum")
         .unwrap();
 
-    let res_ptr = create_entry_block_alloca(self_compiler, "int64_add_res_alloc");
+    let res_ptr = create_entry_block_alloca(self_compiler, "int64_add_res_alloc")?;
 
     self_compiler.build_runtime_value_store(
         res_ptr,
@@ -1215,8 +1244,8 @@ fn create_int64_add_logic<'ctx>(
 
 fn create_uint64_add_logic<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    lhs: &ast::Expr,
-    rhs: &ast::Expr,
+    lhs: &Spanned<ast::Expr>,
+    rhs: &Spanned<ast::Expr>,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
     let l_ptr = self_compiler
@@ -1251,7 +1280,7 @@ fn create_uint64_add_logic<'ctx>(
         .build_int_add(l_val, r_val, "u64_sum")
         .unwrap();
 
-    let res_ptr = create_entry_block_alloca(self_compiler, "uint64_add_res_alloc");
+    let res_ptr = create_entry_block_alloca(self_compiler, "uint64_add_res_alloc")?;
 
     self_compiler.build_runtime_value_store(
         res_ptr,
@@ -1264,8 +1293,8 @@ fn create_uint64_add_logic<'ctx>(
 
 fn create_float16_add_logic<'ctx>(
     _self_compiler: &mut Compiler<'ctx>,
-    _lhs: &ast::Expr,
-    _rhs: &ast::Expr,
+    _lhs: &Spanned<ast::Expr>,
+    _rhs: &Spanned<ast::Expr>,
     _module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
     let l_ptr = _self_compiler
@@ -1328,7 +1357,7 @@ fn create_float16_add_logic<'ctx>(
         .builder
         .build_int_s_extend(res_i16, _self_compiler.context.i64_type(), "f16_sum_to_i64")
         .unwrap();
-    let res_ptr = create_entry_block_alloca(_self_compiler, "float16_add_res_alloc");
+    let res_ptr = create_entry_block_alloca(_self_compiler, "float16_add_res_alloc")?;
     _self_compiler.build_runtime_value_store(
         res_ptr,
         StoreTag::Int(Tag::Float16 as u64),
@@ -1341,8 +1370,8 @@ fn create_float16_add_logic<'ctx>(
 
 fn create_float32_add_logic<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    lhs: &ast::Expr,
-    rhs: &ast::Expr,
+    lhs: &Spanned<ast::Expr>,
+    rhs: &Spanned<ast::Expr>,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
     let l_ptr = self_compiler
@@ -1408,7 +1437,7 @@ fn create_float32_add_logic<'ctx>(
         .builder
         .build_int_z_extend(res_i32, self_compiler.context.i64_type(), "f32_sum_to_i64")
         .unwrap();
-    let res_ptr = create_entry_block_alloca(self_compiler, "float32_add_res_alloc");
+    let res_ptr = create_entry_block_alloca(self_compiler, "float32_add_res_alloc")?;
     self_compiler.build_runtime_value_store(
         res_ptr,
         StoreTag::Int(Tag::Float32 as u64),
@@ -1421,8 +1450,8 @@ fn create_float32_add_logic<'ctx>(
 
 fn create_float64_add_logic<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    lhs: &ast::Expr,
-    rhs: &ast::Expr,
+    lhs: &Spanned<ast::Expr>,
+    rhs: &Spanned<ast::Expr>,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
     let l_ptr = self_compiler
@@ -1473,7 +1502,7 @@ fn create_float64_add_logic<'ctx>(
         .unwrap()
         .into_int_value();
 
-    let res_ptr = create_entry_block_alloca(self_compiler, "float64_add_res_alloc");
+    let res_ptr = create_entry_block_alloca(self_compiler, "float64_add_res_alloc")?;
     self_compiler.build_runtime_value_store(
         res_ptr,
         StoreTag::Int(Tag::Float64 as u64),
@@ -1486,8 +1515,8 @@ fn create_float64_add_logic<'ctx>(
 
 pub fn create_mul_expr<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    lhs: &ast::Expr,
-    rhs: &ast::Expr,
+    lhs: &Spanned<ast::Expr>,
+    rhs: &Spanned<ast::Expr>,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
     create_binary_int_op(
@@ -1502,8 +1531,8 @@ pub fn create_mul_expr<'ctx>(
 
 pub fn create_minus_expr<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    lhs: &ast::Expr,
-    rhs: &ast::Expr,
+    lhs: &Spanned<ast::Expr>,
+    rhs: &Spanned<ast::Expr>,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
     create_binary_int_op(
@@ -1518,8 +1547,8 @@ pub fn create_minus_expr<'ctx>(
 
 pub fn create_div_expr<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    lhs: &ast::Expr,
-    rhs: &ast::Expr,
+    lhs: &Spanned<ast::Expr>,
+    rhs: &Spanned<ast::Expr>,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
     let l_ptr = self_compiler.compile_expr(lhs, module)?.into_pointer_value();
@@ -1584,7 +1613,7 @@ pub fn create_div_expr<'ctx>(
         .build_int_signed_div(l_val, r_val, "quotient")
         .unwrap();
 
-    let res_ptr = create_entry_block_alloca(self_compiler, "res_alloc");
+    let res_ptr = create_entry_block_alloca(self_compiler, "res_alloc")?;
     self_compiler.build_runtime_value_store(
         res_ptr,
         StoreTag::Int(Tag::Integer as u64),
@@ -1596,8 +1625,8 @@ pub fn create_div_expr<'ctx>(
 
 pub fn create_mod_expr<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    lhs: &ast::Expr,
-    rhs: &ast::Expr,
+    lhs: &Spanned<ast::Expr>,
+    rhs: &Spanned<ast::Expr>,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
     let l_ptr = self_compiler.compile_expr(lhs, module)?.into_pointer_value();
@@ -1662,7 +1691,7 @@ pub fn create_mod_expr<'ctx>(
         .build_int_signed_rem(l_val, r_val, "remainder")
         .unwrap();
 
-    let res_ptr = create_entry_block_alloca(self_compiler, "res_alloc");
+    let res_ptr = create_entry_block_alloca(self_compiler, "res_alloc")?;
     self_compiler.build_runtime_value_store(
         res_ptr,
         StoreTag::Int(Tag::Integer as u64),
@@ -1679,8 +1708,8 @@ enum IntBinOp {
 
 fn create_binary_int_op<'ctx, F>(
     self_compiler: &mut Compiler<'ctx>,
-    lhs: &ast::Expr,
-    rhs: &ast::Expr,
+    lhs: &Spanned<ast::Expr>,
+    rhs: &Spanned<ast::Expr>,
     module: &inkwell::module::Module<'ctx>,
     op: IntBinOp,
     op_fn: F,
@@ -1729,7 +1758,7 @@ where
             IntBinOp::Mul => "product",
         },
     )?;
-    let res_ptr = create_entry_block_alloca(self_compiler, "res_alloc");
+    let res_ptr = create_entry_block_alloca(self_compiler, "res_alloc")?;
 
     self_compiler.build_runtime_value_store(
         res_ptr,

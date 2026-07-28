@@ -1,6 +1,7 @@
 use inkwell::values::{BasicValueEnum, PointerValue};
 use crate::{
     front::ast,
+    front::span::Spanned,
     llvm::compiler::{Compiler, StoreTag, StoreValue, Tag},
 };
 use crate::llvm::value::create_entry_block_alloca;
@@ -12,7 +13,7 @@ pub enum UpDown {
 
 pub fn create_increment_or_decrement<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    expr: &ast::Expr,
+    expr: &Spanned<ast::Expr>,
     mode: UpDown,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
@@ -78,8 +79,8 @@ pub enum EqNeq {
 
 pub fn create_eq_or_neq<'ctx, F>(
     self_compiler: &mut Compiler<'ctx>,
-    lhs: &ast::Expr,
-    rhs: &ast::Expr,
+    lhs: &Spanned<ast::Expr>,
+    rhs: &Spanned<ast::Expr>,
     module: &inkwell::module::Module<'ctx>,
     mode: EqNeq,
     op_fn: F,
@@ -129,7 +130,7 @@ where
         },
     )?;
 
-    let res_ptr = create_entry_block_alloca(self_compiler, "eq_or_neq_res_alloc");
+    let res_ptr = create_entry_block_alloca(self_compiler, "eq_or_neq_res_alloc")?;
 
     self_compiler.build_runtime_value_store(
         res_ptr,
@@ -150,8 +151,8 @@ pub enum Comparison {
 
 pub fn create_comparison<'ctx, F>(
     self_compiler: &mut Compiler<'ctx>,
-    lhs: &ast::Expr,
-    rhs: &ast::Expr,
+    lhs: &Spanned<ast::Expr>,
+    rhs: &Spanned<ast::Expr>,
     module: &inkwell::module::Module<'ctx>,
     mode: Comparison,
     comp_fn: F,
@@ -203,7 +204,7 @@ where
         },
     )?;
 
-    let res_ptr = create_entry_block_alloca(self_compiler, "comparison_res_alloc");
+    let res_ptr = create_entry_block_alloca(self_compiler, "comparison_res_alloc")?;
 
     self_compiler.build_runtime_value_store(
         res_ptr,

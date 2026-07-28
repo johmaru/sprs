@@ -42,34 +42,34 @@ struct Point {
 }
 
 pub fn struct_create_x() >> i64 {
-    var p = Point {
+    var p = @init(Point {
         x = 10,
         y = 20
-    };
+    });
     return p.x;
 }
 
 pub fn struct_create_y() >> i64 {
-    var p = Point {
+    var p = @init(Point {
         x = 100,
         y = 200
-    };
+    });
     return p.y;
 }
 
 pub fn struct_both_fields() >> i64 {
-    var p = Point {
+    var p = @init(Point {
         x = 5,
         y = 15
-    };
+    });
     return p.x + p.y;
 }
 
 pub fn struct_in_function() >> i64 {
-    var p = Point {
+    var p = @init(Point {
         x = 1,
         y = 2
-    };
+    });
     var sum = p.x + p.y;
     return sum;
 }

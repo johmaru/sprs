@@ -6,6 +6,7 @@ use inkwell::{
 
 use crate::{
     front::ast,
+    front::span::Spanned,
     llvm::compiler::{Compiler, StoreTag, StoreValue, StrConstantResult, Tag},
     llvm::data_structures::create_unit,
 };
@@ -16,7 +17,7 @@ pub struct PanicErrorSettings {
 }
 pub fn create_panic_err<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    message: &'ctx str,
+    message: &str,
     module: &inkwell::module::Module<'ctx>,
     settings: PanicErrorSettings,
 ) -> Result<(), String> {
@@ -50,11 +51,11 @@ pub fn create_panic_err<'ctx>(
 pub(crate) fn create_entry_block_alloca<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
     name: &str,
-) -> PointerValue<'ctx> {
+) -> Result<PointerValue<'ctx>, String> {
     let builder = &self_compiler.builder;
-    let current_block = builder.get_insert_block().unwrap();
-    let function = current_block.get_parent().unwrap();
-    let entry_block = function.get_first_basic_block().unwrap();
+    let current_block = builder.get_insert_block().ok_or("no insert block")?;
+    let function = current_block.get_parent().ok_or("no parent function")?;
+    let entry_block = function.get_first_basic_block().ok_or("no entry block")?;
 
     match entry_block.get_first_instruction() {
         Some(first_instr) => builder.position_before(&first_instr),
@@ -69,14 +70,14 @@ pub(crate) fn create_entry_block_alloca<'ctx>(
         .unwrap();
 
     builder.position_at_end(current_block);
-    alloca
+    Ok(alloca)
 }
 
 // !normal functions
 
 pub fn create_list_from_expr<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    elements: &[ast::Expr],
+    elements: &[Spanned<ast::Expr>],
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<IntValue<'ctx>, String> {
     let len = elements.len();
@@ -122,7 +123,7 @@ pub fn create_integer<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
     n: &i64,
 ) -> Result<BasicValueEnum<'ctx>, String> {
-    let ptr = create_entry_block_alloca(self_compiler, "num_alloc");
+    let ptr = create_entry_block_alloca(self_compiler, "num_alloc")?;
 
     self_compiler.build_runtime_value_store(
         ptr,
@@ -138,7 +139,7 @@ pub fn create_float<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
     f: f64,
 ) -> Result<BasicValueEnum<'ctx>, String> {
-    let ptr = create_entry_block_alloca(self_compiler, "float_alloc");
+    let ptr = create_entry_block_alloca(self_compiler, "float_alloc")?;
 
     self_compiler.build_runtime_value_store(
         ptr,
@@ -186,7 +187,7 @@ pub fn create_string<'ctx>(
         _ => return Err("Expected i64 handle from __string_from_cstr".to_string()),
     };
 
-    let ptr = create_entry_block_alloca(self_compiler, "str_alloc");
+    let ptr = create_entry_block_alloca(self_compiler, "str_alloc")?;
 
     let tag_ptr = self_compiler
         .builder
@@ -220,7 +221,7 @@ pub fn create_bool<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
     boolean: &bool,
 ) -> Result<BasicValueEnum<'ctx>, String> {
-    let ptr = create_entry_block_alloca(self_compiler, "bool_alloc");
+    let ptr = create_entry_block_alloca(self_compiler, "bool_alloc")?;
 
     self_compiler.build_runtime_value_store(
         ptr,
@@ -242,7 +243,7 @@ pub fn create_typed_zero<'ctx>(
     tag: Tag,
     name: &str,
 ) -> Result<BasicValueEnum<'ctx>, String> {
-    let ptr = create_entry_block_alloca(self_compiler, &format!("{}_alloc", name));
+    let ptr = create_entry_block_alloca(self_compiler, &format!("{}_alloc", name))?;
     self_compiler.build_runtime_value_store(
         ptr,
         StoreTag::Int(tag as u64),
@@ -252,20 +253,42 @@ pub fn create_typed_zero<'ctx>(
     Ok(ptr.into())
 }
 
-pub fn create_int8<'ctx>(c: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, String> { create_typed_zero(c, Tag::Int8, "int8") }
-pub fn create_uint8<'ctx>(c: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, String> { create_typed_zero(c, Tag::Uint8, "uint8") }
-pub fn create_int16<'ctx>(c: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, String> { create_typed_zero(c, Tag::Int16, "int16") }
-pub fn create_uint16<'ctx>(c: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, String> { create_typed_zero(c, Tag::Uint16, "uint16") }
-pub fn create_int32<'ctx>(c: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, String> { create_typed_zero(c, Tag::Int32, "int32") }
-pub fn create_uint32<'ctx>(c: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, String> { create_typed_zero(c, Tag::Uint32, "uint32") }
-pub fn create_int64<'ctx>(c: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, String> { create_typed_zero(c, Tag::Int64, "int64") }
-pub fn create_uint64<'ctx>(c: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, String> { create_typed_zero(c, Tag::Uint64, "uint64") }
-pub fn create_float16<'ctx>(c: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, String> { create_typed_zero(c, Tag::Float16, "f16") }
-pub fn create_float32<'ctx>(c: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, String> { create_typed_zero(c, Tag::Float32, "f32") }
-pub fn create_float64<'ctx>(c: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, String> { create_typed_zero(c, Tag::Float64, "f64") }
+pub fn create_int8<'ctx>(c: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, String> {
+    create_typed_zero(c, Tag::Int8, "int8")
+}
+pub fn create_uint8<'ctx>(c: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, String> {
+    create_typed_zero(c, Tag::Uint8, "uint8")
+}
+pub fn create_int16<'ctx>(c: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, String> {
+    create_typed_zero(c, Tag::Int16, "int16")
+}
+pub fn create_uint16<'ctx>(c: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, String> {
+    create_typed_zero(c, Tag::Uint16, "uint16")
+}
+pub fn create_int32<'ctx>(c: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, String> {
+    create_typed_zero(c, Tag::Int32, "int32")
+}
+pub fn create_uint32<'ctx>(c: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, String> {
+    create_typed_zero(c, Tag::Uint32, "uint32")
+}
+pub fn create_int64<'ctx>(c: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, String> {
+    create_typed_zero(c, Tag::Int64, "int64")
+}
+pub fn create_uint64<'ctx>(c: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, String> {
+    create_typed_zero(c, Tag::Uint64, "uint64")
+}
+pub fn create_float16<'ctx>(c: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, String> {
+    create_typed_zero(c, Tag::Float16, "f16")
+}
+pub fn create_float32<'ctx>(c: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, String> {
+    create_typed_zero(c, Tag::Float32, "f32")
+}
+pub fn create_float64<'ctx>(c: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, String> {
+    create_typed_zero(c, Tag::Float64, "f64")
+}
 
-pub fn create_dummy_for_no_return<'ctx>(self_compiler: &mut Compiler<'ctx>) {
-    let dummy = create_entry_block_alloca(self_compiler, "ret_dummy");
+pub fn create_dummy_for_no_return<'ctx>(self_compiler: &mut Compiler<'ctx>) -> Result<(), String> {
+    let dummy = create_entry_block_alloca(self_compiler, "ret_dummy")?;
     self_compiler.build_runtime_value_store(
         dummy,
         StoreTag::Int(Tag::Unit as u64),
@@ -278,6 +301,7 @@ pub fn create_dummy_for_no_return<'ctx>(self_compiler: &mut Compiler<'ctx>) {
         .build_load(self_compiler.runtime_value_type, dummy, "ret_dummy_val")
         .unwrap();
     self_compiler.builder.build_return(Some(&val)).unwrap();
+    Ok(())
 }
 
 pub(crate) fn box_return_value<'ctx>(
@@ -286,7 +310,7 @@ pub(crate) fn box_return_value<'ctx>(
     return_type: inkwell::types::BasicTypeEnum<'ctx>,
     result_val: BasicValueEnum<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
-    let result_ptr = create_entry_block_alloca(self_compiler, "compile_expr_call_res_alloc");
+    let result_ptr = create_entry_block_alloca(self_compiler, "compile_expr_call_res_alloc")?;
 
     if return_type.is_int_type() {
         let int_type = return_type.into_int_type();
@@ -377,7 +401,7 @@ pub(crate) fn box_return_value<'ctx>(
 pub fn create_call_expr<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
     ident: &str,
-    args: &Vec<ast::Expr>,
+    args: &Vec<Spanned<ast::Expr>>,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, String> {
     let func = module
@@ -394,7 +418,7 @@ pub fn create_call_expr<'ctx>(
         let arg_val = self_compiler.compile_expr(arg, module)?;
         let arg_ptr = arg_val.into_pointer_value();
 
-        let temp_arg_ptr = create_entry_block_alloca(self_compiler, "compile_expr_arg_alloc");
+        let temp_arg_ptr = create_entry_block_alloca(self_compiler, "compile_expr_arg_alloc")?;
         let val_tag_ptr = self_compiler
             .builder
             .build_struct_gep(self_compiler.runtime_value_type, arg_ptr, 0, "val_tag_ptr")
@@ -440,7 +464,7 @@ pub fn create_call_expr<'ctx>(
             .unwrap();
         compiled_args.push(temp_arg_ptr.into());
 
-        if let ast::Expr::Var(name) = arg {
+        if let ast::Expr::Var(name) = &arg.node {
             if let Some((var_ptr_enum, _)) = self_compiler.get_variables(name) {
                 let var_ptr = var_ptr_enum.into_pointer_value();
 

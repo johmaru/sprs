@@ -29,3 +29,11 @@ impl<T> Spanned<T> {
         Self { node, span }
     }
 }
+
+impl<T> std::ops::Deref for Spanned<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.node
+    }
+}

@@ -62,12 +62,12 @@ pub fn var_load_at_init_variable<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
     init_value: PointerValue<'ctx>,
     name: &str,
-) -> PointerValue<'ctx> {
-    let ptr = create_entry_block_alloca(self_compiler, name);
+) -> Result<PointerValue<'ctx>, String> {
+    let ptr = create_entry_block_alloca(self_compiler, name)?;
 
     let val = self_compiler.build_load(self_compiler.runtime_value_type, init_value, name);
     let _ = self_compiler.builder.build_store(ptr, val).unwrap();
-    ptr
+    Ok(ptr)
 }
 
 pub fn var_return_store<'ctx>(

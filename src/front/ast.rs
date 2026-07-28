@@ -1,3 +1,4 @@
+use crate::front::span::{Span, Spanned};
 use crate::front::type_helper::Type;
 
 #[derive(Debug, PartialEq, Clone)]
@@ -6,30 +7,31 @@ pub enum Expr {
     Float(f64),                              // Value
     Str(String),                             // Value
     Bool(bool),                              // Value
-    Add(Box<Expr>, Box<Expr>),               // Lhs, Rhs
-    Mul(Box<Expr>, Box<Expr>),               // Lhs, Rhs
-    Minus(Box<Expr>, Box<Expr>),             // Lhs, Rhs
-    Div(Box<Expr>, Box<Expr>),               // Lhs, Rhs
-    Mod(Box<Expr>, Box<Expr>),               // Lhs, Rhs
-    Eq(Box<Expr>, Box<Expr>),                // Lhs, Rhs
-    Neq(Box<Expr>, Box<Expr>),               // Lhs, Rhs
-    Lt(Box<Expr>, Box<Expr>),                // Lhs, Rhs
-    Gt(Box<Expr>, Box<Expr>),                // Lhs, Rhs
-    Le(Box<Expr>, Box<Expr>),                // Lhs, Rhs
-    Ge(Box<Expr>, Box<Expr>),                // Lhs, Rhs
-    If(Box<Expr>, Box<Expr>, Box<Expr>),     // Cond, Then, Else
-    Call(String, Vec<Expr>, Option<Type>),   // Ident, Args, RetTy
+    Add(Box<Spanned<Expr>>, Box<Spanned<Expr>>),               // Lhs, Rhs
+    Mul(Box<Spanned<Expr>>, Box<Spanned<Expr>>),               // Lhs, Rhs
+    Minus(Box<Spanned<Expr>>, Box<Spanned<Expr>>),             // Lhs, Rhs
+    Div(Box<Spanned<Expr>>, Box<Spanned<Expr>>),               // Lhs, Rhs
+    Mod(Box<Spanned<Expr>>, Box<Spanned<Expr>>),               // Lhs, Rhs
+    Eq(Box<Spanned<Expr>>, Box<Spanned<Expr>>),                // Lhs, Rhs
+    Neq(Box<Spanned<Expr>>, Box<Spanned<Expr>>),               // Lhs, Rhs
+    Lt(Box<Spanned<Expr>>, Box<Spanned<Expr>>),                // Lhs, Rhs
+    Gt(Box<Spanned<Expr>>, Box<Spanned<Expr>>),                // Lhs, Rhs
+    Le(Box<Spanned<Expr>>, Box<Spanned<Expr>>),                // Lhs, Rhs
+    Ge(Box<Spanned<Expr>>, Box<Spanned<Expr>>),                // Lhs, Rhs
+    If(Box<Spanned<Expr>>, Box<Spanned<Expr>>, Box<Spanned<Expr>>),     // Cond, Then, Else
+    Call(String, Vec<Spanned<Expr>>, Option<Type>),   // Ident, Args, RetTy
     Var(String),                             // Ident
-    Increment(Box<Expr>),                    // Ident
-    Decrement(Box<Expr>),                    // Ident
-    List(Vec<Expr>),                         // Elements
-    Range(Box<Expr>, Box<Expr>),             // Start, End
-    Index(Box<Expr>, Box<Expr>),             // Collection, Index
-    ModuleAccess(String, String, Vec<Expr>), // Module, functionName, args e.g. module.ident
-    FieldAccess(Box<Expr>, String),          // e.g. struct.field
+    Increment(Box<Spanned<Expr>>),                    // Ident
+    Decrement(Box<Spanned<Expr>>),                    // Ident
+    Neg(Box<Spanned<Expr>>),                          // Unary minus, e.g. -x
+    List(Vec<Spanned<Expr>>),                         // Elements
+    Range(Box<Spanned<Expr>>, Box<Spanned<Expr>>),             // Start, End
+    Index(Box<Spanned<Expr>>, Box<Spanned<Expr>>),             // Collection, Index
+    ModuleAccess(String, String, Vec<Spanned<Expr>>), // Module, functionName, args e.g. module.ident
+    FieldAccess(Box<Spanned<Expr>>, String),          // e.g. struct.field
     Unit(),
-    Macro(String, Vec<Expr>),                   // Ident, Args e.g. @lshift(x, 4)
-    StructInit(String, Vec<(String, Expr)>), // StructName, Fields
+    Macro(String, Vec<Spanned<Expr>>),                   // Ident, Args e.g. @lshift(x, 4)
+    StructInit(String, Vec<(String, Spanned<Expr>)>), // StructName, Fields
 
     // System types
     TypeI8,
@@ -49,6 +51,8 @@ pub enum Expr {
 #[derive(Debug, PartialEq)]
 pub struct FunctionParam {
     pub ident: String,
+    pub ty: Option<Type>,
+    pub span: Span,
 }
 
 #[derive(Debug, PartialEq)]
@@ -67,26 +71,30 @@ pub struct Function {
     pub ident: String,
     pub params: Vec<FunctionParam>,
     // pub ret_ty: Option<Type>, currently all any
-    pub blk: Vec<Stmt>,
+    pub blk: Vec<Spanned<Stmt>>,
     pub is_public: bool,
     pub ret_ty: Option<Type>,
+    pub span: Span,
 }
 
 #[derive(Debug, PartialEq)]
 pub struct VarDecl {
     pub ident: String,
-    pub expr: Option<Expr>,
+    pub expr: Option<Spanned<Expr>>,
+    pub span: Span,
 }
 #[derive(Debug, PartialEq)]
 pub struct AssignStmt {
     pub name: String,
-    pub expr: Expr,
+    pub expr: Spanned<Expr>,
+    pub span: Span,
 }
 #[derive(Debug, PartialEq)]
 pub struct Enum {
     pub ident: String,
     pub variants: Vec<String>,
     pub is_public: bool,
+    pub span: Span,
 }
 
 #[derive(Debug, PartialEq)]
@@ -95,35 +103,37 @@ pub struct Struct {
     pub fields: Vec<StructField>,
     pub _methods: Vec<Function>, // currently not implemented
     pub is_public: bool,
+    pub span: Span,
 }
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct StructField {
     pub ident: String,
     pub ty: Option<Type>,
-    pub default_value: Option<Expr>,
+    pub default_value: Option<Spanned<Expr>>,
+    pub span: Span,
 }
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum Suffix {
-    Call(Vec<Expr>),
-    Struct(Vec<(String, Expr)>),
+    Call(Vec<Spanned<Expr>>),
+    Struct(Vec<(String, Spanned<Expr>)>),
 }
 
 #[derive(Debug, PartialEq)]
 pub enum Stmt {
     Var(VarDecl),
     Assign(AssignStmt),
-    Expr(Expr),
+    Expr(Spanned<Expr>),
     If {
-        cond: Expr,
-        then_blk: Vec<Stmt>,
-        else_blk: Option<Vec<Stmt>>,
+        cond: Spanned<Expr>,
+        then_blk: Vec<Spanned<Stmt>>,
+        else_blk: Option<Vec<Spanned<Stmt>>>,
     },
     While {
-        cond: Expr,
-        body: Vec<Stmt>,
+        cond: Spanned<Expr>,
+        body: Vec<Spanned<Stmt>>,
     },
-    Return(Option<Expr>),
+    Return(Option<Spanned<Expr>>),
     EnumItem(Enum),
 }

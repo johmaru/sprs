@@ -139,10 +139,10 @@ pub struct Point {
 }
 
 fn main() {
- var p = Point {
+ var p = @init(Point {
   x = 10,
   y = 20
- };
+ });
 
 @println(p.x); # prints 10
 @println(p.y); # prints 20

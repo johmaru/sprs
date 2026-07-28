@@ -1,4 +1,6 @@
 use crate::front::ast;
+use crate::front::span::Spanned;
+use crate::front::span::Span;
 use crate::front::type_helper;
 use crate::front::type_helper::Type;
 use crate::llvm::builder_helper;
@@ -13,8 +15,8 @@ use crate::llvm::compiler::{Compiler, OS, Tag};
 use crate::naming;
 
 impl<'ctx> Compiler<'ctx> {
-    pub fn get_known_type_from_expr(&self, expr: &ast::Expr) -> Result<String, String> {
-        match expr {
+    pub fn get_known_type_from_expr(&self, expr: &Spanned<ast::Expr>) -> Result<String, String> {
+        match &expr.node {
             ast::Expr::TypeI8 => Ok("i8".to_string()),
             ast::Expr::TypeU8 => Ok("u8".to_string()),
             ast::Expr::TypeI16 => Ok("i16".to_string()),
@@ -37,15 +39,15 @@ impl<'ctx> Compiler<'ctx> {
         }
     }
 
-    pub fn get_expr_name(&self, expr: &ast::Expr) -> Option<String> {
-        match expr {
+    pub fn get_expr_name(&self, expr: &Spanned<ast::Expr>) -> Option<String> {
+        match &expr.node {
             ast::Expr::Var(name) => Some(name.clone()),
             _ => None,
         }
     }
 
-    fn infer_type(&self, expr: &ast::Expr) -> Type {
-        match expr {
+    fn infer_type(&self, expr: &Spanned<ast::Expr>) -> Type {
+        match &expr.node {
             ast::Expr::Number(_) => Type::Int,
             ast::Expr::Float(_) => Type::Float,
             ast::Expr::Str(_) => Type::Str,
@@ -71,7 +73,7 @@ impl<'ctx> Compiler<'ctx> {
             | ast::Expr::Minus(lhs, _)
             | ast::Expr::Div(lhs, _)
             | ast::Expr::Mod(lhs, _) => self.infer_type(lhs),
-            ast::Expr::Increment(value) | ast::Expr::Decrement(value) => self.infer_type(value),
+            ast::Expr::Increment(value) | ast::Expr::Decrement(value) | ast::Expr::Neg(value) => self.infer_type(value),
             ast::Expr::If(_, then, if_else) => {
                 let then_ty = self.infer_type(then);
                 let else_ty = self.infer_type(if_else);
@@ -104,6 +106,7 @@ impl<'ctx> Compiler<'ctx> {
                     }
                 }
                 "not" => Type::Bool,
+                "init" => Type::Any,
                 _ => Type::Any,
             },
             ast::Expr::StructInit(name, _) => Type::Struct(name.clone()),
@@ -174,13 +177,13 @@ impl<'ctx> Compiler<'ctx> {
     /// to the function's return type, emit drops, and build the `ret` instr.
     fn compile_return(
         &mut self,
-        expr_opt: &Option<ast::Expr>,
+        expr_opt: &Option<Spanned<ast::Expr>>,
         module: &Module<'ctx>,
     ) -> Result<(), String> {
         let ret_val = if let Some(expr) = expr_opt {
             let ptr = self.compile_expr(expr, module)?.into_pointer_value();
 
-            if let ast::Expr::Var(name) = expr {
+            if let ast::Expr::Var(name) = &expr.node {
                 let var_val = self.get_variables(name).map(|(v, _)| v);
                 if let Some(val) = var_val {
                     let val_ptr = val.into_pointer_value();
@@ -204,7 +207,7 @@ impl<'ctx> Compiler<'ctx> {
         if let Some(val) = ret_val {
             self.builder.build_return(Some(&val)).unwrap();
         } else {
-            builder_helper::create_dummy_for_no_return(self);
+            builder_helper::create_dummy_for_no_return(self)?;
         }
         Ok(())
     }
@@ -214,7 +217,7 @@ impl<'ctx> Compiler<'ctx> {
         &self,
         return_type: Option<BasicTypeEnum<'ctx>>,
         expr_type: Type,
-        expr: &ast::Expr,
+        expr: &Spanned<ast::Expr>,
     ) -> Result<(), String> {
         if let Some(ret_ty) = return_type {
             if ret_ty.is_pointer_type() {
@@ -323,7 +326,7 @@ impl<'ctx> Compiler<'ctx> {
 
     pub(crate) fn compile_block(
         &mut self,
-        stmts: &Vec<ast::Stmt>,
+        stmts: &Vec<Spanned<ast::Stmt>>,
         module: &Module<'ctx>,
     ) -> Result<(), String> {
         self.enter_scope(); // New scope for the block
@@ -339,21 +342,24 @@ impl<'ctx> Compiler<'ctx> {
                 break;
             }
 
-            match stmt {
+            match &stmt.node {
                 ast::Stmt::Var(var) => {
+                    let unit_expr = Spanned::new(ast::Expr::Unit(), Span::DUMMY);
+                    let init_expr = var.expr.as_ref().unwrap_or(&unit_expr);
                     let init_val = self
-                        .compile_expr(&var.expr.as_ref().unwrap_or(&ast::Expr::Unit()), module)?
+                        .compile_expr(init_expr, module)?
                         .into_pointer_value();
 
-                    let var_type =
-                        self.infer_type(&var.expr.as_ref().unwrap_or(&ast::Expr::Unit()));
+                    let var_type = self.infer_type(init_expr);
 
-                    builder_helper::var_load_at_init_variable(self, init_val, &var.ident);
+                    builder_helper::var_load_at_init_variable(self, init_val, &var.ident)?;
 
-                    if let Some(ast::Expr::Var(src_val_name)) = &var.expr {
-                        let var_val = self.get_variables(src_val_name).map(|(v, _)| v);
-                        if let Some(val) = var_val {
-                            builder_helper::move_variable(self, &val, &var.ident);
+                    if let Some(expr) = &var.expr {
+                        if let ast::Expr::Var(src_val_name) = &expr.node {
+                            let var_val = self.get_variables(src_val_name).map(|(v, _)| v);
+                            if let Some(val) = var_val {
+                                builder_helper::move_variable(self, &val, &var.ident);
+                            }
                         }
                     }
                     self.add_variable(var.ident.clone(), init_val.into(), var_type);
@@ -401,7 +407,7 @@ impl<'ctx> Compiler<'ctx> {
                         .build_store(target_ptr, new_val)
                         .map_err(|e| e.to_string())?;
 
-                    if let ast::Expr::Var(src_val_name) = &assign_stmt.expr {
+                    if let ast::Expr::Var(src_val_name) = &assign_stmt.expr.node {
                         let var_val = self.get_variables(src_val_name).map(|(v, _)| v);
                         if let Some(val) = var_val {
                             builder_helper::move_variable(self, &val, &assign_stmt.name);
@@ -418,10 +424,10 @@ impl<'ctx> Compiler<'ctx> {
 
     pub(crate) fn compile_expr(
         &mut self,
-        expr: &ast::Expr,
+        expr: &Spanned<ast::Expr>,
         module: &Module<'ctx>,
     ) -> Result<BasicValueEnum<'ctx>, String> {
-        match expr {
+        match &expr.node {
             ast::Expr::Number(n) => {
                 let result = builder_helper::create_integer(self, n);
                 result
@@ -469,11 +475,12 @@ impl<'ctx> Compiler<'ctx> {
                     "lshift" => builder_helper::call_builtin_macro_lshift(self, args, module),
                     "rshift" => builder_helper::call_builtin_macro_rshift(self, args, module),
                     "not" => builder_helper::call_builtin_macro_not(self, args, module),
+                    "init" => Err("struct initialization requires @init(TypeName { field: value, ... }) syntax".to_string()),
                     _ => Err(format!("Unknown macro: {}", ident)),
                 }
             }
             ast::Expr::FieldAccess(lhs, rhs) => {
-                if let ast::Expr::Var(name) = lhs.as_ref() {
+                if let ast::Expr::Var(name) = &lhs.node {
                     if self.enum_names.contains(name) {
                         let full_name = format!("{}.{}", name, rhs);
                         if let Some((var_addr, _)) = self.get_variables(&full_name) {
@@ -530,6 +537,16 @@ impl<'ctx> Compiler<'ctx> {
             ast::Expr::Decrement(expr) => {
                 let result =
                     builder_helper::create_increment_or_decrement(self, expr, UpDown::Down, module);
+                result
+            }
+            ast::Expr::Neg(expr) => {
+                let zero = Spanned::new(ast::Expr::Number(0), Span::DUMMY);
+                let result = builder_helper::create_minus_expr(
+                    self,
+                    &zero,
+                    expr,
+                    module,
+                );
                 result
             }
             ast::Expr::Eq(lhs, rhs) => {
