@@ -39,6 +39,7 @@ pub struct Compiler<'ctx> {
     pub source_path: String,
     pub struct_defs: HashMap<String, StructDef<'ctx>>, // struct name -> struct definition
     pub enum_names: HashSet<String>,
+    pub sources: HashMap<String, String>, // module name → source text
 }
 
 pub enum StoreTag<'ctx> {
@@ -302,6 +303,7 @@ impl<'ctx> Compiler<'ctx> {
             source_path,
             struct_defs: HashMap::new(),
             enum_names: HashSet::new(),
+            sources: HashMap::new(),
         }
     }
 
@@ -369,7 +371,7 @@ impl<'ctx> Compiler<'ctx> {
             }
         }
 
-        for (ptr, var_name) in vars_to_drop.into_iter().rev() {
+        for (ptr, var_name) in vars_to_drop.into_iter() {
             builder_helper::drop_var(self, ptr, drop_fn, &var_name);
         }
         Ok(())

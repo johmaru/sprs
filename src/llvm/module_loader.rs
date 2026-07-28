@@ -42,6 +42,8 @@ impl<'ctx> Compiler<'ctx> {
             help: None,
         })?;
 
+        self.sources.insert(module_name.to_string(), source.clone());
+
         let items = parse_only(&source, &path)?;
 
         self.process_preprocessors(&items);
