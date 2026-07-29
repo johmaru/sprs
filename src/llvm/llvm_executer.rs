@@ -21,7 +21,7 @@ pub enum ExecuteMode {
     Debug,
 }
 
-pub fn build_and_run(dest: Option<&str>, mode: ExecuteMode, error_format: crate::front::error::ErrorFormat) -> Result<(), Box<dyn std::error::Error>> {
+pub fn build_and_run(dest: Option<&str>, mode: ExecuteMode, cli_error_format: Option<crate::front::error::ErrorFormat>) -> Result<(), Box<dyn std::error::Error>> {
     let context = Context::create();
     let builder = context.create_builder();
 
@@ -45,6 +45,15 @@ pub fn build_and_run(dest: Option<&str>, mode: ExecuteMode, error_format: crate:
     } else {
         None
     };
+
+    // Resolve error format: CLI flag > sprs.toml > default (Human).
+    let error_format = cli_error_format.unwrap_or_else(|| {
+        config
+            .as_ref()
+            .and_then(|c| c.error_format.as_ref())
+            .and_then(|fmt| crate::front::error::ErrorFormat::from_str(fmt).ok())
+            .unwrap_or(crate::front::error::ErrorFormat::Human)
+    });
 
     let src_dir = config
         .as_ref()
@@ -76,7 +85,8 @@ pub fn build_and_run(dest: Option<&str>, mode: ExecuteMode, error_format: crate:
         let source = std::fs::read_to_string(&path).unwrap_or_default();
         let rendered = crate::front::error::render(&e, error_format, &source);
         match error_format {
-            crate::front::error::ErrorFormat::Json => println!("{}", rendered),
+            crate::front::error::ErrorFormat::Json
+            | crate::front::error::ErrorFormat::JsonPretty => println!("{}", rendered),
             crate::front::error::ErrorFormat::Human => eprintln!("{}", rendered),
         }
         std::process::exit(1);

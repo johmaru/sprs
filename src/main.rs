@@ -379,7 +379,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         "build" | "run" | "debug" => {
             let mut dest: Option<String> = None;
-            let mut error_format = crate::front::error::ErrorFormat::Human;
+            let mut error_format: Option<crate::front::error::ErrorFormat> = None;
             if argc > 2 {
                 let mut iter = argv[2..].iter();
                 while let Some(arg) = iter.next() {
@@ -393,11 +393,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                         let fmt_str = iter.next().cloned();
                         match fmt_str {
                             Some(s) => {
-                                error_format = crate::front::error::ErrorFormat::from_str(&s)
-                                    .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+                                error_format = Some(crate::front::error::ErrorFormat::from_str(&s)
+                                    .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?);
                             }
                             None => {
-                                eprintln!("Usage: {} {} --error-format <json|human>", naming::LANG_NAME, command);
+                                eprintln!("Usage: {} {} --error-format <json|json-pretty|human>", naming::LANG_NAME, command);
                                 return Err("missing value for --error-format".into());
                             }
                         }

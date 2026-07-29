@@ -116,6 +116,7 @@ impl From<String> for SprsError {
 pub enum ErrorFormat {
     Human,
     Json,
+    JsonPretty,
 }
 
 impl ErrorFormat {
@@ -123,8 +124,9 @@ impl ErrorFormat {
         match format_str {
             "human" => Ok(ErrorFormat::Human),
             "json" => Ok(ErrorFormat::Json),
+            "json-pretty" => Ok(ErrorFormat::JsonPretty),
             _ => Err(format!(
-                "Unknown error format: {} (use 'human' or 'json')",
+                "Unknown error format: {} (use 'human', 'json', or 'json-pretty')",
                 format_str
             )),
         }
@@ -161,12 +163,56 @@ fn get_snippet(source: &str, line_number: usize) -> String {
 /// Render a SprsError as a string in the requested format.
 pub fn render(error: &SprsError, format: ErrorFormat, source: &str) -> String {
     match format {
-        ErrorFormat::Json => render_json(error, source),
+        ErrorFormat::Json => render_json(error, source, false),
+        ErrorFormat::JsonPretty => render_json(error, source, true),
         ErrorFormat::Human => render_human(error, source),
     }
 }
 
-fn render_json(error: &SprsError, source: &str) -> String {
+fn render_json(error: &SprsError, source: &str, pretty: bool) -> String {
+    let report = build_json_report(error, source);
+    if pretty {
+        serde_json::to_string_pretty(&report).unwrap_or_else(|e| {
+            format!("{{\"error\":\"Failed to serialize error report: {}\"}}", e)
+        })
+    } else {
+        serde_json::to_string(&report).unwrap_or_else(|e| {
+            format!("{{\"error\":\"Failed to serialize error report: {}\"}}", e)
+        })
+    }
+}
+
+/// Presentation DTO for JSON serialization.
+/// Flattens SprsError's internal representation into the stable schema
+/// consumed by AI agents and tools.
+#[derive(serde::Serialize)]
+struct JsonErrorReport {
+    code: String,
+    category: String,
+    phase: String,
+    severity: String,
+    message: String,
+    location: JsonLocation,
+    expected: Vec<String>,
+    expected_type: Option<String>,
+    actual_type: Option<String>,
+    help: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct JsonLocation {
+    file: String,
+    line: usize,
+    column: usize,
+    end_line: usize,
+    end_column: usize,
+    snippet: String,
+}
+
+/// Build a JsonErrorReport from a SprsError and its source text.
+/// This centralizes all formatting logic (code string, line/col resolution,
+/// snippet extraction) that was previously duplicated in hand-written JSON.
+fn build_json_report(error: &SprsError, source: &str) -> JsonErrorReport {
     match error {
         SprsError::Parse {
             code,
@@ -177,29 +223,25 @@ fn render_json(error: &SprsError, source: &str) -> String {
         } => {
             let (line, col) = get_line_col(source, location.span.start);
             let (end_line, end_col) = get_line_col(source, location.span.end);
-            let snippet = get_snippet(source, line);
-            let expected_json = expected
-                .iter()
-                .map(|expected_token| format!("\"{}\"", expected_token.replace('"', "\\\"")))
-                .collect::<Vec<_>>()
-                .join(",");
-            let help_json = match help {
-                Some(help_text) => format!("\"{}\"", help_text.replace('"', "\\\"")),
-                None => "null".to_string(),
-            };
-            format!(
-                r#"{{"code":"{}","category":"Syntax","phase":"compile","severity":"error","message":"{}","location":{{"file":"{}","line":{},"column":{},"end_line":{},"end_column":{},"snippet":"{}"}},"expected":[{}],"help":{}}}"#,
-                code.as_string(),
-                message.replace('"', "\\\""),
-                location.file.replace('"', "\\\""),
-                line,
-                col,
-                end_line,
-                end_col,
-                snippet.replace('"', "\\\"").replace('\n', "\\n"),
-                expected_json,
-                help_json
-            )
+            JsonErrorReport {
+                code: code.as_string(),
+                category: "Syntax".to_string(),
+                phase: "compile".to_string(),
+                severity: "error".to_string(),
+                message: message.clone(),
+                location: JsonLocation {
+                    file: location.file.clone(),
+                    line,
+                    column: col,
+                    end_line,
+                    end_column: end_col,
+                    snippet: get_snippet(source, line),
+                },
+                expected: expected.clone(),
+                expected_type: None,
+                actual_type: None,
+                help: help.clone(),
+            }
         }
         SprsError::Semantic {
             code,
@@ -209,23 +251,25 @@ fn render_json(error: &SprsError, source: &str) -> String {
         } => {
             let (line, col) = get_line_col(source, location.span.start);
             let (end_line, end_col) = get_line_col(source, location.span.end);
-            let snippet = get_snippet(source, line);
-            let help_json = match help {
-                Some(help_text) => format!("\"{}\"", help_text.replace('"', "\\\"")),
-                None => "null".to_string(),
-            };
-            format!(
-                r#"{{"code":"{}","category":"Semantic","phase":"compile","severity":"error","message":"{}","location":{{"file":"{}","line":{},"column":{},"end_line":{},"end_column":{},"snippet":"{}"}},"help":{}}}"#,
-                code.as_string(),
-                message.replace('"', "\\\""),
-                location.file.replace('"', "\\\""),
-                line,
-                col,
-                end_line,
-                end_col,
-                snippet.replace('"', "\\\"").replace('\n', "\\n"),
-                help_json
-            )
+            JsonErrorReport {
+                code: code.as_string(),
+                category: "Semantic".to_string(),
+                phase: "compile".to_string(),
+                severity: "error".to_string(),
+                message: message.clone(),
+                location: JsonLocation {
+                    file: location.file.clone(),
+                    line,
+                    column: col,
+                    end_line,
+                    end_column: end_col,
+                    snippet: get_snippet(source, line),
+                },
+                expected: vec![],
+                expected_type: None,
+                actual_type: None,
+                help: help.clone(),
+            }
         }
         SprsError::Type {
             code,
@@ -237,49 +281,66 @@ fn render_json(error: &SprsError, source: &str) -> String {
         } => {
             let (line, col) = get_line_col(source, location.span.start);
             let (end_line, end_col) = get_line_col(source, location.span.end);
-            let snippet = get_snippet(source, line);
-            let expected_type_json = match expected_type {
-                Some(type_name) => format!("\"{}\"", type_name.replace('"', "\\\"")),
-                None => "null".to_string(),
-            };
-            let actual_type_json = match actual_type {
-                Some(type_name) => format!("\"{}\"", type_name.replace('"', "\\\"")),
-                None => "null".to_string(),
-            };
-            let help_json = match help {
-                Some(help_text) => format!("\"{}\"", help_text.replace('"', "\\\"")),
-                None => "null".to_string(),
-            };
-            format!(
-                r#"{{"code":"{}","category":"Type","phase":"compile","severity":"error","message":"{}","location":{{"file":"{}","line":{},"column":{},"end_line":{},"end_column":{},"snippet":"{}"}},"expected_type":{},"actual_type":{},"help":{}}}"#,
-                code.as_string(),
-                message.replace('"', "\\\""),
-                location.file.replace('"', "\\\""),
-                line,
-                col,
-                end_line,
-                end_col,
-                snippet.replace('"', "\\\"").replace('\n', "\\n"),
-                expected_type_json,
-                actual_type_json,
-                help_json
-            )
+            JsonErrorReport {
+                code: code.as_string(),
+                category: "Type".to_string(),
+                phase: "compile".to_string(),
+                severity: "error".to_string(),
+                message: message.clone(),
+                location: JsonLocation {
+                    file: location.file.clone(),
+                    line,
+                    column: col,
+                    end_line,
+                    end_column: end_col,
+                    snippet: get_snippet(source, line),
+                },
+                expected: vec![],
+                expected_type: expected_type.clone(),
+                actual_type: actual_type.clone(),
+                help: help.clone(),
+            }
         }
         SprsError::Internal { message, location } => {
-            let (line, col, file) = match location {
+            let (file, line, col, end_line, end_col) = match location {
                 Some(loc) => {
                     let (line_num, col_num) = get_line_col(source, loc.span.start);
-                    (line_num, col_num, loc.file.clone())
+                    let (end_line_num, end_col_num) = get_line_col(source, loc.span.end);
+                    (
+                        loc.file.clone(),
+                        line_num,
+                        col_num,
+                        end_line_num,
+                        end_col_num,
+                    )
                 }
-                None => (0, 0, "<unknown>".to_string()),
+                None => (
+                    "<unknown>".to_string(),
+                    0,
+                    0,
+                    0,
+                    0,
+                ),
             };
-            format!(
-                r#"{{"code":"SPRS-INTERNAL","category":"Internal","phase":"compile","severity":"error","message":"{}","location":{{"file":"{}","line":{},"column":{}}}}}"#,
-                message.replace('"', "\\\""),
-                file.replace('"', "\\\""),
-                line,
-                col
-            )
+            JsonErrorReport {
+                code: "SPRS-INTERNAL".to_string(),
+                category: "Internal".to_string(),
+                phase: "compile".to_string(),
+                severity: "error".to_string(),
+                message: message.clone(),
+                location: JsonLocation {
+                    file,
+                    line,
+                    column: col,
+                    end_line,
+                    end_column: end_col,
+                    snippet: get_snippet(source, line),
+                },
+                expected: vec![],
+                expected_type: None,
+                actual_type: None,
+                help: None,
+            }
         }
     }
 }

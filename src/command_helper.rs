@@ -10,6 +10,8 @@ pub struct ProjectConfig {
     pub version: String,
     pub src_dir: String,
     pub out_dir: String,
+    #[serde(default)]
+    pub error_format: Option<String>,
 }
 
 /// Validate a project/executable name: must match `[A-Za-z0-9_-]+`.
@@ -95,6 +97,7 @@ pub fn init_project(
         version: "0.1.0".to_string(),
         src_dir: "src".to_string(),
         out_dir: "out".to_string(),
+        error_format: None,
     };
 
     let toml_str = toml::to_string_pretty(&config)?;
