@@ -334,7 +334,7 @@ fn build_json_report(error: &SprsError, source: &str) -> JsonErrorReport {
                     column: col,
                     end_line,
                     end_column: end_col,
-                    snippet: get_snippet(source, line),
+                    snippet: if line == 0 { String::new() } else { get_snippet(source, line) },
                 },
                 expected: vec![],
                 expected_type: None,
