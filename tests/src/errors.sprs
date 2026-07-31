@@ -1,0 +1,63 @@
+pkg errors;
+
+# === Error Mechanism ===
+
+# Test: @error creates a catchable error
+fn make_error() >> i64 {
+    return @error(100, "test error");
+}
+
+# Test: @is_error detects errors
+pub fn check_error() >> bool {
+    var x = make_error();
+    return @is_error(x);
+}
+
+# Test: @error_code extracts the code
+pub fn get_error_code() >> i64 {
+    var x = make_error();
+    return @error_code(x);
+}
+
+# Test: @error_message extracts the message
+pub fn get_error_message() >> str {
+    var x = make_error();
+    return @error_message(x);
+}
+
+# Test: ? propagation — returns the error without adding 1
+pub fn propagate_error() >> i64 {
+    var x = make_error()?;
+    return x + 1;
+}
+
+# Test: short-circuit (error + 1 should preserve the error)
+pub fn short_circuit_test() >> bool {
+    var x = make_error();
+    var y = x + 1;
+    return @is_error(y);
+}
+
+# Test: div by zero returns catchable error
+pub fn div_zero_is_error() >> bool {
+    var x = 5 / 0;
+    return @is_error(x);
+}
+
+# Test: div by zero error code
+pub fn div_zero_code() >> i64 {
+    var x = 5 / 0;
+    return @error_code(x);
+}
+
+# Test: mod by zero returns catchable error
+pub fn mod_zero_is_error() >> bool {
+    var x = 5 % 0;
+    return @is_error(x);
+}
+
+# Test: non-error is not an error
+pub fn not_an_error() >> bool {
+    var x = 42;
+    return @is_error(x);
+}

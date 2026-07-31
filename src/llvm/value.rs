@@ -13,16 +13,24 @@ use crate::{
     llvm::data_structures::create_unit,
 };
 
-pub struct PanicErrorSettings {
+pub struct ErrorValueSettings {
     pub is_const: bool,
     pub is_global: bool,
 }
-pub fn create_panic_err<'ctx>(
+
+/// Generate IR that creates a `Tag::Error` value in the slab.
+/// Stores the result as a runtime_value_type `{ i32 tag=Error, i64 data=handle }`
+/// in a fresh alloca and returns the pointer.
+/// The caller should NOT emit `build_unreachable` — the error value flows
+/// through normal control flow so callers can propagate or catch it.
+pub fn create_error_value<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
+    error_code: u32,
     message: &str,
     module: &inkwell::module::Module<'ctx>,
-    settings: PanicErrorSettings,
-) -> Result<(), SprsError> {
+    settings: ErrorValueSettings,
+) -> Result<PointerValue<'ctx>, SprsError> {
+    // Store the message string as a global constant.
     let global = self_compiler.set_global_constant_str(
         module,
         message,
@@ -30,24 +38,55 @@ pub fn create_panic_err<'ctx>(
         settings.is_const,
     );
 
-    let str_ptr = match global {
-        Some(StrConstantResult::Global(g)) => g.as_pointer_value(),
-        Some(StrConstantResult::Pointer(p)) => p,
-        _ => return Err(SprsError::Semantic { code: ErrorCode { category: ErrorCategory::Semantic, number: 11 }, location: Location::new(String::new(), Span::DUMMY), message: "Failed to get panic error string constant".to_string(), help: None }),
+    let (msg_ptr, msg_len) = match global {
+        Some(StrConstantResult::Global(g)) => {
+            let ptr = g.as_pointer_value();
+            let ptr_i8 = self_compiler.builder.build_bit_cast(
+                ptr,
+                self_compiler.context.ptr_type(AddressSpace::default()),
+                "error_msg_ptr_i8",
+            );
+            (ptr_i8.unwrap().into_pointer_value(), message.len() as u64)
+        }
+        Some(StrConstantResult::Pointer(p)) => {
+            (p, message.len() as u64)
+        }
+        None => {
+            // Empty message — pass null pointer.
+            let null_ptr = self_compiler.context.ptr_type(AddressSpace::default()).const_null();
+            (null_ptr, 0u64)
+        }
     };
 
-    let str_ptr_i8 = self_compiler.builder.build_bit_cast(
-        str_ptr,
-        self_compiler.context.ptr_type(AddressSpace::default()),
-        "panic_err_str_ptr_i8",
+    let error_code_val = self_compiler.context.i32_type().const_int(error_code as u64, false);
+    let msg_len_val = self_compiler.context.i64_type().const_int(msg_len, false);
+
+    let error_new_fn = self_compiler.get_runtime_fn(module, "__error_new")?;
+    let error_handle = match self_compiler
+        .builder
+        .build_call(error_new_fn, &[error_code_val.into(), msg_ptr.into(), msg_len_val.into()], "error_new_call")
+        .unwrap()
+        .try_as_basic_value()
+    {
+        ValueKind::Basic(val) => val.into_int_value(),
+        ValueKind::Instruction(_) => {
+            return Err(SprsError::Internal {
+                message: "__error_new returned void".to_string(),
+                location: None,
+            });
+        }
+    };
+
+    // Store as a runtime_value_type { tag: Error, data: handle }
+    let res_ptr = create_entry_block_alloca(self_compiler, "error_val")?;
+    self_compiler.build_runtime_value_store(
+        res_ptr,
+        StoreTag::Int(Tag::Error as u64),
+        StoreValue::Int(error_handle),
+        "error_val_store",
     );
 
-    let panic_fn = self_compiler.get_runtime_fn(module, "__panic")?;
-    self_compiler
-        .builder
-        .build_call(panic_fn, &[str_ptr_i8.unwrap().into()], "panic_call")
-        .unwrap();
-    Ok(())
+    Ok(res_ptr)
 }
 
 pub(crate) fn create_entry_block_alloca<'ctx>(

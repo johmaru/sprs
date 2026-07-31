@@ -495,6 +495,10 @@ impl<'ctx> Compiler<'ctx> {
                     "lshift" => Ok(builder_helper::call_builtin_macro_lshift(self, args, module)?),
                     "rshift" => Ok(builder_helper::call_builtin_macro_rshift(self, args, module)?),
                     "not" => Ok(builder_helper::call_builtin_macro_not(self, args, module)?),
+                    "is_error" => Ok(builder_helper::call_builtin_macro_is_error(self, args, module)?),
+                    "error_code" => Ok(builder_helper::call_builtin_macro_error_code(self, args, module)?),
+                    "error_message" => Ok(builder_helper::call_builtin_macro_error_message(self, args, module)?),
+                    "error" => Ok(builder_helper::call_builtin_macro_error(self, args, module)?),
                     "init" => Err(SprsError::Semantic {
                         code: ErrorCode { category: ErrorCategory::Semantic, number: 5 },
                         location: Location::new(String::new(), expr.span),
@@ -670,6 +674,49 @@ impl<'ctx> Compiler<'ctx> {
             }
             ast::Expr::Unit() => Ok(builder_helper::create_unit(self)?),
             ast::Expr::StructInit(struct_name, fields) => Ok(builder_helper::create_struct_init(self, struct_name, fields, module)?),
+            ast::Expr::Try(inner_expr) => {
+                let inner_ptr = self.compile_expr(inner_expr, module)?.into_pointer_value();
+
+                // Load the tag of the inner result.
+                let tag_ptr = self
+                    .builder
+                    .build_struct_gep(self.runtime_value_type, inner_ptr, 0, "try_tag_ptr")
+                    .unwrap();
+                let tag_val = self
+                    .builder
+                    .build_load(self.context.i32_type(), tag_ptr, "try_tag")
+                    .unwrap()
+                    .into_int_value();
+
+                let error_tag_const = self.context.i32_type().const_int(Tag::Error as u64, false);
+                let is_error = self
+                    .builder
+                    .build_int_compare(inkwell::IntPredicate::EQ, tag_val, error_tag_const, "try_is_error")
+                    .unwrap();
+
+                let current_fn = self.function_signatures.unwrap();
+                let propagate_bb = self.context.append_basic_block(current_fn, "try_propagate");
+                let continue_bb = self.context.append_basic_block(current_fn, "try_continue");
+
+                let _ = self
+                    .builder
+                    .build_conditional_branch(is_error, propagate_bb, continue_bb);
+
+                // Propagate: emit drops and return the error value.
+                self.builder.position_at_end(propagate_bb);
+                self.emit_drop_for_return(module)?;
+                let return_type = current_fn.get_type().get_return_type();
+                let ret_val = self.convert_return_value(return_type, inner_ptr)?;
+                if let Some(val) = ret_val {
+                    self.builder.build_return(Some(&val)).unwrap();
+                } else {
+                    self.builder.build_return(None).unwrap();
+                }
+
+                // Continue: the inner value is not an error, use it.
+                self.builder.position_at_end(continue_bb);
+                Ok(inner_ptr.into())
+            }
         }
     }
 }

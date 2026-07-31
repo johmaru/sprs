@@ -8,7 +8,7 @@ use crate::{
     front::span::Spanned,
     llvm::compiler::{Compiler, StoreTag, StoreValue, Tag},
 };
-use crate::llvm::value::{create_entry_block_alloca, create_panic_err, PanicErrorSettings};
+use crate::llvm::value::create_entry_block_alloca;
 
 pub fn create_if_condition<'ctx>(
     self_compiler: &mut Compiler<'ctx>,

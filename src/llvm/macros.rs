@@ -8,7 +8,7 @@ use crate::{
     front::span::{Span, Spanned},
     llvm::compiler::{Compiler, StoreTag, StoreValue, Tag},
 };
-use crate::llvm::value::{create_entry_block_alloca, create_panic_err, PanicErrorSettings};
+use crate::llvm::value::{create_error_value, create_entry_block_alloca, ErrorValueSettings};
 
 pub fn call_builtin_macro_println<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
@@ -261,8 +261,40 @@ pub fn call_builtin_macro_cast<'ctx>(
     let error_bb = self_compiler
         .context
         .append_basic_block(parent, "cast_error_bb");
+    let final_merge = self_compiler
+        .context
+        .append_basic_block(parent, "cast_final_merge_bb");
 
     let i32_type = self_compiler.context.i32_type();
+
+    // short-circuit: if input is Tag::Error, return it directly.
+    let error_tag_const = i32_type.const_int(Tag::Error as u64, false);
+    let input_is_error = self_compiler
+        .builder
+        .build_int_compare(
+            inkwell::IntPredicate::EQ,
+            current_tag,
+            error_tag_const,
+            "cast_input_is_error",
+        )
+        .unwrap();
+    let input_error_bb = self_compiler
+        .context
+        .append_basic_block(parent, "cast_input_error");
+    let cast_normal_bb = self_compiler
+        .context
+        .append_basic_block(parent, "cast_normal");
+    let _ = self_compiler.builder.build_conditional_branch(
+        input_is_error,
+        input_error_bb,
+        cast_normal_bb,
+    );
+
+    self_compiler.builder.position_at_end(input_error_bb);
+    let _ = self_compiler.builder.build_unconditional_branch(final_merge);
+
+    self_compiler.builder.position_at_end(cast_normal_bb);
+
     let cases = vec![
         // Signed integers -> SITOFP (bb_int)
         (i32_type.const_int(Tag::Integer as u64, false), bb_int),
@@ -287,19 +319,20 @@ pub fn call_builtin_macro_cast<'ctx>(
         .build_switch(current_tag, error_bb, &cases)
         .unwrap();
 
-    // error branch: unknown tag → panic
+    // error branch: unknown tag → error value
     self_compiler.builder.position_at_end(error_bb);
-    let settings = PanicErrorSettings {
+    let settings = ErrorValueSettings {
         is_const: true,
         is_global: true,
     };
-    let _ = create_panic_err(
+    let error_ptr = create_error_value(
         self_compiler,
+        5,  // SprsErrorCode::CastError
         "TypeError: unexpected tag in @cast",
         module,
         settings,
     )?;
-    let _ = self_compiler.builder.build_unreachable();
+    let _ = self_compiler.builder.build_unconditional_branch(final_merge);
 
     // Integer -> f64
     self_compiler.builder.position_at_end(bb_int);
@@ -644,7 +677,23 @@ pub fn call_builtin_macro_cast<'ctx>(
         StoreValue::Int(new_data),
         "cast_res",
     );
-    return Ok(result_ptr.into());
+    let success_end_bb = self_compiler.builder.get_insert_block().unwrap();
+    let _ = self_compiler.builder.build_unconditional_branch(final_merge);
+
+    self_compiler.builder.position_at_end(final_merge);
+    let final_phi = self_compiler
+        .builder
+        .build_phi(
+            self_compiler.context.ptr_type(AddressSpace::default()),
+            "cast_final_phi",
+        )
+        .unwrap();
+    final_phi.add_incoming(&[
+        (&error_ptr, error_bb),
+        (&result_ptr, success_end_bb),
+        (&value_ptr, input_error_bb),
+    ]);
+    return Ok(final_phi.as_basic_value());
 }
 
 pub fn call_builtin_macro_lshift<'ctx>(
@@ -710,7 +759,16 @@ fn shift_impl<'ctx>(
         .unwrap()
         .into_int_value();
 
-    // Load shift amount data (only the data, tag ignored)
+    // Load shift amount tag + data
+    let shift_tag_ptr = self_compiler
+        .builder
+        .build_struct_gep(rvt, shift_ptr, 0, "shift_amt_tag_ptr")
+        .unwrap();
+    let shift_tag = self_compiler
+        .builder
+        .build_load(self_compiler.context.i32_type(), shift_tag_ptr, "shift_amt_tag")
+        .unwrap()
+        .into_int_value();
     let shift_data_ptr = self_compiler
         .builder
         .build_struct_gep(rvt, shift_ptr, 1, "lshift_amt_data_ptr")
@@ -721,117 +779,173 @@ fn shift_impl<'ctx>(
         .unwrap()
         .into_int_value();
 
-    let shifted = {
-        let parent = self_compiler
-            .builder
-            .get_insert_block()
-            .unwrap()
-            .get_parent()
-            .unwrap();
-        let bb_signed = self_compiler
-            .context
-            .append_basic_block(parent, "shift_signed_bb");
-        let bb_unsigned = self_compiler
-            .context
-            .append_basic_block(parent, "shift_unsigned_bb");
-        let bb_err = self_compiler
-            .context
-            .append_basic_block(parent, "shift_err_bb");
-        let marge = self_compiler
-            .context
-            .append_basic_block(parent, "shift_merge_bb");
+    let parent = self_compiler
+        .builder
+        .get_insert_block()
+        .unwrap()
+        .get_parent()
+        .unwrap();
+    let bb_signed = self_compiler
+        .context
+        .append_basic_block(parent, "shift_signed_bb");
+    let bb_unsigned = self_compiler
+        .context
+        .append_basic_block(parent, "shift_unsigned_bb");
+    let bb_err = self_compiler
+        .context
+        .append_basic_block(parent, "shift_err_bb");
+    let marge = self_compiler
+        .context
+        .append_basic_block(parent, "shift_merge_bb");
+    let final_merge = self_compiler
+        .context
+        .append_basic_block(parent, "shift_final_merge_bb");
 
-        let i32_type = self_compiler.context.i32_type();
-        // Signed integer tags: Integer, Int8, Int16, Int32, Int64
-        let signed_cases = vec![
-            (i32_type.const_int(Tag::Integer as u64, false), bb_signed),
-            (i32_type.const_int(Tag::Int8 as u64, false), bb_signed),
-            (i32_type.const_int(Tag::Int16 as u64, false), bb_signed),
-            (i32_type.const_int(Tag::Int32 as u64, false), bb_signed),
-            (i32_type.const_int(Tag::Int64 as u64, false), bb_signed),
-        ];
-        // Unsigned integer tags: Uint8, Uint16, Uint32, Uint64
-        let unsigned_cases = vec![
-            (i32_type.const_int(Tag::Uint8 as u64, false), bb_unsigned),
-            (i32_type.const_int(Tag::Uint16 as u64, false), bb_unsigned),
-            (i32_type.const_int(Tag::Uint32 as u64, false), bb_unsigned),
-            (i32_type.const_int(Tag::Uint64 as u64, false), bb_unsigned),
-        ];
-        let mut all_cases = signed_cases.clone();
-        all_cases.extend(unsigned_cases.clone());
+    let i32_type = self_compiler.context.i32_type();
 
-        // Default -> error (non-integer tag)
-        self_compiler
-            .builder
-            .build_switch(value_tag, bb_err, &all_cases)
-            .unwrap();
+    // short-circuit: if either operand is Tag::Error, return it directly.
+    let error_tag_const = i32_type.const_int(Tag::Error as u64, false);
+    let val_is_error = self_compiler
+        .builder
+        .build_int_compare(
+            inkwell::IntPredicate::EQ,
+            value_tag,
+            error_tag_const,
+            "shift_val_is_error",
+        )
+        .unwrap();
+    let val_error_bb = self_compiler
+        .context
+        .append_basic_block(parent, "shift_val_error_short_circuit");
+    let check_shift_error_bb = self_compiler
+        .context
+        .append_basic_block(parent, "shift_check_shift_error");
+    let _ = self_compiler.builder.build_conditional_branch(
+        val_is_error,
+        val_error_bb,
+        check_shift_error_bb,
+    );
 
-        // Signed: for lshift use shl, for rshift use ashr (sign-fill)
-        self_compiler.builder.position_at_end(bb_signed);
-        let signed_result = match dir {
-            ShiftDir::Left => self_compiler
-                .builder
-                .build_left_shift(value_data, shift_amt, "lshift_signed")
-                .unwrap(),
-            ShiftDir::Right => self_compiler
-                .builder
-                .build_right_shift(value_data, shift_amt, true, "rshift_signed")
-                .unwrap(),
-        };
-        self_compiler
-            .builder
-            .build_unconditional_branch(marge)
-            .unwrap();
+    self_compiler.builder.position_at_end(val_error_bb);
+    let _ = self_compiler.builder.build_unconditional_branch(final_merge);
 
-        // Unsigned: for lshift use shl, for rshift use lshr (zero-fill)
-        self_compiler.builder.position_at_end(bb_unsigned);
-        let unsigned_result = match dir {
-            ShiftDir::Left => self_compiler
-                .builder
-                .build_left_shift(value_data, shift_amt, "lshift_unsigned")
-                .unwrap(),
-            ShiftDir::Right => self_compiler
-                .builder
-                .build_right_shift(value_data, shift_amt, false, "rshift_unsigned")
-                .unwrap(),
-        };
-        self_compiler
-            .builder
-            .build_unconditional_branch(marge)
-            .unwrap();
+    self_compiler.builder.position_at_end(check_shift_error_bb);
+    let shift_is_error = self_compiler
+        .builder
+        .build_int_compare(
+            inkwell::IntPredicate::EQ,
+            shift_tag,
+            error_tag_const,
+            "shift_amt_is_error",
+        )
+        .unwrap();
+    let shift_error_bb = self_compiler
+        .context
+        .append_basic_block(parent, "shift_amt_error_short_circuit");
+    let shift_normal_bb = self_compiler
+        .context
+        .append_basic_block(parent, "shift_normal_dispatch");
+    let _ = self_compiler.builder.build_conditional_branch(
+        shift_is_error,
+        shift_error_bb,
+        shift_normal_bb,
+    );
 
-        // Error: non-integer tag — call __panic
-        self_compiler.builder.position_at_end(bb_err);
-        let err_msg: &'static str = match dir {
-            ShiftDir::Left => "@lshift expects an integer value",
-            ShiftDir::Right => "@rshift expects an integer value",
-        };
-        let settings = PanicErrorSettings {
-            is_const: true,
-            is_global: true,
-        };
-        let _ = create_panic_err(
-            self_compiler,
-            err_msg,
-            module,
-            settings,
-        )?;
-        self_compiler
-            .builder
-            .build_unreachable()
-            .unwrap();
+    self_compiler.builder.position_at_end(shift_error_bb);
+    let _ = self_compiler.builder.build_unconditional_branch(final_merge);
 
-        self_compiler.builder.position_at_end(marge);
-        let phi = self_compiler
+    self_compiler.builder.position_at_end(shift_normal_bb);
+
+    // Signed integer tags: Integer, Int8, Int16, Int32, Int64
+    let signed_cases = vec![
+        (i32_type.const_int(Tag::Integer as u64, false), bb_signed),
+        (i32_type.const_int(Tag::Int8 as u64, false), bb_signed),
+        (i32_type.const_int(Tag::Int16 as u64, false), bb_signed),
+        (i32_type.const_int(Tag::Int32 as u64, false), bb_signed),
+        (i32_type.const_int(Tag::Int64 as u64, false), bb_signed),
+    ];
+    // Unsigned integer tags: Uint8, Uint16, Uint32, Uint64
+    let unsigned_cases = vec![
+        (i32_type.const_int(Tag::Uint8 as u64, false), bb_unsigned),
+        (i32_type.const_int(Tag::Uint16 as u64, false), bb_unsigned),
+        (i32_type.const_int(Tag::Uint32 as u64, false), bb_unsigned),
+        (i32_type.const_int(Tag::Uint64 as u64, false), bb_unsigned),
+    ];
+    let mut all_cases = signed_cases.clone();
+    all_cases.extend(unsigned_cases.clone());
+
+    // Default -> error (non-integer tag)
+    self_compiler
+        .builder
+        .build_switch(value_tag, bb_err, &all_cases)
+        .unwrap();
+
+    // Signed: for lshift use shl, for rshift use ashr (sign-fill)
+    self_compiler.builder.position_at_end(bb_signed);
+    let signed_result = match dir {
+        ShiftDir::Left => self_compiler
             .builder
-            .build_phi(i64_type, "shift_phi")
-            .unwrap();
-        phi.add_incoming(&[
-            (&signed_result, bb_signed),
-            (&unsigned_result, bb_unsigned),
-        ]);
-        phi.as_basic_value().into_int_value()
+            .build_left_shift(value_data, shift_amt, "lshift_signed")
+            .unwrap(),
+        ShiftDir::Right => self_compiler
+            .builder
+            .build_right_shift(value_data, shift_amt, true, "rshift_signed")
+            .unwrap(),
     };
+    self_compiler
+        .builder
+        .build_unconditional_branch(marge)
+        .unwrap();
+
+    // Unsigned: for lshift use shl, for rshift use lshr (zero-fill)
+    self_compiler.builder.position_at_end(bb_unsigned);
+    let unsigned_result = match dir {
+        ShiftDir::Left => self_compiler
+            .builder
+            .build_left_shift(value_data, shift_amt, "lshift_unsigned")
+            .unwrap(),
+        ShiftDir::Right => self_compiler
+            .builder
+            .build_right_shift(value_data, shift_amt, false, "rshift_unsigned")
+            .unwrap(),
+    };
+    self_compiler
+        .builder
+        .build_unconditional_branch(marge)
+        .unwrap();
+
+    // Error: non-integer tag — create error value
+    self_compiler.builder.position_at_end(bb_err);
+    let err_msg: &'static str = match dir {
+        ShiftDir::Left => "@lshift expects an integer value",
+        ShiftDir::Right => "@rshift expects an integer value",
+    };
+    let settings = ErrorValueSettings {
+        is_const: true,
+        is_global: true,
+    };
+    let error_ptr = create_error_value(
+        self_compiler,
+        6,  // SprsErrorCode::ShiftTypeError
+        err_msg,
+        module,
+        settings,
+    )?;
+    self_compiler
+        .builder
+        .build_unconditional_branch(final_merge)
+        .unwrap();
+
+    self_compiler.builder.position_at_end(marge);
+    let phi = self_compiler
+        .builder
+        .build_phi(i64_type, "shift_phi")
+        .unwrap();
+    phi.add_incoming(&[
+        (&signed_result, bb_signed),
+        (&unsigned_result, bb_unsigned),
+    ]);
+    let shifted = phi.as_basic_value().into_int_value();
 
     let result_ptr = create_entry_block_alloca(self_compiler, "shift_res")?;
     self_compiler.build_runtime_value_store(
@@ -840,7 +954,27 @@ fn shift_impl<'ctx>(
         StoreValue::Int(shifted),
         "shift_res_store",
     );
-    Ok(result_ptr.into())
+    let success_end_bb = self_compiler.builder.get_insert_block().unwrap();
+    self_compiler
+        .builder
+        .build_unconditional_branch(final_merge)
+        .unwrap();
+
+    self_compiler.builder.position_at_end(final_merge);
+    let final_phi = self_compiler
+        .builder
+        .build_phi(
+            self_compiler.context.ptr_type(AddressSpace::default()),
+            "shift_final_phi",
+        )
+        .unwrap();
+    final_phi.add_incoming(&[
+        (&error_ptr, bb_err),
+        (&result_ptr, success_end_bb),
+        (&value_ptr, val_error_bb),
+        (&shift_ptr, shift_error_bb),
+    ]);
+    Ok(final_phi.as_basic_value())
 }
 
 pub fn call_builtin_macro_not<'ctx>(
@@ -893,4 +1027,224 @@ pub fn call_builtin_macro_not<'ctx>(
         "not_res_store",
     );
     Ok(result_ptr.into())
+}
+
+/// @is_error(x) — returns true (1) if x's tag is Tag::Error, false (0) otherwise.
+pub fn call_builtin_macro_is_error<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+    args: &[Spanned<ast::Expr>],
+    module: &inkwell::module::Module<'ctx>,
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
+    if args.len() != 1 {
+        return Err(SprsError::Semantic {
+            code: ErrorCode { category: ErrorCategory::Semantic, number: 3 },
+            location: Location::new(String::new(), Span::DUMMY),
+            message: "@is_error expects exactly 1 argument".to_string(),
+            help: None,
+        });
+    }
+
+    let val_ptr = self_compiler.compile_expr(&args[0], module)?.into_pointer_value();
+
+    // Prefer tag comparison: Tag::Error means the value is an error.
+    // (Checking the data handle alone can false-positive on immediate integers.)
+    let tag_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, val_ptr, 0, "is_error_tag_ptr")
+        .unwrap();
+    let tag_val = self_compiler
+        .builder
+        .build_load(self_compiler.context.i32_type(), tag_ptr, "is_error_tag")
+        .unwrap()
+        .into_int_value();
+
+    let error_tag_const = self_compiler
+        .context
+        .i32_type()
+        .const_int(Tag::Error as u64, false);
+    let is_error = self_compiler
+        .builder
+        .build_int_compare(
+            inkwell::IntPredicate::EQ,
+            tag_val,
+            error_tag_const,
+            "is_error_cmp",
+        )
+        .unwrap();
+
+    // Store as a Bool runtime_value.
+    let res_ptr = create_entry_block_alloca(self_compiler, "is_error_res")?;
+    self_compiler.build_runtime_value_store(
+        res_ptr,
+        StoreTag::Int(Tag::Boolean as u64),
+        StoreValue::Int(
+            self_compiler
+                .builder
+                .build_int_z_extend(is_error, self_compiler.context.i64_type(), "is_error_zext")
+                .unwrap(),
+        ),
+        "is_error_res_store",
+    );
+    Ok(res_ptr.into())
+}
+
+/// @error_code(x) — returns the error code as an i64. Returns 0 if not an error.
+pub fn call_builtin_macro_error_code<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+    args: &[Spanned<ast::Expr>],
+    module: &inkwell::module::Module<'ctx>,
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
+    if args.len() != 1 {
+        return Err(SprsError::Semantic {
+            code: ErrorCode { category: ErrorCategory::Semantic, number: 3 },
+            location: Location::new(String::new(), Span::DUMMY),
+            message: "@error_code expects exactly 1 argument".to_string(),
+            help: None,
+        });
+    }
+
+    let val_ptr = self_compiler.compile_expr(&args[0], module)?.into_pointer_value();
+
+    let data_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, val_ptr, 1, "error_code_data_ptr")
+        .unwrap();
+    let data_val = self_compiler
+        .builder
+        .build_load(self_compiler.context.i64_type(), data_ptr, "error_code_data")
+        .unwrap()
+        .into_int_value();
+
+    let error_code_fn = self_compiler.get_runtime_fn(module, "__error_code")?;
+    let code_i32 = match self_compiler
+        .builder
+        .build_call(error_code_fn, &[data_val.into()], "error_code_call")
+        .unwrap()
+        .try_as_basic_value()
+    {
+        ValueKind::Basic(val) => val.into_int_value(),
+        ValueKind::Instruction(_) => {
+            return Err(SprsError::Internal {
+                message: "__error_code returned void".to_string(),
+                location: None,
+            });
+        }
+    };
+
+    // Zero-extend i32 to i64 for the data field.
+    let code_i64 = self_compiler
+        .builder
+        .build_int_z_extend(code_i32, self_compiler.context.i64_type(), "error_code_i64")
+        .unwrap();
+
+    let res_ptr = create_entry_block_alloca(self_compiler, "error_code_res")?;
+    self_compiler.build_runtime_value_store(
+        res_ptr,
+        StoreTag::Int(Tag::Integer as u64),
+        StoreValue::Int(code_i64),
+        "error_code_res_store",
+    );
+    Ok(res_ptr.into())
+}
+
+/// @error_message(x) — returns the error message as a String value.
+/// Returns an empty string if not an error or no message.
+pub fn call_builtin_macro_error_message<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+    args: &[Spanned<ast::Expr>],
+    module: &inkwell::module::Module<'ctx>,
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
+    if args.len() != 1 {
+        return Err(SprsError::Semantic {
+            code: ErrorCode { category: ErrorCategory::Semantic, number: 3 },
+            location: Location::new(String::new(), Span::DUMMY),
+            message: "@error_message expects exactly 1 argument".to_string(),
+            help: None,
+        });
+    }
+
+    let val_ptr = self_compiler.compile_expr(&args[0], module)?.into_pointer_value();
+
+    let data_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, val_ptr, 1, "error_msg_data_ptr")
+        .unwrap();
+    let data_val = self_compiler
+        .builder
+        .build_load(self_compiler.context.i64_type(), data_ptr, "error_msg_data")
+        .unwrap()
+        .into_int_value();
+
+    let error_msg_fn = self_compiler.get_runtime_fn(module, "__error_message")?;
+    let string_handle = match self_compiler
+        .builder
+        .build_call(error_msg_fn, &[data_val.into()], "error_msg_call")
+        .unwrap()
+        .try_as_basic_value()
+    {
+        ValueKind::Basic(val) => val.into_int_value(),
+        ValueKind::Instruction(_) => {
+            return Err(SprsError::Internal {
+                message: "__error_message returned void".to_string(),
+                location: None,
+            });
+        }
+    };
+
+    // Store as a String runtime_value.
+    let res_ptr = create_entry_block_alloca(self_compiler, "error_msg_res")?;
+    self_compiler.build_runtime_value_store(
+        res_ptr,
+        StoreTag::Int(Tag::String as u64),
+        StoreValue::Int(string_handle),
+        "error_msg_res_store",
+    );
+    Ok(res_ptr.into())
+}
+
+/// @error(code, message) — creates a Tag::Error value.
+/// code: integer literal (u32). message: string literal.
+pub fn call_builtin_macro_error<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+    args: &[Spanned<ast::Expr>],
+    module: &inkwell::module::Module<'ctx>,
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
+    if args.len() != 2 {
+        return Err(SprsError::Semantic {
+            code: ErrorCode { category: ErrorCategory::Semantic, number: 3 },
+            location: Location::new(String::new(), Span::DUMMY),
+            message: "@error expects exactly 2 arguments: code and message".to_string(),
+            help: None,
+        });
+    }
+
+    // Extract code from the first argument (must be a Number literal).
+    let error_code: u32 = match &args[0].node {
+        ast::Expr::Number(n) => *n as u32,
+        _ => return Err(SprsError::Semantic {
+            code: ErrorCode { category: ErrorCategory::Semantic, number: 3 },
+            location: Location::new(String::new(), args[0].span),
+            message: "@error first argument must be an integer literal".to_string(),
+            help: None,
+        }),
+    };
+
+    // Extract message from the second argument (must be a Str literal).
+    let message: &str = match &args[1].node {
+        ast::Expr::Str(s) => s.as_str(),
+        _ => return Err(SprsError::Semantic {
+            code: ErrorCode { category: ErrorCategory::Semantic, number: 3 },
+            location: Location::new(String::new(), args[1].span),
+            message: "@error second argument must be a string literal".to_string(),
+            help: None,
+        }),
+    };
+
+    let settings = ErrorValueSettings {
+        is_const: true,
+        is_global: true,
+    };
+
+    let error_ptr = create_error_value(self_compiler, error_code, message, module, settings)?;
+    Ok(error_ptr.into())
 }

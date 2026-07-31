@@ -1,7 +1,7 @@
 # catchable なエラー機構の設計 (Catchable Error Mechanism)
 
 **作成日**: 2026-07-29
-**ステータス**: Approved
+**ステータス**: Implemented
 **対象 issue**: #26
 **依存 issue**: #25 (Process<T>), #27 (オーバーフロー設計) は本機構に依存
 

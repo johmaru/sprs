@@ -127,9 +127,88 @@ impl<'ctx> Compiler<'ctx> {
                 let entry = self.context.append_basic_block(c_main, "entry");
                 self.builder.position_at_end(entry);
 
-                self.builder
+                let main_call = self.builder
                     .build_call(sprs_main_fn, &[], "call_sprs_main")
                     .unwrap();
+
+                // If sprs main returns a Tag::Error value, panic at the process boundary.
+                if let Some(ret_ty) = sprs_main_fn.get_type().get_return_type() {
+                    if ret_ty == self.runtime_value_type.into() {
+                        let main_ret = match main_call.try_as_basic_value() {
+                            inkwell::values::ValueKind::Basic(val) => Some(val),
+                            inkwell::values::ValueKind::Instruction(_) => None,
+                        };
+                        if let Some(main_ret) = main_ret {
+                            let main_ret_alloca = self
+                                .builder
+                                .build_alloca(self.runtime_value_type, "main_ret_alloca")
+                                .unwrap();
+                            self.builder.build_store(main_ret_alloca, main_ret).unwrap();
+
+                            let tag_ptr = self
+                                .builder
+                                .build_struct_gep(
+                                    self.runtime_value_type,
+                                    main_ret_alloca,
+                                    0,
+                                    "main_ret_tag_ptr",
+                                )
+                                .unwrap();
+                            let tag_val = self
+                                .builder
+                                .build_load(i32_type, tag_ptr, "main_ret_tag")
+                                .unwrap()
+                                .into_int_value();
+
+                            let error_tag =
+                                i32_type.const_int(Tag::Error as u64, false);
+                            let is_error = self
+                                .builder
+                                .build_int_compare(
+                                    inkwell::IntPredicate::EQ,
+                                    tag_val,
+                                    error_tag,
+                                    "main_ret_is_error",
+                                )
+                                .unwrap();
+
+                            let panic_bb =
+                                self.context.append_basic_block(c_main, "main_error_panic");
+                            let ok_bb =
+                                self.context.append_basic_block(c_main, "main_ok");
+                            let _ = self
+                                .builder
+                                .build_conditional_branch(is_error, panic_bb, ok_bb);
+
+                            self.builder.position_at_end(panic_bb);
+                            let panic_msg = self.set_global_constant_str(
+                                &module,
+                                "Uncaught error in main",
+                                true,
+                                true,
+                            );
+                            let panic_ptr = match panic_msg {
+                                Some(crate::llvm::compiler::StrConstantResult::Global(g)) => {
+                                    g.as_pointer_value()
+                                }
+                                Some(crate::llvm::compiler::StrConstantResult::Pointer(p)) => p,
+                                None => {
+                                    return Err(SprsError::Internal {
+                                        message: "Failed to create panic message".to_string(),
+                                        location: None,
+                                    });
+                                }
+                            };
+                            let panic_fn = self.get_runtime_fn(&module, "__panic")?;
+                            self.builder
+                                .build_call(panic_fn, &[panic_ptr.into()], "main_panic_call")
+                                .unwrap();
+                            self.builder.build_unreachable().unwrap();
+
+                            self.builder.position_at_end(ok_bb);
+                        }
+                    }
+                }
 
                 self.builder
                     .build_return(Some(&i32_type.const_int(0, false)))
@@ -321,33 +400,10 @@ impl<'ctx> Compiler<'ctx> {
             .map(|_| self.context.ptr_type(AddressSpace::default()).into())
             .collect();
 
-        let fn_type = if let Some(ret_ty) = &func.ret_ty {
-            match ret_ty {
-                Type::Any => self.runtime_value_type.fn_type(&arg_types, false),
-                Type::Int => self.context.i64_type().fn_type(&arg_types, false),
-                Type::Str => self.runtime_value_type.fn_type(&arg_types, false),
-                Type::Float => self.context.f64_type().fn_type(&arg_types, false),
-                Type::Bool => self.context.bool_type().fn_type(&arg_types, false),
-                Type::Unit => self.context.void_type().fn_type(&arg_types, false),
-                Type::Enum => self.context.i64_type().fn_type(&arg_types, false),
-                Type::Struct(_) => self.runtime_value_type.fn_type(&arg_types, false),
-
-                Type::TypeI8 => self.context.i8_type().fn_type(&arg_types, false),
-                Type::TypeU8 => self.context.i8_type().fn_type(&arg_types, false),
-                Type::TypeI16 => self.context.i16_type().fn_type(&arg_types, false),
-                Type::TypeU16 => self.context.i16_type().fn_type(&arg_types, false),
-                Type::TypeI32 => self.context.i32_type().fn_type(&arg_types, false),
-                Type::TypeU32 => self.context.i32_type().fn_type(&arg_types, false),
-                Type::TypeI64 => self.context.i64_type().fn_type(&arg_types, false),
-                Type::TypeU64 => self.context.i64_type().fn_type(&arg_types, false),
-
-                Type::TypeF16 => self.context.f16_type().fn_type(&arg_types, false),
-                Type::TypeF32 => self.context.f32_type().fn_type(&arg_types, false),
-                Type::TypeF64 => self.context.f64_type().fn_type(&arg_types, false),
-            }
-        } else {
-            self.runtime_value_type.fn_type(&arg_types, false)
-        };
+        let fn_type = self.runtime_value_type.fn_type(&arg_types, false);
+        // Return annotations (`>> T`) describe the success path only.
+        // All functions return runtime_value_type so Tag::Error can propagate
+        // across any declared return type (catchable error mechanism).
         let func_name = if func.ident == "main" {
             naming::INTERNAL_MAIN_FN
         } else {

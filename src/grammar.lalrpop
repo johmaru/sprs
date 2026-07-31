@@ -43,6 +43,7 @@ extern {
         Lt     => Token::Lt,
         Gt     => Token::Gt,
         GtGt   => Token::GtGt,
+        Question => Token::Question,
         Le     => Token::Le,
         Ge     => Token::Ge,
         Dot    => Token::Dot,
@@ -417,6 +418,7 @@ Postfix: Spanned<Expr> = {
             Spanned::new(Expr::FieldAccess(Box::new(base), field), Span::new(start, end))
         }
     },
+    <start:@L> <base:Postfix> Question <end:@R> => Spanned::new(Expr::Try(Box::new(base)), Span::new(start, end)),
     <f:Atom> => f,
 }
 

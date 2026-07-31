@@ -46,6 +46,7 @@ pub enum Tag {
     Unit = 6,
     Enum = 7,
     Struct = 8,
+    Error = 9,
 
     // System types
     Int8 = 100,
@@ -71,6 +72,7 @@ const fn is_heap_tag(tag: i32) -> bool {
             || t == Tag::Range as i32
             || t == Tag::Struct as i32
             || t == Tag::Enum as i32
+            || t == Tag::Error as i32
     )
 }
 
@@ -109,14 +111,19 @@ enum SlotData {
         owned: bool,
     },
     Enum(EnumInfo),
+    Error {
+        code: u32,
+        message: Option<String>,
+    },
     Empty,
 }
 
 impl Drop for SlotData {
     fn drop(&mut self) {
         match self {
-            // Vec / String / SprsRange drop themselves.
-            SlotData::List(_) | SlotData::String(_) | SlotData::Range(_) => {}
+            // Vec / String / SprsRange / Error drop themselves.
+            SlotData::List(_) | SlotData::String(_) | SlotData::Range(_)
+            | SlotData::Error { .. } => {}
             SlotData::Struct { ptr, layout, owned } => {
                 if *owned && !ptr.is_null() {
                     unsafe { std::alloc::dealloc(*ptr as *mut u8, *layout) };
@@ -607,6 +614,14 @@ pub extern "C" fn __clone(tag: i32, data: u64) -> SprsValue {
         };
     }
 
+    if tag == Tag::Error as i32 {
+        let new_handle = error_clone(data);
+        return SprsValue {
+            tag,
+            data: new_handle,
+        };
+    }
+
     // Unknown heap tag: return Unit.
     SprsValue {
         tag: Tag::Unit as i32,
@@ -706,6 +721,66 @@ fn enum_clone(handle: u64) -> u64 {
         return INVALID_HANDLE;
     }
     __enum_new(name_ptr, name_len as i64, variant_index)
+}
+
+fn error_clone(handle: u64) -> u64 {
+    let (code, message) = slot_with(handle, (0u32, None), |d| match d {
+        SlotData::Error { code, message } => (*code, message.clone()),
+        _ => (0, None),
+    });
+    slot_insert(SlotData::Error { code, message })
+}
+
+// ---------------------------------------------------------------------------
+// C ABI: Error values
+// ---------------------------------------------------------------------------
+
+/// Create an error value in the slab. `message_ptr` may be null (no message).
+#[unsafe(no_mangle)]
+pub extern "C" fn __error_new(code: u32, message_ptr: *const u8, message_len: u64) -> u64 {
+    let message = if message_ptr.is_null() || message_len == 0 {
+        None
+    } else {
+        let bytes = unsafe { std::slice::from_raw_parts(message_ptr, message_len as usize) };
+        Some(String::from_utf8_lossy(bytes).into_owned())
+    };
+    slot_insert(SlotData::Error { code, message })
+}
+
+/// Check if a value's tag is `Tag::Error`. Returns 1 (true) or 0 (false).
+#[unsafe(no_mangle)]
+pub extern "C" fn __is_error(handle: u64) -> i32 {
+    let tag = slot_with(handle, Tag::Unit as i32, |d| {
+        if matches!(d, SlotData::Error { .. }) {
+            Tag::Error as i32
+        } else {
+            Tag::Unit as i32
+        }
+    });
+    if tag == Tag::Error as i32 { 1 } else { 0 }
+}
+
+/// Get the error code from an error value. Returns 0 if not an error.
+#[unsafe(no_mangle)]
+pub extern "C" fn __error_code(handle: u64) -> u32 {
+    slot_with(handle, 0u32, |d| match d {
+        SlotData::Error { code, .. } => *code,
+        _ => 0,
+    })
+}
+
+/// Get the error message as a new String slab handle.
+/// Returns INVALID_HANDLE if not an error or no message.
+#[unsafe(no_mangle)]
+pub extern "C" fn __error_message(handle: u64) -> u64 {
+    let message_opt: Option<String> = slot_with(handle, None, |d| match d {
+        SlotData::Error { message, .. } => message.clone(),
+        _ => None,
+    });
+    match message_opt {
+        Some(s) => slot_insert(SlotData::String(s)),
+        None => INVALID_HANDLE,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -860,6 +935,20 @@ fn format_sprs_value(val: &SprsValue, out: &mut String) {
         t if t == Tag::Struct as i32 => {
             use std::fmt::Write;
             let _ = write!(out, "<struct handle {:016x}>", val.data);
+        }
+        t if t == Tag::Error as i32 => {
+            let (code, msg) = slot_with(val.data, (0u32, String::new()), |d| match d {
+                SlotData::Error { code, message } => {
+                    (*code, message.clone().unwrap_or_default())
+                }
+                _ => (0, String::new()),
+            });
+            use std::fmt::Write;
+            if msg.is_empty() {
+                let _ = write!(out, "<error code={}>", code);
+            } else {
+                let _ = write!(out, "<error code={} \"{}\">", code, msg);
+            }
         }
         _ => {
             out.push_str("<unknown type>");

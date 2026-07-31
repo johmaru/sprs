@@ -32,6 +32,7 @@ pub enum Expr {
     Unit(),
     Macro(String, Vec<Spanned<Expr>>),                   // Ident, Args e.g. @lshift(x, 4)
     StructInit(String, Vec<(String, Spanned<Expr>)>), // StructName, Fields
+    Try(Box<Spanned<Expr>>),                    // Error propagation: expr?
 
     // System types
     TypeI8,

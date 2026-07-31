@@ -8,6 +8,7 @@ import functions;
 import data_structures;
 import types;
 import test;
+import errors;
 
 # === Main ===
 
@@ -152,13 +153,22 @@ fn main() {
     @println("=== Module Import ===");
     @println(test.test());
 
+    @println("=== Error Mechanism ===");
+    @println(errors.check_error());
+    @println(errors.get_error_code());
+    @println(errors.get_error_message());
+    @println(errors.propagate_error());
+    @println(errors.short_circuit_test());
+    @println(errors.div_zero_is_error());
+    @println(errors.div_zero_code());
+    @println(errors.mod_zero_is_error());
+    @println(errors.not_an_error());
+
     # XFAIL: Strings (>> str segfaults — Type::Str ptr bug)
     # XFAIL: list[index] (create_index StructValue panic)
     # XFAIL: return var (move semantics resets tag to Unit)
 
     @println("=== All Tests Done ===");
 
-    # XFAIL: div/mod by zero (expect panic + exit(1))
-    # @println(arithmetic.div_by_zero());
-    # @println(arithmetic.mod_by_zero());
+    # div/mod by zero now return catchable Tag::Error (see Error Mechanism section)
 }

@@ -8,7 +8,7 @@ use crate::{
     front::span::{Span, Spanned},
     llvm::compiler::{Compiler, StoreTag, StoreValue, Tag},
 };
-use crate::llvm::value::{create_entry_block_alloca, create_panic_err, PanicErrorSettings, box_return_value};
+use crate::llvm::value::{create_entry_block_alloca, box_return_value};
 
 pub fn create_list<'ctx>(
     self_compiler: &mut Compiler<'ctx>,

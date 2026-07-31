@@ -245,6 +245,7 @@ pub enum Tag {
     Unit = 6,
     Enum = 7,
     Struct = 8,
+    Error = 9,
 
     // System types
     Int8 = 100,
@@ -501,6 +502,26 @@ impl<'ctx> Compiler<'ctx> {
                     i32_type.into(), // value tag
                     i64_type.into(), // value data
                 ],
+                false,
+            ),
+            "__error_new" => i64_type.fn_type(
+                &[
+                    i32_type.into(),       // error code
+                    i8_ptr_type.into(),    // message ptr (may be null)
+                    i64_type.into(),       // message length
+                ],
+                false,
+            ),
+            "__is_error" => i32_type.fn_type(
+                &[i64_type.into()],       // slab handle (data field)
+                false,
+            ),
+            "__error_code" => i32_type.fn_type(
+                &[i64_type.into()],       // slab handle
+                false,
+            ),
+            "__error_message" => i64_type.fn_type(
+                &[i64_type.into()],       // slab handle
                 false,
             ),
             "__panic" => void_type.fn_type(&[i8_ptr_type.into()], false),

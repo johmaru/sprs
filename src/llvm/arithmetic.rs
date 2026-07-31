@@ -10,7 +10,7 @@ use crate::{
     front::type_helper,
     llvm::compiler::{Compiler, StoreTag, StoreValue, Tag},
 };
-use crate::llvm::value::{create_panic_err, create_entry_block_alloca, PanicErrorSettings};
+use crate::llvm::value::{create_error_value, create_entry_block_alloca, ErrorValueSettings};
 use crate::llvm::variable::move_variable;
 
 pub fn create_add_expr<'ctx>(
@@ -50,17 +50,6 @@ pub fn create_add_expr<'ctx>(
         .unwrap()
         .into_int_value();
 
-    // check if both are integers
-
-    let can_add = create_add_expr_check_int(self_compiler, l_tag, r_tag)?;
-
-    // check if both are float(default(f64))
-    let both_float = create_add_expr_check_float(self_compiler, l_tag, r_tag)?;
-
-    // check if both are strings
-    let check_string = create_add_expr_check_string(self_compiler, l_tag, r_tag)?;
-
-    // create branches
     let parent_fn = self_compiler
         .builder
         .get_insert_block()
@@ -85,10 +74,64 @@ pub fn create_add_expr<'ctx>(
     let error_bb = self_compiler
         .context
         .append_basic_block(parent_fn, "add_error_bb");
-
     let merge_bb = self_compiler
         .context
         .append_basic_block(parent_fn, "add_merge_bb");
+
+    // short-circuit: if either operand is Tag::Error, return it directly.
+    let error_tag_const = self_compiler
+        .context
+        .i32_type()
+        .const_int(Tag::Error as u64, false);
+    let l_is_error = self_compiler
+        .builder
+        .build_int_compare(inkwell::IntPredicate::EQ, l_tag, error_tag_const, "l_is_error")
+        .unwrap();
+    let l_error_bb = self_compiler
+        .context
+        .append_basic_block(parent_fn, "l_error_short_circuit");
+    let check_r_error_bb = self_compiler
+        .context
+        .append_basic_block(parent_fn, "check_r_error");
+    let _ = self_compiler.builder.build_conditional_branch(
+        l_is_error,
+        l_error_bb,
+        check_r_error_bb,
+    );
+
+    self_compiler.builder.position_at_end(l_error_bb);
+    let _ = self_compiler.builder.build_unconditional_branch(merge_bb);
+
+    self_compiler.builder.position_at_end(check_r_error_bb);
+    let r_is_error = self_compiler
+        .builder
+        .build_int_compare(inkwell::IntPredicate::EQ, r_tag, error_tag_const, "r_is_error")
+        .unwrap();
+    let r_error_bb = self_compiler
+        .context
+        .append_basic_block(parent_fn, "r_error_short_circuit");
+    let normal_dispatch_bb = self_compiler
+        .context
+        .append_basic_block(parent_fn, "normal_dispatch");
+    let _ = self_compiler.builder.build_conditional_branch(
+        r_is_error,
+        r_error_bb,
+        normal_dispatch_bb,
+    );
+
+    self_compiler.builder.position_at_end(r_error_bb);
+    let _ = self_compiler.builder.build_unconditional_branch(merge_bb);
+
+    self_compiler.builder.position_at_end(normal_dispatch_bb);
+
+    // check if both are integers
+    let can_add = create_add_expr_check_int(self_compiler, l_tag, r_tag)?;
+
+    // check if both are float(default(f64))
+    let both_float = create_add_expr_check_float(self_compiler, l_tag, r_tag)?;
+
+    // check if both are strings
+    let check_string = create_add_expr_check_string(self_compiler, l_tag, r_tag)?;
 
     // first check if can add as integers
     let _ = self_compiler
@@ -116,19 +159,20 @@ pub fn create_add_expr<'ctx>(
         self_compiler.get_known_type_from_expr(rhs)
     );
 
-    let settings = PanicErrorSettings {
+    let settings = ErrorValueSettings {
         is_const: true,
         is_global: true,
     };
 
-    let _ = create_panic_err(
+    let error_ptr = create_error_value(
         self_compiler,
+        4,  // SprsErrorCode::TypeMismatch
         &error_message,
         module,
         settings,
     )?;
 
-    let _ = self_compiler.builder.build_unreachable();
+    let _ = self_compiler.builder.build_unconditional_branch(merge_bb);
 
     // integer addition branch
 
@@ -167,6 +211,9 @@ pub fn create_add_expr<'ctx>(
         (&int_res_ptr, int_bb),
         (&float_res_ptr, float_end_bb),
         (&str_res_ptr, string_bb),
+        (&error_ptr, error_bb),
+        (&l_ptr, l_error_bb),
+        (&r_ptr, r_error_bb),
     ]);
 
     Ok(phi.as_basic_value())
@@ -576,6 +623,9 @@ fn create_add_expr_build_float_branch<'ctx>(
     let marge = self_compiler
         .context
         .append_basic_block(parent, "add_merge_bb");
+    let final_merge = self_compiler
+        .context
+        .append_basic_block(parent, "add_float_final_merge_bb");
     let error_bb = self_compiler
         .context
         .append_basic_block(parent, "add_float_error_bb");
@@ -609,20 +659,21 @@ fn create_add_expr_build_float_branch<'ctx>(
         .build_switch(float_tag, error_bb, &cases)
         .unwrap();
 
-    // error branch (BUG-L17): unknown float tag → panic instead of falling through to bb_f64
+    // error branch (BUG-L17): unknown float tag → error value instead of panic
     self_compiler.builder.position_at_end(error_bb);
     let error_message = "TypeError: unexpected float tag in add";
-    let settings = PanicErrorSettings {
+    let settings = ErrorValueSettings {
         is_const: true,
         is_global: true,
     };
-    let _ = create_panic_err(
+    let error_ptr = create_error_value(
         self_compiler,
+        4,  // SprsErrorCode::TypeMismatch
         error_message,
         module,
         settings,
     )?;
-    let _ = self_compiler.builder.build_unreachable();
+    let _ = self_compiler.builder.build_unconditional_branch(final_merge);
 
     // Float16
     self_compiler.builder.position_at_end(bb_f16);
@@ -758,7 +809,22 @@ fn create_add_expr_build_float_branch<'ctx>(
         StoreValue::Int(res_data),
         "float_res",
     );
-    Ok(float_res_ptr)
+    let success_end_bb = self_compiler.builder.get_insert_block().unwrap();
+    let _ = self_compiler.builder.build_unconditional_branch(final_merge);
+
+    self_compiler.builder.position_at_end(final_merge);
+    let final_phi = self_compiler
+        .builder
+        .build_phi(
+            self_compiler.context.ptr_type(AddressSpace::default()),
+            "float_add_final_phi",
+        )
+        .unwrap();
+    final_phi.add_incoming(&[
+        (&error_ptr, error_bb),
+        (&float_res_ptr, success_end_bb),
+    ]);
+    Ok(final_phi.as_basic_value().into_pointer_value())
 }
 
 fn create_add_expr_build_string_branch<'ctx>(
@@ -1556,6 +1622,88 @@ pub fn create_div_expr<'ctx>(
     let l_ptr = self_compiler.compile_expr(lhs, module)?.into_pointer_value();
     let r_ptr = self_compiler.compile_expr(rhs, module)?.into_pointer_value();
 
+    let l_tag_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, l_ptr, 0, "l_tag_ptr")
+        .unwrap();
+    let l_tag = self_compiler
+        .builder
+        .build_load(self_compiler.context.i32_type(), l_tag_ptr, "l_tag")
+        .unwrap()
+        .into_int_value();
+
+    let r_tag_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, r_ptr, 0, "r_tag_ptr")
+        .unwrap();
+    let r_tag = self_compiler
+        .builder
+        .build_load(self_compiler.context.i32_type(), r_tag_ptr, "r_tag")
+        .unwrap()
+        .into_int_value();
+
+    let parent_fn = self_compiler
+        .builder
+        .get_insert_block()
+        .unwrap()
+        .get_parent()
+        .unwrap();
+    let bb_div = self_compiler
+        .context
+        .append_basic_block(parent_fn, "div_bb");
+    let bb_err = self_compiler
+        .context
+        .append_basic_block(parent_fn, "div_zero_err");
+    let merge_bb = self_compiler
+        .context
+        .append_basic_block(parent_fn, "div_merge_bb");
+
+    // short-circuit: if either operand is Tag::Error, return it directly.
+    let error_tag_const = self_compiler
+        .context
+        .i32_type()
+        .const_int(Tag::Error as u64, false);
+    let l_is_error = self_compiler
+        .builder
+        .build_int_compare(inkwell::IntPredicate::EQ, l_tag, error_tag_const, "div_l_is_error")
+        .unwrap();
+    let l_error_bb = self_compiler
+        .context
+        .append_basic_block(parent_fn, "div_l_error_short_circuit");
+    let check_r_error_bb = self_compiler
+        .context
+        .append_basic_block(parent_fn, "div_check_r_error");
+    let _ = self_compiler.builder.build_conditional_branch(
+        l_is_error,
+        l_error_bb,
+        check_r_error_bb,
+    );
+
+    self_compiler.builder.position_at_end(l_error_bb);
+    let _ = self_compiler.builder.build_unconditional_branch(merge_bb);
+
+    self_compiler.builder.position_at_end(check_r_error_bb);
+    let r_is_error = self_compiler
+        .builder
+        .build_int_compare(inkwell::IntPredicate::EQ, r_tag, error_tag_const, "div_r_is_error")
+        .unwrap();
+    let r_error_bb = self_compiler
+        .context
+        .append_basic_block(parent_fn, "div_r_error_short_circuit");
+    let normal_dispatch_bb = self_compiler
+        .context
+        .append_basic_block(parent_fn, "div_normal_dispatch");
+    let _ = self_compiler.builder.build_conditional_branch(
+        r_is_error,
+        r_error_bb,
+        normal_dispatch_bb,
+    );
+
+    self_compiler.builder.position_at_end(r_error_bb);
+    let _ = self_compiler.builder.build_unconditional_branch(merge_bb);
+
+    self_compiler.builder.position_at_end(normal_dispatch_bb);
+
     let l_data_ptr = self_compiler
         .builder
         .build_struct_gep(self_compiler.runtime_value_type, l_ptr, 1, "l_data_ptr")
@@ -1577,19 +1725,6 @@ pub fn create_div_expr<'ctx>(
         .into_int_value();
 
     // Zero-division check
-    let parent_fn = self_compiler
-        .builder
-        .get_insert_block()
-        .unwrap()
-        .get_parent()
-        .unwrap();
-    let bb_div = self_compiler
-        .context
-        .append_basic_block(parent_fn, "div_bb");
-    let bb_err = self_compiler
-        .context
-        .append_basic_block(parent_fn, "div_zero_err");
-
     let zero = self_compiler.context.i64_type().const_int(0, false);
     let is_zero = self_compiler
         .builder
@@ -1601,12 +1736,18 @@ pub fn create_div_expr<'ctx>(
 
     // Error: division by zero
     self_compiler.builder.position_at_end(bb_err);
-    let settings = PanicErrorSettings {
+    let settings = ErrorValueSettings {
         is_const: true,
         is_global: true,
     };
-    let _ = create_panic_err(self_compiler, "Division by zero", module, settings)?;
-    self_compiler.builder.build_unreachable().unwrap();
+    let error_ptr = create_error_value(
+        self_compiler,
+        2,  // SprsErrorCode::DivByZero
+        "Division by zero",
+        module,
+        settings,
+    )?;
+    let _ = self_compiler.builder.build_unconditional_branch(merge_bb);
 
     // Div
     self_compiler.builder.position_at_end(bb_div);
@@ -1622,7 +1763,23 @@ pub fn create_div_expr<'ctx>(
         StoreValue::Int(result),
         "div_res_store",
     );
-    Ok(res_ptr.into())
+    let _ = self_compiler.builder.build_unconditional_branch(merge_bb);
+
+    self_compiler.builder.position_at_end(merge_bb);
+    let phi = self_compiler
+        .builder
+        .build_phi(
+            self_compiler.context.ptr_type(AddressSpace::default()),
+            "div_res_phi",
+        )
+        .unwrap();
+    phi.add_incoming(&[
+        (&error_ptr, bb_err),
+        (&res_ptr, bb_div),
+        (&l_ptr, l_error_bb),
+        (&r_ptr, r_error_bb),
+    ]);
+    Ok(phi.as_basic_value())
 }
 
 pub fn create_mod_expr<'ctx>(
@@ -1633,6 +1790,88 @@ pub fn create_mod_expr<'ctx>(
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
     let l_ptr = self_compiler.compile_expr(lhs, module)?.into_pointer_value();
     let r_ptr = self_compiler.compile_expr(rhs, module)?.into_pointer_value();
+
+    let l_tag_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, l_ptr, 0, "l_tag_ptr")
+        .unwrap();
+    let l_tag = self_compiler
+        .builder
+        .build_load(self_compiler.context.i32_type(), l_tag_ptr, "l_tag")
+        .unwrap()
+        .into_int_value();
+
+    let r_tag_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, r_ptr, 0, "r_tag_ptr")
+        .unwrap();
+    let r_tag = self_compiler
+        .builder
+        .build_load(self_compiler.context.i32_type(), r_tag_ptr, "r_tag")
+        .unwrap()
+        .into_int_value();
+
+    let parent_fn = self_compiler
+        .builder
+        .get_insert_block()
+        .unwrap()
+        .get_parent()
+        .unwrap();
+    let bb_mod = self_compiler
+        .context
+        .append_basic_block(parent_fn, "mod_bb");
+    let bb_err = self_compiler
+        .context
+        .append_basic_block(parent_fn, "mod_zero_err");
+    let merge_bb = self_compiler
+        .context
+        .append_basic_block(parent_fn, "mod_merge_bb");
+
+    // short-circuit: if either operand is Tag::Error, return it directly.
+    let error_tag_const = self_compiler
+        .context
+        .i32_type()
+        .const_int(Tag::Error as u64, false);
+    let l_is_error = self_compiler
+        .builder
+        .build_int_compare(inkwell::IntPredicate::EQ, l_tag, error_tag_const, "mod_l_is_error")
+        .unwrap();
+    let l_error_bb = self_compiler
+        .context
+        .append_basic_block(parent_fn, "mod_l_error_short_circuit");
+    let check_r_error_bb = self_compiler
+        .context
+        .append_basic_block(parent_fn, "mod_check_r_error");
+    let _ = self_compiler.builder.build_conditional_branch(
+        l_is_error,
+        l_error_bb,
+        check_r_error_bb,
+    );
+
+    self_compiler.builder.position_at_end(l_error_bb);
+    let _ = self_compiler.builder.build_unconditional_branch(merge_bb);
+
+    self_compiler.builder.position_at_end(check_r_error_bb);
+    let r_is_error = self_compiler
+        .builder
+        .build_int_compare(inkwell::IntPredicate::EQ, r_tag, error_tag_const, "mod_r_is_error")
+        .unwrap();
+    let r_error_bb = self_compiler
+        .context
+        .append_basic_block(parent_fn, "mod_r_error_short_circuit");
+    let normal_dispatch_bb = self_compiler
+        .context
+        .append_basic_block(parent_fn, "mod_normal_dispatch");
+    let _ = self_compiler.builder.build_conditional_branch(
+        r_is_error,
+        r_error_bb,
+        normal_dispatch_bb,
+    );
+
+    self_compiler.builder.position_at_end(r_error_bb);
+    let _ = self_compiler.builder.build_unconditional_branch(merge_bb);
+
+    self_compiler.builder.position_at_end(normal_dispatch_bb);
 
     let l_data_ptr = self_compiler
         .builder
@@ -1655,19 +1894,6 @@ pub fn create_mod_expr<'ctx>(
         .into_int_value();
 
     // Zero-division check
-    let parent_fn = self_compiler
-        .builder
-        .get_insert_block()
-        .unwrap()
-        .get_parent()
-        .unwrap();
-    let bb_mod = self_compiler
-        .context
-        .append_basic_block(parent_fn, "mod_bb");
-    let bb_err = self_compiler
-        .context
-        .append_basic_block(parent_fn, "mod_zero_err");
-
     let zero = self_compiler.context.i64_type().const_int(0, false);
     let is_zero = self_compiler
         .builder
@@ -1679,12 +1905,18 @@ pub fn create_mod_expr<'ctx>(
 
     // Error: modulo by zero
     self_compiler.builder.position_at_end(bb_err);
-    let settings = PanicErrorSettings {
+    let settings = ErrorValueSettings {
         is_const: true,
         is_global: true,
     };
-    let _ = create_panic_err(self_compiler, "Modulo by zero", module, settings)?;
-    self_compiler.builder.build_unreachable().unwrap();
+    let error_ptr = create_error_value(
+        self_compiler,
+        3,  // SprsErrorCode::ModByZero
+        "Modulo by zero",
+        module,
+        settings,
+    )?;
+    let _ = self_compiler.builder.build_unconditional_branch(merge_bb);
 
     // Mod
     self_compiler.builder.position_at_end(bb_mod);
@@ -1700,7 +1932,23 @@ pub fn create_mod_expr<'ctx>(
         StoreValue::Int(result),
         "mod_res_store",
     );
-    Ok(res_ptr.into())
+    let _ = self_compiler.builder.build_unconditional_branch(merge_bb);
+
+    self_compiler.builder.position_at_end(merge_bb);
+    let phi = self_compiler
+        .builder
+        .build_phi(
+            self_compiler.context.ptr_type(AddressSpace::default()),
+            "mod_res_phi",
+        )
+        .unwrap();
+    phi.add_incoming(&[
+        (&error_ptr, bb_err),
+        (&res_ptr, bb_mod),
+        (&l_ptr, l_error_bb),
+        (&r_ptr, r_error_bb),
+    ]);
+    Ok(phi.as_basic_value())
 }
 
 enum IntBinOp {
@@ -1730,6 +1978,99 @@ where
     let r_ptr = self_compiler
         .compile_expr(rhs, module)?
         .into_pointer_value();
+
+    let l_tag_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, l_ptr, 0, "l_tag_ptr")
+        .unwrap();
+    let l_tag = self_compiler
+        .builder
+        .build_load(self_compiler.context.i32_type(), l_tag_ptr, "l_tag")
+        .unwrap()
+        .into_int_value();
+
+    let r_tag_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, r_ptr, 0, "r_tag_ptr")
+        .unwrap();
+    let r_tag = self_compiler
+        .builder
+        .build_load(self_compiler.context.i32_type(), r_tag_ptr, "r_tag")
+        .unwrap()
+        .into_int_value();
+
+    let op_name = match op {
+        IntBinOp::Sub => "sub",
+        IntBinOp::Mul => "mul",
+    };
+
+    let parent_fn = self_compiler
+        .builder
+        .get_insert_block()
+        .unwrap()
+        .get_parent()
+        .unwrap();
+    let merge_bb = self_compiler
+        .context
+        .append_basic_block(parent_fn, &format!("{op_name}_merge_bb"));
+
+    // short-circuit: if either operand is Tag::Error, return it directly.
+    let error_tag_const = self_compiler
+        .context
+        .i32_type()
+        .const_int(Tag::Error as u64, false);
+    let l_is_error = self_compiler
+        .builder
+        .build_int_compare(
+            inkwell::IntPredicate::EQ,
+            l_tag,
+            error_tag_const,
+            &format!("{op_name}_l_is_error"),
+        )
+        .unwrap();
+    let l_error_bb = self_compiler.context.append_basic_block(
+        parent_fn,
+        &format!("{op_name}_l_error_short_circuit"),
+    );
+    let check_r_error_bb = self_compiler
+        .context
+        .append_basic_block(parent_fn, &format!("{op_name}_check_r_error"));
+    let _ = self_compiler.builder.build_conditional_branch(
+        l_is_error,
+        l_error_bb,
+        check_r_error_bb,
+    );
+
+    self_compiler.builder.position_at_end(l_error_bb);
+    let _ = self_compiler.builder.build_unconditional_branch(merge_bb);
+
+    self_compiler.builder.position_at_end(check_r_error_bb);
+    let r_is_error = self_compiler
+        .builder
+        .build_int_compare(
+            inkwell::IntPredicate::EQ,
+            r_tag,
+            error_tag_const,
+            &format!("{op_name}_r_is_error"),
+        )
+        .unwrap();
+    let r_error_bb = self_compiler.context.append_basic_block(
+        parent_fn,
+        &format!("{op_name}_r_error_short_circuit"),
+    );
+    let normal_dispatch_bb = self_compiler
+        .context
+        .append_basic_block(parent_fn, &format!("{op_name}_normal_dispatch"));
+    let _ = self_compiler.builder.build_conditional_branch(
+        r_is_error,
+        r_error_bb,
+        normal_dispatch_bb,
+    );
+
+    self_compiler.builder.position_at_end(r_error_bb);
+    let _ = self_compiler.builder.build_unconditional_branch(merge_bb);
+
+    self_compiler.builder.position_at_end(normal_dispatch_bb);
 
     let l_data_ptr = self_compiler
         .builder
@@ -1768,5 +2109,21 @@ where
         StoreValue::Int(result),
         "int_bin_op_res",
     );
-    Ok(res_ptr.into())
+    let normal_end_bb = self_compiler.builder.get_insert_block().unwrap();
+    let _ = self_compiler.builder.build_unconditional_branch(merge_bb);
+
+    self_compiler.builder.position_at_end(merge_bb);
+    let phi = self_compiler
+        .builder
+        .build_phi(
+            self_compiler.context.ptr_type(AddressSpace::default()),
+            &format!("{op_name}_res_phi"),
+        )
+        .unwrap();
+    phi.add_incoming(&[
+        (&l_ptr, l_error_bb),
+        (&r_ptr, r_error_bb),
+        (&res_ptr, normal_end_bb),
+    ]);
+    Ok(phi.as_basic_value())
 }

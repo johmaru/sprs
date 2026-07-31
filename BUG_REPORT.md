@@ -45,13 +45,17 @@
 
 | バグ ID | 深刻度 | 内容 | issue |
 |---|---|---|---|
-| **BUG-L06** | Medium | 整数加算で `nsw`/`nuw` フラグ未使用、オーバーフロー時に wrap-around。`nsw`/`nuw` 付けると UB になるため却下。Zig ライクな `Result` ベース（`@AnyError(x)` / `@WhatError(x) == OVERFLOW`）で設計中。#26（catchable エラー機構）に依存。 | [#27](https://github.com/johmaru/sprs/issues/27) |
-| **BUG-L04** | Medium | `create_panic_err` が `build_unreachable` を生成しない。動作上のバグではなく設計上の好みの問題（全呼び出し元が直後に `build_unreachable` を置いているため IR 上は問題ない）。`__panic` が回復可能になった時に `build_unreachable` の位置を見直す必要があるため、issue #26 の実装時に合わせて対応する。 | [#26](https://github.com/johmaru/sprs/issues/26) |
+| **BUG-L06** | Medium | 整数加算で `nsw`/`nuw` フラグ未使用、オーバーフロー時に wrap-around。`nsw`/`nuw` 付けると UB になるため却下。Zig ライクな `Result` ベース（`@AnyError(x)` / `@WhatError(x) == OVERFLOW`）で設計中。#26（catchable エラー機構）に依存。→ catchable エラー機構（Tag::Error / `?` / `@is_error` 等）は実装済み。オーバーフロー検知自体は未実装で #27 継続。 | [#27](https://github.com/johmaru/sprs/issues/27) |
+| **BUG-L04** | Medium | ~~`create_panic_err` が `build_unreachable` を生成しない~~ → **解消**: `create_error_value` に置換し、エラーは `Tag::Error` 値として通常制御フローで伝播。`build_unreachable` は不要になった。 | [#26](https://github.com/johmaru/sprs/issues/26) |
 | **BUG-F09** | Medium | `Postfix` 規則で `base` が `Expr::Var` 以外のとき、レシーバが破棄されて `Expr::Call` に変換される。メソッドチェーン（`list[0].method()` 等）が使えない。現在は `ModuleAccess`（`test.hello()`）のみ使い、メソッドチェーンを使わないため発火しない。メソッド呼び出しのセマンティクス（`self` の有無等）を決める設計判断が必要。 | [#28](https://github.com/johmaru/sprs/issues/28) |
 
 ---
 
 ## 5. 解消済みバグ (参照用)
+
+### catchable エラー機構 (#26) で解消
+
+- **BUG-L04**: `create_panic_err` + `build_unreachable` → `create_error_value`（`Tag::Error`）に置換。ゼロ除算・型不一致等は catchable なエラー値として伝播。`?` / `@is_error` / `@error_code` / `@error_message` / `@error` を導入。
 
 ### slab ベースのランタイム移行で解消
 
