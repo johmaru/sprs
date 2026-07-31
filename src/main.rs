@@ -303,22 +303,38 @@
 //!
 //! ## Memory Management
 //!
-//! The Sprs has a simple runtime move system.
+//! Sprs uses **move semantics** for heap values (`str`, `list`, `range`, `struct`, `enum`, `error`).
+//! Assigning or passing one of these values transfers ownership; the old binding becomes invalid
+//! (`Unit`). Integers, floats, and bools are copied instead.
 //!
-//! **Example:**
+//! Use `@clone(x)` when you need to keep the original value after a move.
+//!
+//! **Move on assignment:**
 //! ```
 //! fn main() {
-//!    test();
-//!}
+//!     var greeting = "Hello, Sprs!";
+//!     var copy = greeting;       # ownership moves to copy; greeting is now invalid
+//!     @println(copy);            # prints: Hello, Sprs!
+//!     # @println(greeting);      # would print () — greeting was moved
+//! }
+//! ```
 //!
-//!fn test() {
-//!   var test = "Hello, Sprs!"; # set a string to variable
-//!   var a = test; # move the value from test to a, test is now invalid
-//!   return @println(a); # function call with a, a is now invalid after this line
-//!   # if you don't want to move a 'a' variable, use @clone macro
-//!   @println(@clone(a)); # a is still valid after this line
-//!}
+//! **Move into a function call:**
+//! ```
+//! fn main() {
+//!     var greeting = "Hello, Sprs!";
+//!     @println(greeting);        # greeting is moved into @println and becomes invalid
+//!     # @println(greeting);      # would print ()
+//! }
+//! ```
 //!
+//! **Keep ownership with `@clone`:**
+//! ```
+//! fn main() {
+//!     var greeting = "Hello, Sprs!";
+//!     @println(@clone(greeting)); # prints a copy; greeting stays valid
+//!     @println(greeting);         # still prints: Hello, Sprs!
+//! }
 //! ```
 
 use std::error::Error;
