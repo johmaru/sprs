@@ -434,8 +434,6 @@ pub fn create_struct_init<'ctx>(
         .ok_or_else(|| SprsError::Semantic { code: ErrorCode { category: ErrorCategory::Semantic, number: 13 }, location: Location::new(String::new(), Span::DUMMY), message: format!("Undefined struct : {}", struct_name), help: None })?;
 
     let llvm_type = struct_def.llvm_type;
-    let field_indices = struct_def.field_indices.clone();
-    let def_fields = struct_def.fields.clone();
 
     // Allocate the struct through the slab runtime so `__drop`/`__clone`
     // recognize it as a slab-owned Struct (not a raw malloc pointer).
@@ -480,21 +478,34 @@ pub fn create_struct_init<'ctx>(
         .unwrap();
 
     for (field_name, field_expr) in field_exprs {
-        let index = field_indices.get(field_name).ok_or_else(|| {
-            SprsError::Semantic {
-                code: ErrorCode { category: ErrorCategory::Semantic, number: 13 },
-                location: Location::new(String::new(), Span::DUMMY),
-                message: format!(
-                    "Field '{}' not found in struct '{}'",
-                    field_name, struct_name
-                ),
-                help: None,
-            }
-        })?;
+        // Re-fetch inside the loop so the immutable borrow ends before
+        // `compile_expr`'s mutable borrow (NLL does not end loop-carried
+        // borrows between iterations).
+        let struct_def = self_compiler
+            .struct_defs
+            .get(struct_name)
+            .expect("struct definition verified at function entry");
+        let index = struct_def
+            .field_indices
+            .get(field_name)
+            .copied()
+            .ok_or_else(|| {
+                SprsError::Semantic {
+                    code: ErrorCode { category: ErrorCategory::Semantic, number: 13 },
+                    location: Location::new(String::new(), Span::DUMMY),
+                    message: format!(
+                        "Field '{}' not found in struct '{}'",
+                        field_name, struct_name
+                    ),
+                    help: None,
+                }
+            })?;
 
-        let field_def = def_fields
+        let field_ty = struct_def
+            .fields
             .iter()
             .find(|f| f.ident == *field_name)
+            .map(|f| f.ty.clone())
             .ok_or_else(|| {
                 SprsError::Semantic {
                     code: ErrorCode { category: ErrorCategory::Semantic, number: 13 },
@@ -511,10 +522,10 @@ pub fn create_struct_init<'ctx>(
 
         let field_ptr = self_compiler
             .builder
-            .build_struct_gep(llvm_type, struct_ptr, *index, "field_ptr")
+            .build_struct_gep(llvm_type, struct_ptr, index, "field_ptr")
             .map_err(|e| SprsError::Internal { message: e.to_string(), location: None })?;
 
-        if let Some(ty) = &field_def.ty {
+        if let Some(ty) = &field_ty {
             match ty {
                 crate::front::type_helper::Type::Int
                 | crate::front::type_helper::Type::TypeI64

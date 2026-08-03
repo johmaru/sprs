@@ -50,7 +50,7 @@ pub fn validate_subpath(subpath: &str) -> Result<(), String> {
     Ok(())
 }
 
-pub fn get_all_arguments(args: Vec<String>) -> Vec<String> {
+pub fn get_all_arguments(args: &[String]) -> Vec<String> {
     args.iter()
         .filter(|arg| arg.starts_with("--"))
         .cloned()

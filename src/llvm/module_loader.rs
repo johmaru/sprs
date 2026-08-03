@@ -4,15 +4,15 @@ use crate::front::span::Span;
 use crate::front::type_helper;
 use crate::front::type_helper::Type;
 use crate::llvm::builder_helper;
+use crate::llvm::compiler::{Compiler, LINUX_STR, OS, StructDef, Tag, WINDOWS_STR};
 use crate::llvm::parser::parse_only;
+use crate::naming;
 use inkwell::AddressSpace;
 use inkwell::module::Linkage;
 use inkwell::module::Module;
 use inkwell::types::{BasicMetadataTypeEnum, BasicTypeEnum};
 use inkwell::values::FunctionValue;
 use std::collections::HashMap;
-use crate::llvm::compiler::{Compiler, StructDef, OS, Tag, WINDOWS_STR, LINUX_STR};
-use crate::naming;
 
 impl<'ctx> Compiler<'ctx> {
     pub fn load_and_compile_module(
@@ -127,7 +127,8 @@ impl<'ctx> Compiler<'ctx> {
                 let entry = self.context.append_basic_block(c_main, "entry");
                 self.builder.position_at_end(entry);
 
-                let main_call = self.builder
+                let main_call = self
+                    .builder
                     .build_call(sprs_main_fn, &[], "call_sprs_main")
                     .unwrap();
 
@@ -160,8 +161,7 @@ impl<'ctx> Compiler<'ctx> {
                                 .unwrap()
                                 .into_int_value();
 
-                            let error_tag =
-                                i32_type.const_int(Tag::Error as u64, false);
+                            let error_tag = i32_type.const_int(Tag::Error as u64, false);
                             let is_error = self
                                 .builder
                                 .build_int_compare(
@@ -174,8 +174,7 @@ impl<'ctx> Compiler<'ctx> {
 
                             let panic_bb =
                                 self.context.append_basic_block(c_main, "main_error_panic");
-                            let ok_bb =
-                                self.context.append_basic_block(c_main, "main_ok");
+                            let ok_bb = self.context.append_basic_block(c_main, "main_ok");
                             let _ = self
                                 .builder
                                 .build_conditional_branch(is_error, panic_bb, ok_bb);
@@ -241,7 +240,12 @@ impl<'ctx> Compiler<'ctx> {
         }
     }
 
-    pub(crate) fn register_enum(&mut self, enm: &ast::Enum, module: &Module<'ctx>, is_global: bool) {
+    pub(crate) fn register_enum(
+        &mut self,
+        enm: &ast::Enum,
+        module: &Module<'ctx>,
+        is_global: bool,
+    ) {
         if enm.variants.is_empty() {
             return;
         }
@@ -373,7 +377,7 @@ impl<'ctx> Compiler<'ctx> {
                 global.as_pointer_value()
             };
 
-            self.add_variable(full_name, ptr.into(), Type::Enum);
+            self.add_variable(full_name.to_string(), ptr.into(), Type::Enum, false);
         }
     }
 

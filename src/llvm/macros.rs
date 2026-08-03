@@ -9,6 +9,7 @@ use crate::{
     llvm::compiler::{Compiler, StoreTag, StoreValue, Tag},
 };
 use crate::llvm::value::{create_error_value, create_entry_block_alloca, ErrorValueSettings};
+use crate::llvm::variable::{clone_runtime_value, move_variable, var_load_at_init_variable};
 
 pub fn call_builtin_macro_println<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
@@ -41,9 +42,29 @@ pub fn call_builtin_macro_list_push<'ctx>(
     let list_ptr = self_compiler
         .compile_expr(&args[0], module)?
         .into_pointer_value();
-    let val_ptr = self_compiler
+    let compiled_val_ptr = self_compiler
         .compile_expr(&args[1], module)?
         .into_pointer_value();
+    let (val_ptr, source_var) = if let ast::Expr::Var(name) = &args[1].node {
+        let (source_ptr, _, source_always_clone) = self_compiler
+            .get_variables(name)
+            .ok_or_else(|| format!("Undefined variable: {}", name))?;
+
+        if source_always_clone {
+            (
+                clone_runtime_value(
+                    self_compiler,
+                    source_ptr.into_pointer_value(),
+                    module,
+                )?,
+                None,
+            )
+        } else {
+            (compiled_val_ptr, Some((source_ptr, name)))
+        }
+    } else {
+        (compiled_val_ptr, None)
+    };
 
     let list_data_ptr = self_compiler
         .builder
@@ -97,6 +118,10 @@ pub fn call_builtin_macro_list_push<'ctx>(
         )
         .unwrap();
 
+    if let Some((source_ptr, source_name)) = source_var {
+        move_variable(self_compiler, &source_ptr, source_name);
+    }
+
     let res_ptr = create_entry_block_alloca(self_compiler, "list_push_res_alloc")?;
     self_compiler.tag_only_runtime_value_store(res_ptr, Tag::Unit as u64, "unit_res");
 
@@ -115,54 +140,70 @@ pub fn call_builtin_macro_clone<'ctx>(
         .compile_expr(&args[0], module)?
         .into_pointer_value();
 
-    let tag_ptr = self_compiler
-        .builder
-        .build_struct_gep(
-            self_compiler.runtime_value_type,
-            arg_ptr,
-            0,
-            "clone_arg_tag_ptr",
-        )
-        .unwrap();
-    let tag = self_compiler
-        .builder
-        .build_load(self_compiler.context.i32_type(), tag_ptr, "clone_arg_tag")
-        .unwrap()
-        .into_int_value();
+    let result_ptr = clone_runtime_value(self_compiler, arg_ptr, module)?;
+    Ok(result_ptr.into())
+}
 
-    let data_ptr = self_compiler
-        .builder
-        .build_struct_gep(
-            self_compiler.runtime_value_type,
-            arg_ptr,
-            1,
-            "clone_arg_data_ptr",
-        )
-        .unwrap();
-    let data = self_compiler
-        .builder
-        .build_load(self_compiler.context.i64_type(), data_ptr, "clone_arg_data")
-        .unwrap()
-        .into_int_value();
+pub fn call_builtin_macro_move<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+    args: &Vec<Spanned<ast::Expr>>,
+    _module: &inkwell::module::Module<'ctx>,
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
+    if args.len() != 1 {
+        return Err(SprsError::Semantic {
+            code: ErrorCode {
+                category: ErrorCategory::Semantic,
+                number: 13,
+            },
+            location: Location::new(String::new(), Span::DUMMY),
+            message: "@move expects 1 argument".to_string(),
+            help: None,
+        });
+    }
 
-    let clone_fn = self_compiler.get_runtime_fn(module, "__clone")?;
-    let call_site = self_compiler
-        .builder
-        .build_call(clone_fn, &[tag.into(), data.into()], "clone_call")
-        .unwrap();
-    let result_val = match call_site.try_as_basic_value() {
-        ValueKind::Basic(val) => Ok(val),
-        ValueKind::Instruction(_) => Err(SprsError::Internal { message: "Expected basic value from clone function".to_string(), location: None }),
+    let name = match &args[0].node {
+        ast::Expr::Var(name) => name,
+        _ => {
+            return Err(SprsError::Semantic {
+                code: ErrorCode {
+                    category: ErrorCategory::Semantic,
+                    number: 13,
+                },
+                location: Location::new(String::new(), args[0].span),
+                message: "@move expects a variable argument".to_string(),
+                help: None,
+            });
+        }
     };
 
-    let result_ptr = create_entry_block_alloca(self_compiler, "clone_res_alloc")?;
+    let (source_value, _, always_clone) = self_compiler
+        .get_variables(name)
+        .ok_or_else(|| SprsError::Semantic {
+            code: ErrorCode {
+                category: ErrorCategory::Semantic,
+                number: 2,
+            },
+            location: Location::new(String::new(), args[0].span),
+            message: format!("Undefined variable: {}", name),
+            help: None,
+        })?;
 
-    self_compiler
-        .builder
-        .build_store(result_ptr, result_val?)
-        .unwrap();
+    if !always_clone {
+        return Err(SprsError::Semantic {
+            code: ErrorCode {
+                category: ErrorCategory::Semantic,
+                number: 13,
+            },
+            location: Location::new(String::new(), args[0].span),
+            message: format!("@move expects a cp variable: {}", name),
+            help: None,
+        });
+    }
 
-    return Ok(result_ptr.into());
+    let source_ptr = source_value.into_pointer_value();
+    let moved_ptr = var_load_at_init_variable(self_compiler, source_ptr, "move_arg")?;
+    move_variable(self_compiler, &source_ptr.into(), name);
+    Ok(moved_ptr.into())
 }
 
 pub fn call_builtin_macro_cast<'ctx>(
@@ -871,8 +912,8 @@ fn shift_impl<'ctx>(
         (i32_type.const_int(Tag::Uint32 as u64, false), bb_unsigned),
         (i32_type.const_int(Tag::Uint64 as u64, false), bb_unsigned),
     ];
-    let mut all_cases = signed_cases.clone();
-    all_cases.extend(unsigned_cases.clone());
+    let mut all_cases = signed_cases;
+    all_cases.extend(unsigned_cases);
 
     // Default -> error (non-integer tag)
     self_compiler

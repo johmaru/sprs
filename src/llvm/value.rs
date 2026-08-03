@@ -1,4 +1,4 @@
-use crate::front::error::{SprsError, ErrorCode, ErrorCategory, Location};
+use crate::front::error::{ErrorCategory, ErrorCode, Location, SprsError};
 use crate::front::span::Span;
 use inkwell::{
     AddressSpace,
@@ -6,6 +6,7 @@ use inkwell::{
     values::{BasicValueEnum, IntValue, PointerValue, ValueKind},
 };
 
+use crate::llvm::variable::{clone_runtime_value, move_variable};
 use crate::{
     front::ast,
     front::span::Spanned,
@@ -48,23 +49,31 @@ pub fn create_error_value<'ctx>(
             );
             (ptr_i8.unwrap().into_pointer_value(), message.len() as u64)
         }
-        Some(StrConstantResult::Pointer(p)) => {
-            (p, message.len() as u64)
-        }
+        Some(StrConstantResult::Pointer(p)) => (p, message.len() as u64),
         None => {
             // Empty message — pass null pointer.
-            let null_ptr = self_compiler.context.ptr_type(AddressSpace::default()).const_null();
+            let null_ptr = self_compiler
+                .context
+                .ptr_type(AddressSpace::default())
+                .const_null();
             (null_ptr, 0u64)
         }
     };
 
-    let error_code_val = self_compiler.context.i32_type().const_int(error_code as u64, false);
+    let error_code_val = self_compiler
+        .context
+        .i32_type()
+        .const_int(error_code as u64, false);
     let msg_len_val = self_compiler.context.i64_type().const_int(msg_len, false);
 
     let error_new_fn = self_compiler.get_runtime_fn(module, "__error_new")?;
     let error_handle = match self_compiler
         .builder
-        .build_call(error_new_fn, &[error_code_val.into(), msg_ptr.into(), msg_len_val.into()], "error_new_call")
+        .build_call(
+            error_new_fn,
+            &[error_code_val.into(), msg_ptr.into(), msg_len_val.into()],
+            "error_new_call",
+        )
         .unwrap()
         .try_as_basic_value()
     {
@@ -94,9 +103,20 @@ pub(crate) fn create_entry_block_alloca<'ctx>(
     name: &str,
 ) -> Result<PointerValue<'ctx>, SprsError> {
     let builder = &self_compiler.builder;
-    let current_block = builder.get_insert_block().ok_or(SprsError::Internal { message: "no insert block".to_string(), location: None })?;
-    let function = current_block.get_parent().ok_or(SprsError::Internal { message: "no parent function".to_string(), location: None })?;
-    let entry_block = function.get_first_basic_block().ok_or(SprsError::Internal { message: "no entry block".to_string(), location: None })?;
+    let current_block = builder.get_insert_block().ok_or(SprsError::Internal {
+        message: "no insert block".to_string(),
+        location: None,
+    })?;
+    let function = current_block.get_parent().ok_or(SprsError::Internal {
+        message: "no parent function".to_string(),
+        location: None,
+    })?;
+    let entry_block = function
+        .get_first_basic_block()
+        .ok_or(SprsError::Internal {
+            message: "no entry block".to_string(),
+            location: None,
+        })?;
 
     match entry_block.get_first_instruction() {
         Some(first_instr) => builder.position_before(&first_instr),
@@ -138,14 +158,35 @@ pub fn create_list_from_expr<'ctx>(
     // `__list_new` returns an i64 handle (not a pointer).
     let list_handle = match list_call.try_as_basic_value() {
         ValueKind::Basic(val) => val.into_int_value(),
-        _ => return Err(SprsError::Internal { message: "Expected i64 handle from __list_new".to_string(), location: None }),
+        _ => {
+            return Err(SprsError::Internal {
+                message: "Expected i64 handle from __list_new".to_string(),
+                location: None,
+            });
+        }
     };
 
     let list_push_fn = self_compiler.get_runtime_fn(module, "__list_push")?;
     for elem in elements {
-        let val_ptr = self_compiler
+        let compiled_val_ptr = self_compiler
             .compile_expr(elem, module)?
             .into_pointer_value();
+        let (val_ptr, source_var) = if let ast::Expr::Var(name) = &elem.node {
+            let (source_ptr, _, source_always_clone) = self_compiler
+                .get_variables(name)
+                .ok_or_else(|| format!("Undefined variable: {}", name))?;
+
+            if source_always_clone {
+                (
+                    clone_runtime_value(self_compiler, source_ptr.into_pointer_value(), module)?,
+                    None,
+                )
+            } else {
+                (compiled_val_ptr, Some((source_ptr, name)))
+            }
+        } else {
+            (compiled_val_ptr, None)
+        };
 
         // `__list_push(list_handle: i64, tag: i32, data: i64)` — pass the
         // handle as the first arg, with tag/data extracted from the value.
@@ -156,6 +197,10 @@ pub fn create_list_from_expr<'ctx>(
             &[list_handle.into()],
             true,
         );
+
+        if let Some((source_ptr, source_name)) = source_var {
+            move_variable(self_compiler, &source_ptr, source_name);
+        }
     }
     Ok(list_handle)
 }
@@ -225,7 +270,12 @@ pub fn create_string<'ctx>(
         .unwrap();
     let string_handle = match string_call.try_as_basic_value() {
         ValueKind::Basic(val) => val.into_int_value(),
-        _ => return Err(SprsError::Internal { message: "Expected i64 handle from __string_from_cstr".to_string(), location: None }),
+        _ => {
+            return Err(SprsError::Internal {
+                message: "Expected i64 handle from __string_from_cstr".to_string(),
+                location: None,
+            });
+        }
     };
 
     let ptr = create_entry_block_alloca(self_compiler, "str_alloc")?;
@@ -328,7 +378,9 @@ pub fn create_float64<'ctx>(c: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ct
     create_typed_zero(c, Tag::Float64, "f64")
 }
 
-pub fn create_dummy_for_no_return<'ctx>(self_compiler: &mut Compiler<'ctx>) -> Result<(), SprsError> {
+pub fn create_dummy_for_no_return<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+) -> Result<(), SprsError> {
     let dummy = create_entry_block_alloca(self_compiler, "ret_dummy")?;
     self_compiler.build_runtime_value_store(
         dummy,
@@ -424,7 +476,12 @@ pub(crate) fn box_return_value<'ctx>(
             .unwrap();
         let string_handle = match string_call.try_as_basic_value() {
             ValueKind::Basic(val) => val.into_int_value(),
-            _ => return Err(SprsError::Internal { message: "Expected i64 handle from __string_from_cstr".to_string(), location: None }),
+            _ => {
+                return Err(SprsError::Internal {
+                    message: "Expected i64 handle from __string_from_cstr".to_string(),
+                    location: None,
+                });
+            }
         };
 
         self_compiler.build_runtime_value_store(
@@ -453,11 +510,36 @@ pub fn create_call_expr<'ctx>(
                 .values()
                 .find_map(|m| m.get_function(ident))
         })
-        .ok_or(SprsError::Semantic { code: ErrorCode { category: ErrorCategory::Semantic, number: 15 }, location: Location::new(String::new(), Span::DUMMY), message: format!("Undefined function: {}", ident), help: None })?;
+        .ok_or(SprsError::Semantic {
+            code: ErrorCode {
+                category: ErrorCategory::Semantic,
+                number: 15,
+            },
+            location: Location::new(String::new(), Span::DUMMY),
+            message: format!("Undefined function: {}", ident),
+            help: None,
+        })?;
     let mut compiled_args = Vec::with_capacity(args.len());
     for arg in args {
-        let arg_val = self_compiler.compile_expr(arg, module)?;
-        let arg_ptr = arg_val.into_pointer_value();
+        let compiled_arg_ptr = self_compiler
+            .compile_expr(arg, module)?
+            .into_pointer_value();
+        let (arg_ptr, source_var) = if let ast::Expr::Var(name) = &arg.node {
+            let (source_ptr, _, source_always_clone) = self_compiler
+                .get_variables(name)
+                .ok_or_else(|| format!("Undefined variable: {}", name))?;
+
+            if source_always_clone {
+                (
+                    clone_runtime_value(self_compiler, source_ptr.into_pointer_value(), module)?,
+                    None,
+                )
+            } else {
+                (compiled_arg_ptr, Some((source_ptr, name)))
+            }
+        } else {
+            (compiled_arg_ptr, None)
+        };
 
         let temp_arg_ptr = create_entry_block_alloca(self_compiler, "compile_expr_arg_alloc")?;
         let val_tag_ptr = self_compiler
@@ -505,118 +587,8 @@ pub fn create_call_expr<'ctx>(
             .unwrap();
         compiled_args.push(temp_arg_ptr.into());
 
-        if let ast::Expr::Var(name) = &arg.node {
-            if let Some((var_ptr_enum, _)) = self_compiler.get_variables(name) {
-                let var_ptr = var_ptr_enum.into_pointer_value();
-
-                let current_tag = val_tag.into_int_value();
-
-                let tag_string = self_compiler
-                    .context
-                    .i32_type()
-                    .const_int(Tag::String as u64, false);
-                let tag_list = self_compiler
-                    .context
-                    .i32_type()
-                    .const_int(Tag::List as u64, false);
-                let tag_range = self_compiler
-                    .context
-                    .i32_type()
-                    .const_int(Tag::Range as u64, false);
-                let is_string = self_compiler
-                    .builder
-                    .build_int_compare(
-                        inkwell::IntPredicate::EQ,
-                        current_tag,
-                        tag_string,
-                        "compile_expr_is_string",
-                    )
-                    .unwrap();
-                let is_list = self_compiler
-                    .builder
-                    .build_int_compare(
-                        inkwell::IntPredicate::EQ,
-                        current_tag,
-                        tag_list,
-                        "compile_expr_is_list",
-                    )
-                    .unwrap();
-                let is_range = self_compiler
-                    .builder
-                    .build_int_compare(
-                        inkwell::IntPredicate::EQ,
-                        current_tag,
-                        tag_range,
-                        "compile_expr_is_range",
-                    )
-                    .unwrap();
-
-                let is_heap_1 = self_compiler
-                    .builder
-                    .build_or(is_string, is_list, "compile_expr_is_heap_1")
-                    .unwrap();
-                let should_move = self_compiler
-                    .builder
-                    .build_or(
-                        is_heap_1,
-                        self_compiler
-                            .builder
-                            .build_int_compare(
-                                inkwell::IntPredicate::EQ,
-                                is_heap_1,
-                                is_range,
-                                "is_heap_2",
-                            )
-                            .unwrap(),
-                        "should_move",
-                    )
-                    .unwrap();
-
-                let parent_bb = self_compiler
-                    .builder
-                    .get_insert_block()
-                    .unwrap()
-                    .get_parent()
-                    .unwrap();
-                let move_bb = self_compiler
-                    .context
-                    .append_basic_block(parent_bb, "compile_expr_arg_move_bb");
-                let cont_bb = self_compiler
-                    .context
-                    .append_basic_block(parent_bb, "compile_expr_arg_cont_bb");
-
-                self_compiler
-                    .builder
-                    .build_conditional_branch(should_move, move_bb, cont_bb)
-                    .unwrap();
-
-                self_compiler.builder.position_at_end(move_bb);
-                let var_tag_ptr = self_compiler
-                    .builder
-                    .build_struct_gep(
-                        self_compiler.runtime_value_type,
-                        var_ptr,
-                        0,
-                        "compile_expr_var_tag_ptr",
-                    )
-                    .unwrap();
-                self_compiler
-                    .builder
-                    .build_store(
-                        var_tag_ptr,
-                        self_compiler
-                            .context
-                            .i32_type()
-                            .const_int(Tag::Unit as u64, false),
-                    )
-                    .unwrap();
-                self_compiler
-                    .builder
-                    .build_unconditional_branch(cont_bb)
-                    .unwrap();
-
-                self_compiler.builder.position_at_end(cont_bb);
-            }
+        if let Some((source_ptr, source_name)) = source_var {
+            move_variable(self_compiler, &source_ptr, source_name);
         }
     }
     let call_site = self_compiler
@@ -632,7 +604,10 @@ pub fn create_call_expr<'ctx>(
     let result_val = match call_site.try_as_basic_value() {
         ValueKind::Basic(val) => val,
         ValueKind::Instruction(_) => {
-            return Err(SprsError::Internal { message: "Expected basic value from function call".to_string(), location: None });
+            return Err(SprsError::Internal {
+                message: "Expected basic value from function call".to_string(),
+                location: None,
+            });
         }
     };
     box_return_value(self_compiler, module, return_type, result_val)

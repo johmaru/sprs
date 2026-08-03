@@ -1,6 +1,6 @@
-use crate::front::error::{SprsError, ErrorCode, ErrorCategory, Location};
-use crate::front::span::Span;
 use crate::front::ast;
+use crate::front::error::{ErrorCategory, ErrorCode, Location, SprsError};
+use crate::front::span::Span;
 use crate::front::span::Spanned;
 use crate::front::type_helper;
 use crate::front::type_helper::Type;
@@ -212,7 +212,7 @@ impl<'ctx> Compiler<'ctx> {
         let global_str = module.add_global(
             str_const.get_type(),
             Some(AddressSpace::default()),
-            &global_name,
+            global_name.as_str(),
         );
         global_str.set_initializer(&str_const);
         if is_const {
@@ -266,7 +266,7 @@ pub(crate) const WINDOWS_STR: &str = "Windows";
 pub(crate) const LINUX_STR: &str = "Linux";
 
 pub struct Scope<'ctx> {
-    pub variables: HashMap<String, (BasicValueEnum<'ctx>, Type)>,
+    pub variables: HashMap<String, (BasicValueEnum<'ctx>, Type, bool)>,
     pub var_name: Vec<String>,
 }
 
@@ -328,7 +328,7 @@ impl<'ctx> Compiler<'ctx> {
             let drop_fn = self.get_runtime_fn(module, "__drop")?;
 
             for name in scope.var_name.iter().rev() {
-                if let Some((val, _)) = scope.variables.get(name) {
+                if let Some((val, _, _)) = scope.variables.get(name) {
                     if val.is_pointer_value() {
                         builder_helper::drop_var(self, val.into_pointer_value(), drop_fn, name);
                     }
@@ -338,7 +338,7 @@ impl<'ctx> Compiler<'ctx> {
         Ok(())
     }
 
-    pub fn get_variables(&self, name: &str) -> Option<(BasicValueEnum<'ctx>, Type)> {
+    pub fn get_variables(&self, name: &str) -> Option<(BasicValueEnum<'ctx>, Type, bool)> {
         for scope in self.scopes.iter().rev() {
             if let Some(var) = scope.variables.get(name) {
                 return Some(var.clone());
@@ -347,9 +347,17 @@ impl<'ctx> Compiler<'ctx> {
         None
     }
 
-    pub fn add_variable(&mut self, name: String, value: BasicValueEnum<'ctx>, ty: Type) {
+    pub fn add_variable(
+        &mut self,
+        name: String,
+        value: BasicValueEnum<'ctx>,
+        ty: Type,
+        is_clone_variable: bool,
+    ) {
         if let Some(current_scope) = self.scopes.last_mut() {
-            current_scope.variables.insert(name.clone(), (value, ty));
+            current_scope
+                .variables
+                .insert(name.clone(), (value, ty, is_clone_variable));
             current_scope.var_name.push(name);
         }
     }
@@ -367,7 +375,7 @@ impl<'ctx> Compiler<'ctx> {
 
         for scope in self.scopes.iter().skip(1).rev() {
             for name in scope.var_name.iter().rev() {
-                if let Some((val, _)) = scope.variables.get(name) {
+                if let Some((val, _, _)) = scope.variables.get(name) {
                     if val.is_pointer_value() {
                         vars_to_drop.push((val.into_pointer_value(), name.clone()));
                     }
@@ -438,9 +446,15 @@ impl<'ctx> Compiler<'ctx> {
             .get(struct_name)
             .and_then(|def| def.field_indices.get(field_name).cloned())
             .ok_or_else(|| SprsError::Semantic {
-                code: ErrorCode { category: ErrorCategory::Semantic, number: 7 },
+                code: ErrorCode {
+                    category: ErrorCategory::Semantic,
+                    number: 7,
+                },
                 location: Location::new(String::new(), Span::DUMMY),
-                message: format!("Field '{}' not found in struct '{}'", field_name, struct_name),
+                message: format!(
+                    "Field '{}' not found in struct '{}'",
+                    field_name, struct_name
+                ),
                 help: None,
             })
     }
@@ -454,7 +468,11 @@ impl<'ctx> Compiler<'ctx> {
         create
     }
 
-    pub fn get_runtime_fn(&self, module: &Module<'ctx>, name: &str) -> Result<FunctionValue<'ctx>, SprsError> {
+    pub fn get_runtime_fn(
+        &self,
+        module: &Module<'ctx>,
+        name: &str,
+    ) -> Result<FunctionValue<'ctx>, SprsError> {
         if let Some(func) = module.get_function(name) {
             return Ok(func);
         }
@@ -506,22 +524,22 @@ impl<'ctx> Compiler<'ctx> {
             ),
             "__error_new" => i64_type.fn_type(
                 &[
-                    i32_type.into(),       // error code
-                    i8_ptr_type.into(),    // message ptr (may be null)
-                    i64_type.into(),       // message length
+                    i32_type.into(),    // error code
+                    i8_ptr_type.into(), // message ptr (may be null)
+                    i64_type.into(),    // message length
                 ],
                 false,
             ),
             "__is_error" => i32_type.fn_type(
-                &[i64_type.into()],       // slab handle (data field)
+                &[i64_type.into()], // slab handle (data field)
                 false,
             ),
             "__error_code" => i32_type.fn_type(
-                &[i64_type.into()],       // slab handle
+                &[i64_type.into()], // slab handle
                 false,
             ),
             "__error_message" => i64_type.fn_type(
-                &[i64_type.into()],       // slab handle
+                &[i64_type.into()], // slab handle
                 false,
             ),
             "__panic" => void_type.fn_type(&[i8_ptr_type.into()], false),
@@ -554,7 +572,17 @@ impl<'ctx> Compiler<'ctx> {
                 ],
                 false,
             ),
-            _ => return Err(SprsError::Semantic { code: ErrorCode { category: ErrorCategory::Semantic, number: 6 }, location: Location::new(String::new(), Span::DUMMY), message: format!("Unknown runtime function: {}", name), help: None }),
+            _ => {
+                return Err(SprsError::Semantic {
+                    code: ErrorCode {
+                        category: ErrorCategory::Semantic,
+                        number: 6,
+                    },
+                    location: Location::new(String::new(), Span::DUMMY),
+                    message: format!("Unknown runtime function: {}", name),
+                    help: None,
+                });
+            }
         };
 
         Ok(module.add_function(name, fn_type, None))

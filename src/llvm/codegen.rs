@@ -1,19 +1,19 @@
 use crate::front::ast;
-use crate::front::span::Spanned;
+use crate::front::error::{ErrorCategory, ErrorCode, Location, SprsError};
 use crate::front::span::Span;
-use crate::front::error::{SprsError, ErrorCode, ErrorCategory, Location};
+use crate::front::span::Spanned;
 use crate::front::type_helper;
 use crate::front::type_helper::Type;
 use crate::llvm::builder_helper;
 use crate::llvm::builder_helper::Comparison;
 use crate::llvm::builder_helper::EqNeq;
 use crate::llvm::builder_helper::UpDown;
+use crate::llvm::compiler::{Compiler, OS, Tag};
+use crate::naming;
 use inkwell::AddressSpace;
 use inkwell::module::Module;
 use inkwell::types::{BasicMetadataTypeEnum, BasicTypeEnum};
 use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
-use crate::llvm::compiler::{Compiler, OS, Tag};
-use crate::naming;
 
 impl<'ctx> Compiler<'ctx> {
     pub fn get_known_type_from_expr(&self, expr: &Spanned<ast::Expr>) -> Result<String, SprsError> {
@@ -33,7 +33,10 @@ impl<'ctx> Compiler<'ctx> {
 
             ast::Expr::Number(_) => Ok("default(i64)".to_string()),
             _ => Err(SprsError::Semantic {
-                code: ErrorCode { category: ErrorCategory::Semantic, number: 1 },
+                code: ErrorCode {
+                    category: ErrorCategory::Semantic,
+                    number: 1,
+                },
                 location: Location::new(String::new(), expr.span),
                 message: format!("Unknown type expression for known type: {:?}", expr),
                 help: None,
@@ -57,7 +60,7 @@ impl<'ctx> Compiler<'ctx> {
             ast::Expr::Unit() => Type::Unit,
             ast::Expr::Var(name) => self
                 .get_variables(name)
-                .map(|(_, ty)| ty.clone())
+                .map(|(_, ty, _)| ty)
                 .unwrap_or(Type::Any),
             ast::Expr::TypeI8 => Type::TypeI8,
             ast::Expr::TypeU8 => Type::TypeU8,
@@ -75,7 +78,9 @@ impl<'ctx> Compiler<'ctx> {
             | ast::Expr::Minus(lhs, _)
             | ast::Expr::Div(lhs, _)
             | ast::Expr::Mod(lhs, _) => self.infer_type(lhs),
-            ast::Expr::Increment(value) | ast::Expr::Decrement(value) | ast::Expr::Neg(value) => self.infer_type(value),
+            ast::Expr::Increment(value) | ast::Expr::Decrement(value) | ast::Expr::Neg(value) => {
+                self.infer_type(value)
+            }
             ast::Expr::If(_, then, if_else) => {
                 let then_ty = self.infer_type(then);
                 let else_ty = self.infer_type(if_else);
@@ -133,7 +138,10 @@ impl<'ctx> Compiler<'ctx> {
 
         let fn_val = module
             .get_function(func_name)
-            .ok_or_else(|| SprsError::Internal { message: format!("Function {} not declared", func_name), location: None })?;
+            .ok_or_else(|| SprsError::Internal {
+                message: format!("Function {} not declared", func_name),
+                location: None,
+            })?;
 
         let entry = self.context.append_basic_block(fn_val, "entry");
         self.builder.position_at_end(entry);
@@ -143,15 +151,24 @@ impl<'ctx> Compiler<'ctx> {
 
         for (idx, param) in func.params.iter().enumerate() {
             let arg_val = fn_val.get_nth_param(idx as u32).unwrap();
+            // Params are declared as pointers to SprsValue (see declare_fn_prototype).
+            let arg_ptr = arg_val.into_pointer_value();
 
             let alloca = self
                 .builder
                 .build_alloca(self.runtime_value_type, &param.ident)
                 .unwrap();
+            let loaded = self
+                .builder
+                .build_load(self.runtime_value_type, arg_ptr, &param.ident)
+                .unwrap();
             self.builder
-                .build_store(alloca, arg_val)
-                .map_err(|e| SprsError::Internal { message: e.to_string(), location: None })?;
-            self.add_variable(param.ident.clone(), alloca.into(), Type::Any);
+                .build_store(alloca, loaded)
+                .map_err(|e| SprsError::Internal {
+                    message: e.to_string(),
+                    location: None,
+                })?;
+            self.add_variable(param.ident.clone(), alloca.into(), Type::Any, false);
         }
 
         self.compile_block(&func.blk, module)?;
@@ -171,7 +188,10 @@ impl<'ctx> Compiler<'ctx> {
             unsafe {
                 fn_val.delete();
             }
-            Err(SprsError::Internal { message: "Invalid generated function".to_string(), location: None })
+            Err(SprsError::Internal {
+                message: "Invalid generated function".to_string(),
+                location: None,
+            })
         }
     }
 
@@ -183,14 +203,20 @@ impl<'ctx> Compiler<'ctx> {
         module: &Module<'ctx>,
     ) -> Result<(), SprsError> {
         let ret_val = if let Some(expr) = expr_opt {
-            let ptr = self.compile_expr(expr, module)?.into_pointer_value();
+            let mut ptr = self.compile_expr(expr, module)?.into_pointer_value();
 
             if let ast::Expr::Var(name) = &expr.node {
-                let var_val = self.get_variables(name).map(|(v, _)| v);
-                if let Some(val) = var_val {
-                    let val_ptr = val.into_pointer_value();
+                let (val, _, always_clone) = self.get_variables(name).unwrap();
+                let val_ptr = val.into_pointer_value();
+
+                if always_clone {
+                    ptr = builder_helper::clone_runtime_value(self, val_ptr, module)?;
+                } else {
+                    // Copy first, then invalidate the binding. Unit-ing before
+                    // convert_return_value would return Unit.
+                    ptr = builder_helper::var_load_at_init_variable(self, val_ptr, "ret_move")?;
                     builder_helper::var_return_store(self, &val_ptr.into(), name);
-                }
+                };
             }
 
             let current_fn = self.function_signatures.unwrap();
@@ -226,7 +252,10 @@ impl<'ctx> Compiler<'ctx> {
                 let llvm_int_ty = type_helper::is_int_type_in_llvm();
                 if llvm_int_ty.contains(&expr_type) {
                     return Err(SprsError::Type {
-                        code: ErrorCode { category: ErrorCategory::Type, number: 1 },
+                        code: ErrorCode {
+                            category: ErrorCategory::Type,
+                            number: 1,
+                        },
                         location: Location::new(String::new(), expr.span),
                         message: format!(
                             "Type mismatch: Function expects pointer type (e.g. str) but got {:?} from expression {:?}",
@@ -242,7 +271,10 @@ impl<'ctx> Compiler<'ctx> {
                 if width == 1 {
                     if expr_type != Type::Bool {
                         return Err(SprsError::Type {
-                            code: ErrorCode { category: ErrorCategory::Type, number: 2 },
+                            code: ErrorCode {
+                                category: ErrorCategory::Type,
+                                number: 2,
+                            },
                             location: Location::new(String::new(), expr.span),
                             message: format!(
                                 "Type mismatch: Function expects Bool but got {:?} from expression {:?}",
@@ -257,7 +289,10 @@ impl<'ctx> Compiler<'ctx> {
                     let llvm_not_int = type_helper::not_int_type_in_llvm();
                     if llvm_not_int.contains(&expr_type) {
                         return Err(SprsError::Type {
-                            code: ErrorCode { category: ErrorCategory::Type, number: 3 },
+                            code: ErrorCode {
+                                category: ErrorCategory::Type,
+                                number: 3,
+                            },
                             location: Location::new(String::new(), expr.span),
                             message: format!(
                                 "Type mismatch: Function expects Int type but got {:?} from expression {:?}",
@@ -273,7 +308,10 @@ impl<'ctx> Compiler<'ctx> {
                 let llvm_float_ty = type_helper::is_float_type_in_llvm();
                 if !llvm_float_ty.contains(&expr_type) {
                     return Err(SprsError::Type {
-                        code: ErrorCode { category: ErrorCategory::Type, number: 4 },
+                        code: ErrorCode {
+                            category: ErrorCategory::Type,
+                            number: 4,
+                        },
                         location: Location::new(String::new(), expr.span),
                         message: format!(
                             "Type mismatch: Function expects Float type but got {:?} from expression {:?}",
@@ -345,7 +383,10 @@ impl<'ctx> Compiler<'ctx> {
                         .unwrap()
                         .into()
                 } else {
-                    return Err(SprsError::Internal { message: "Unsupported return type conversion".to_string(), location: None });
+                    return Err(SprsError::Internal {
+                        message: "Unsupported return type conversion".to_string(),
+                        location: None,
+                    });
                 };
                 Ok(Some(casted_val))
             }
@@ -376,23 +417,43 @@ impl<'ctx> Compiler<'ctx> {
                 ast::Stmt::Var(var) => {
                     let unit_expr = Spanned::new(ast::Expr::Unit(), Span::DUMMY);
                     let init_expr = var.expr.as_ref().unwrap_or(&unit_expr);
-                    let init_val = self
-                        .compile_expr(init_expr, module)?
-                        .into_pointer_value();
+                    let compiled_init_val = self.compile_expr(init_expr, module)?.into_pointer_value();
 
                     let var_type = self.infer_type(init_expr);
 
-                    builder_helper::var_load_at_init_variable(self, init_val, &var.ident)?;
+                    let init_val = if let ast::Expr::Var(src_val_name) = &init_expr.node {
+                        let (src_val, _, src_always_clone) = self
+                            .get_variables(src_val_name)
+                            .ok_or_else(|| format!("Undefined variable: {}", src_val_name))?;
 
-                    if let Some(expr) = &var.expr {
-                        if let ast::Expr::Var(src_val_name) = &expr.node {
-                            let var_val = self.get_variables(src_val_name).map(|(v, _)| v);
-                            if let Some(val) = var_val {
-                                builder_helper::move_variable(self, &val, &var.ident);
-                            }
+                        if src_always_clone {
+                            builder_helper::clone_runtime_value(
+                                self,
+                                src_val.into_pointer_value(),
+                                module,
+                            )?
+                        } else {
+                            let copied_val = builder_helper::var_load_at_init_variable(
+                                self,
+                                compiled_init_val,
+                                &var.ident,
+                            )?;
+                            builder_helper::move_variable(self, &src_val, &var.ident);
+                            copied_val
                         }
-                    }
-                    self.add_variable(var.ident.clone(), init_val.into(), var_type);
+                    } else {
+                        builder_helper::var_load_at_init_variable(
+                            self,
+                            compiled_init_val,
+                            &var.ident,
+                        )?
+                    };
+                    self.add_variable(
+                        var.ident.clone(),
+                        init_val.into(),
+                        var_type,
+                        var.always_clone,
+                    );
                 }
                 ast::Stmt::Return(expr_opt) => {
                     self.compile_return(expr_opt, module)?;
@@ -416,11 +477,38 @@ impl<'ctx> Compiler<'ctx> {
                     self.register_enum(enm, &module, false);
                 }
                 ast::Stmt::Assign(assign_stmt) => {
-                    let val_ptr = self
+                    // Self-assign is a no-op: drop-then-load on the same binding
+                    // would destroy the value.
+                    if let ast::Expr::Var(src_val_name) = &assign_stmt.expr.node {
+                        if src_val_name == &assign_stmt.name {
+                            continue;
+                        }
+                    }
+
+                    let mut val_ptr = self
                         .compile_expr(&assign_stmt.expr, module)?
                         .into_pointer_value();
 
-                    let (target_val, _) = self
+                    // For non-cp sources, move must happen AFTER we copy bits into the
+                    // target. Moving first would Unit the source while val_ptr still
+                    // aliases it, so the assignment stores Unit.
+                    let mut source_to_move: Option<(BasicValueEnum<'ctx>, String)> = None;
+                    if let ast::Expr::Var(src_val_name) = &assign_stmt.expr.node {
+                        let (val, _, src_cp) = self
+                            .get_variables(src_val_name)
+                            .ok_or_else(|| format!("Undefined variable: {}", src_val_name))?;
+                        if src_cp {
+                            val_ptr = builder_helper::clone_runtime_value(
+                                self,
+                                val.into_pointer_value(),
+                                module,
+                            )?;
+                        } else {
+                            source_to_move = Some((val, src_val_name.clone()));
+                        }
+                    }
+
+                    let (target_val, _, _) = self
                         .get_variables(&assign_stmt.name)
                         .ok_or_else(|| format!("Undefined variable: {}", &assign_stmt.name))?;
 
@@ -437,11 +525,8 @@ impl<'ctx> Compiler<'ctx> {
                         .build_store(target_ptr, new_val)
                         .map_err(|e| e.to_string())?;
 
-                    if let ast::Expr::Var(src_val_name) = &assign_stmt.expr.node {
-                        let var_val = self.get_variables(src_val_name).map(|(v, _)| v);
-                        if let Some(val) = var_val {
-                            builder_helper::move_variable(self, &val, &assign_stmt.name);
-                        }
+                    if let Some((val, src_name)) = source_to_move {
+                        builder_helper::move_variable(self, &val, &src_name);
                     }
                 }
             }
@@ -474,7 +559,7 @@ impl<'ctx> Compiler<'ctx> {
             ast::Expr::Str(str) => Ok(builder_helper::create_string(self, str, module)?),
             ast::Expr::Bool(boolean) => Ok(builder_helper::create_bool(self, boolean)?),
             ast::Expr::Var(ident) => {
-                if let Some((var_addr, _)) = self.get_variables(ident) {
+                if let Some((var_addr, _, _)) = self.get_variables(ident) {
                     Ok(var_addr)
                 } else {
                     Err(SprsError::Semantic {
@@ -491,6 +576,7 @@ impl<'ctx> Compiler<'ctx> {
                     "println" => Ok(builder_helper::call_builtin_macro_println(self, args, module)?),
                     "list_push" => Ok(builder_helper::call_builtin_macro_list_push(self, args, module)?),
                     "clone" => Ok(builder_helper::call_builtin_macro_clone(self, args, module)?),
+                    "move" => Ok(builder_helper::call_builtin_macro_move(self, args, module)?),
                     "cast" => Ok(builder_helper::call_builtin_macro_cast(self, args, module)?),
                     "lshift" => Ok(builder_helper::call_builtin_macro_lshift(self, args, module)?),
                     "rshift" => Ok(builder_helper::call_builtin_macro_rshift(self, args, module)?),
@@ -517,7 +603,7 @@ impl<'ctx> Compiler<'ctx> {
                 if let ast::Expr::Var(name) = &lhs.node {
                     if self.enum_names.contains(name) {
                         let full_name = format!("{}.{}", name, rhs);
-                        if let Some((var_addr, _)) = self.get_variables(&full_name) {
+                        if let Some((var_addr, _, _)) = self.get_variables(&full_name) {
                             return Ok(var_addr);
                         } else {
                             return Err(SprsError::Semantic {

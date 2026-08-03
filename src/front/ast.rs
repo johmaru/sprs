@@ -3,36 +3,36 @@ use crate::front::type_helper::Type;
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum Expr {
-    Number(i64),                             // Value
-    Float(f64),                              // Value
-    Str(String),                             // Value
-    Bool(bool),                              // Value
-    Add(Box<Spanned<Expr>>, Box<Spanned<Expr>>),               // Lhs, Rhs
-    Mul(Box<Spanned<Expr>>, Box<Spanned<Expr>>),               // Lhs, Rhs
-    Minus(Box<Spanned<Expr>>, Box<Spanned<Expr>>),             // Lhs, Rhs
-    Div(Box<Spanned<Expr>>, Box<Spanned<Expr>>),               // Lhs, Rhs
-    Mod(Box<Spanned<Expr>>, Box<Spanned<Expr>>),               // Lhs, Rhs
-    Eq(Box<Spanned<Expr>>, Box<Spanned<Expr>>),                // Lhs, Rhs
-    Neq(Box<Spanned<Expr>>, Box<Spanned<Expr>>),               // Lhs, Rhs
-    Lt(Box<Spanned<Expr>>, Box<Spanned<Expr>>),                // Lhs, Rhs
-    Gt(Box<Spanned<Expr>>, Box<Spanned<Expr>>),                // Lhs, Rhs
-    Le(Box<Spanned<Expr>>, Box<Spanned<Expr>>),                // Lhs, Rhs
-    Ge(Box<Spanned<Expr>>, Box<Spanned<Expr>>),                // Lhs, Rhs
-    If(Box<Spanned<Expr>>, Box<Spanned<Expr>>, Box<Spanned<Expr>>),     // Cond, Then, Else
-    Call(String, Vec<Spanned<Expr>>, Option<Type>),   // Ident, Args, RetTy
-    Var(String),                             // Ident
-    Increment(Box<Spanned<Expr>>),                    // Ident
-    Decrement(Box<Spanned<Expr>>),                    // Ident
-    Neg(Box<Spanned<Expr>>),                          // Unary minus, e.g. -x
-    List(Vec<Spanned<Expr>>),                         // Elements
-    Range(Box<Spanned<Expr>>, Box<Spanned<Expr>>),             // Start, End
-    Index(Box<Spanned<Expr>>, Box<Spanned<Expr>>),             // Collection, Index
+    Number(i64),                                                    // Value
+    Float(f64),                                                     // Value
+    Str(String),                                                    // Value
+    Bool(bool),                                                     // Value
+    Add(Box<Spanned<Expr>>, Box<Spanned<Expr>>),                    // Lhs, Rhs
+    Mul(Box<Spanned<Expr>>, Box<Spanned<Expr>>),                    // Lhs, Rhs
+    Minus(Box<Spanned<Expr>>, Box<Spanned<Expr>>),                  // Lhs, Rhs
+    Div(Box<Spanned<Expr>>, Box<Spanned<Expr>>),                    // Lhs, Rhs
+    Mod(Box<Spanned<Expr>>, Box<Spanned<Expr>>),                    // Lhs, Rhs
+    Eq(Box<Spanned<Expr>>, Box<Spanned<Expr>>),                     // Lhs, Rhs
+    Neq(Box<Spanned<Expr>>, Box<Spanned<Expr>>),                    // Lhs, Rhs
+    Lt(Box<Spanned<Expr>>, Box<Spanned<Expr>>),                     // Lhs, Rhs
+    Gt(Box<Spanned<Expr>>, Box<Spanned<Expr>>),                     // Lhs, Rhs
+    Le(Box<Spanned<Expr>>, Box<Spanned<Expr>>),                     // Lhs, Rhs
+    Ge(Box<Spanned<Expr>>, Box<Spanned<Expr>>),                     // Lhs, Rhs
+    If(Box<Spanned<Expr>>, Box<Spanned<Expr>>, Box<Spanned<Expr>>), // Cond, Then, Else
+    Call(String, Vec<Spanned<Expr>>, Option<Type>),                 // Ident, Args, RetTy
+    Var(String),                                                    // Ident
+    Increment(Box<Spanned<Expr>>),                                  // Ident
+    Decrement(Box<Spanned<Expr>>),                                  // Ident
+    Neg(Box<Spanned<Expr>>),                                        // Unary minus, e.g. -x
+    List(Vec<Spanned<Expr>>),                                       // Elements
+    Range(Box<Spanned<Expr>>, Box<Spanned<Expr>>),                  // Start, End
+    Index(Box<Spanned<Expr>>, Box<Spanned<Expr>>),                  // Collection, Index
     ModuleAccess(String, String, Vec<Spanned<Expr>>), // Module, functionName, args e.g. module.ident
     FieldAccess(Box<Spanned<Expr>>, String),          // e.g. struct.field
     Unit(),
-    Macro(String, Vec<Spanned<Expr>>),                   // Ident, Args e.g. @lshift(x, 4)
+    Macro(String, Vec<Spanned<Expr>>), // Ident, Args e.g. @lshift(x, 4)
     StructInit(String, Vec<(String, Spanned<Expr>)>), // StructName, Fields
-    Try(Box<Spanned<Expr>>),                    // Error propagation: expr?
+    Try(Box<Spanned<Expr>>),           // Error propagation: expr?
 
     // System types
     TypeI8,
@@ -82,6 +82,7 @@ pub struct Function {
 pub struct VarDecl {
     pub ident: String,
     pub expr: Option<Spanned<Expr>>,
+    pub always_clone: bool,
     pub span: Span,
 }
 #[derive(Debug, PartialEq)]

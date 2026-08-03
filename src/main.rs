@@ -22,8 +22,8 @@
 //!
 //! 1. Install Rust and WSL2(Ubuntu).
 //! 2. ```sudo apt update && sudo apt install -y lsb-release wget software-properties-common gnupg```
-//! 3. ```wget https://apt.llvm.org/llvm.sh && chmod +x llvm.sh && sudo ./llvm.sh 18 all```
-//! 4. ```sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-18 100 && sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-18 100 && sudo update-alternatives --install /usr/bin/llvm-config llvm-config /usr/bin/llvm-config-18 100 && sudo update-alternatives --install /usr/bin/llvm-as llvm-as /usr/bin/llvm-as-18 100 && sudo update-alternatives --install /usr/bin/llc llc /usr/bin/llc-18 100```
+//! 3. ```wget https://apt.llvm.org/llvm.sh && chmod +x llvm.sh && sudo ./llvm.sh 22 all```
+//! 4. ```sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-22 100 && sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-22 100 && sudo update-alternatives --install /usr/bin/llvm-config llvm-config /usr/bin/llvm-config-22 100 && sudo update-alternatives --install /usr/bin/llvm-as llvm-as /usr/bin/llvm-as-22 100 && sudo update-alternatives --install /usr/bin/llc llc /usr/bin/llc-22 100```
 //! 5. ```sudo apt-get install zlib1g-dev libzstd-dev && sudo apt-get install libncurses5-dev libxml2-dev```
 //! 6. Clone this repository and open it in VSCode.
 //! 7. Install the Rust extension for VSCode.
@@ -360,18 +360,17 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Err("invalid command".into());
     }
 
-    let _path = argv[0].clone();
-    let command = argv[1].clone();
+    let command = argv[1].as_str();
 
-    match command.as_str() {
+    match command {
         "init" => {
-            let mut proj_name: Option<String> = None;
+            let mut proj_name: Option<&String> = None;
             let mut force = false;
             if argc > 2 {
                 let mut iter = argv[2..].iter().peekable();
                 while let Some(arg) = iter.next() {
                     if arg == "--name" {
-                        proj_name = iter.next().cloned();
+                        proj_name = iter.next();
                         if proj_name.is_none() {
                             eprintln!("Usage: {} init --name <project_name>", naming::LANG_NAME);
                             return Err("missing value for --name".into());
@@ -390,26 +389,26 @@ fn main() -> Result<(), Box<dyn Error>> {
             if proj_name.is_none() {
                 println!("Initializing project without arguments.");
             }
-            command_helper::init_project(proj_name.as_deref(), force)?;
+            command_helper::init_project(proj_name.map(|s| s.as_str()), force)?;
             Ok(())
         }
         "build" | "run" | "debug" => {
-            let mut dest: Option<String> = None;
+            let mut dest: Option<&String> = None;
             let mut error_format: Option<crate::front::error::ErrorFormat> = None;
             if argc > 2 {
                 let mut iter = argv[2..].iter();
                 while let Some(arg) = iter.next() {
                     if arg == "--dest" {
-                        dest = iter.next().cloned();
+                        dest = iter.next();
                         if dest.is_none() {
                             eprintln!("Usage: {} {} --dest <path>", naming::LANG_NAME, command);
                             return Err("missing value for --dest".into());
                         }
                     } else if arg == "--error-format" {
-                        let fmt_str = iter.next().cloned();
+                        let fmt_str = iter.next();
                         match fmt_str {
                             Some(s) => {
-                                error_format = Some(crate::front::error::ErrorFormat::from_str(&s)
+                                error_format = Some(crate::front::error::ErrorFormat::from_str(s)
                                     .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?);
                             }
                             None => {
@@ -423,17 +422,17 @@ fn main() -> Result<(), Box<dyn Error>> {
                     }
                 }
             }
-            let mode = match command.as_str() {
+            let mode = match command {
                 "build" => llvm_executer::ExecuteMode::Build,
                 "run" => llvm_executer::ExecuteMode::Run,
                 "debug" => llvm_executer::ExecuteMode::Debug,
                 _ => unreachable!(),
             };
-            llvm_executer::build_and_run(dest.as_deref(), mode, error_format)?;
+            llvm_executer::build_and_run(dest.map(|s| s.as_str()), mode, error_format)?;
             Ok(())
         }
         "help" => {
-            let args = get_all_arguments(argv.clone());
+            let args = get_all_arguments(&argv);
             if args.is_empty() {
                 help_print(HelpCommand::NoArg);
             } else if args.contains(&"--all".to_string()) {

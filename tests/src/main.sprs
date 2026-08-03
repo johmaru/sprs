@@ -60,6 +60,14 @@ fn main() {
     @println(variables.var_in_loop());
     @println(variables.var_math());
 
+    @println("=== cp / @move ===");
+    @println(variables.cp_print_twice());
+    @println(variables.cp_move_invalidates());
+    @println(variables.cp_assign_keeps_source());
+    @println(variables.assign_moves_string());
+    @println(variables.self_assign_string());
+    @println(variables.cp_call_twice());
+
     @println("=== Functions ===");
     # XFAIL: call_with_args (Var+Var in add function)
     # XFAIL: nested_calls (uses add)

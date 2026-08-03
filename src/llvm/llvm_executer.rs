@@ -57,14 +57,14 @@ pub fn build_and_run(dest: Option<&str>, mode: ExecuteMode, cli_error_format: Op
 
     let src_dir = config
         .as_ref()
-        .map(|c| c.src_dir.clone())
-        .unwrap_or_else(|| "src".to_string());
-    validate_subpath(&src_dir)?;
+        .map(|c| c.src_dir.as_str())
+        .unwrap_or("src");
+    validate_subpath(src_dir)?;
     let src_path = format!("{}/{}", base, src_dir);
 
-    let mut compiler = compiler::Compiler::new(&context, builder, src_path.clone());
-
     let path = format!("{}/{}", src_path, naming::SOURCE_FILE);
+    let mut compiler = compiler::Compiler::new(&context, builder, src_path);
+
     let proj_name = config
         .as_ref()
         .map(|c| c.name.clone())
@@ -72,9 +72,9 @@ pub fn build_and_run(dest: Option<&str>, mode: ExecuteMode, cli_error_format: Op
     validate_name(&proj_name)?;
     let out_dir_raw = config
         .as_ref()
-        .map(|c| c.out_dir.clone())
-        .unwrap_or_else(|| "build".to_string());
-    validate_subpath(&out_dir_raw)?;
+        .map(|c| c.out_dir.as_str())
+        .unwrap_or("build");
+    validate_subpath(out_dir_raw)?;
     let out_dir = format!("{}/{}", base, out_dir_raw);
 
     if !Path::new(&out_dir).exists() {
@@ -131,8 +131,8 @@ pub fn build_and_run(dest: Option<&str>, mode: ExecuteMode, cli_error_format: Op
         if let Err(e) = module.print_to_file(Path::new(&ll_filename)) {
             eprintln!("Failed to write LLVM IR to {}: {}", ll_filename, e);
         }
-        temp_ll_files.push(ll_filename.clone());
         println!("Generated: {}", ll_filename);
+        temp_ll_files.push(ll_filename);
 
         let filename = format!("{}/{}.o", out_dir, name);
 
@@ -189,7 +189,7 @@ pub fn build_and_run(dest: Option<&str>, mode: ExecuteMode, cli_error_format: Op
         compiler::OS::Windows => {
             format!("{}.exe", proj_name)
         }
-        _ => proj_name.clone(),
+        _ => proj_name,
     };
 
     let mut args = object_files.clone();

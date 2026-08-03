@@ -69,6 +69,7 @@ extern {
         Public => Token::Public,
         Enum => Token::Enum,
         Struct => Token::Struct,
+        Copy => Token::Copy,
 
         // System types
         TypeInt => Token::TypeInt,
@@ -322,8 +323,9 @@ StmtTail: Option<Spanned<Expr>> = {
 
 
 VarDecl: VarDecl = {
- <start:@L> Var <id:Ident> Assign <e:Expr> Semi <end:@R> => VarDecl { ident: id, expr: Some(e), span: Span::new(start, end) },
- <start:@L> Var <id:Ident> Semi <end:@R> => VarDecl { ident: id, expr: None, span: Span::new(start, end) },
+ <start:@L> Var <id:Ident> Assign <e:Expr> Semi <end:@R> => VarDecl { ident: id, expr: Some(e), always_clone: false, span: Span::new(start, end) },
+ <start:@L> Var <id:Ident> Semi <end:@R> => VarDecl { ident: id, expr: None, always_clone: false, span: Span::new(start, end) },
+ <start:@L> Copy Var <id:Ident> Assign <e:Expr> Semi <end:@R> => VarDecl { ident: id, expr: Some(e), always_clone: true, span: Span::new(start, end) },
 };
 
 Ident: String = <tok:IDENT> =>? {

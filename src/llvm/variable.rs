@@ -1,10 +1,10 @@
 use crate::front::error::SprsError;
-use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
+use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue, ValueKind};
 
 use crate::llvm::compiler::{Compiler, Tag};
 
-use crate::llvm::value::create_entry_block_alloca;
 use crate::llvm::builder_helper::{BuilderExt, ContextExt};
+use crate::llvm::value::create_entry_block_alloca;
 
 // A runtime move system for variables that hold heap data (strings, lists, ranges)
 // When passing such variables to functions, we need to "move" them by resetting their tag to Unit
@@ -57,6 +57,64 @@ pub fn move_variable<'ctx>(
         .build_unconditional_branch(cont_bb)
         .unwrap();
     self_compiler.builder.position_at_end(cont_bb);
+}
+
+pub fn clone_runtime_value<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+    src_ptr: PointerValue<'ctx>,
+    module: &inkwell::module::Module<'ctx>,
+) -> Result<PointerValue<'ctx>, SprsError> {
+    let tag_ptr = self_compiler
+        .builder
+        .build_struct_gep(
+            self_compiler.runtime_value_type,
+            src_ptr,
+            0,
+            "clone_arg_tag_ptr",
+        )
+        .unwrap();
+    let tag = self_compiler
+        .builder
+        .build_load(self_compiler.context.i32_type(), tag_ptr, "clone_arg_tag")
+        .unwrap()
+        .into_int_value();
+
+    let data_ptr = self_compiler
+        .builder
+        .build_struct_gep(
+            self_compiler.runtime_value_type,
+            src_ptr,
+            1,
+            "clone_arg_data_ptr",
+        )
+        .unwrap();
+    let data = self_compiler
+        .builder
+        .build_load(self_compiler.context.i64_type(), data_ptr, "clone_arg_data")
+        .unwrap()
+        .into_int_value();
+
+    let clone_fn = self_compiler.get_runtime_fn(module, "__clone")?;
+    let call_site = self_compiler
+        .builder
+        .build_call(clone_fn, &[tag.into(), data.into()], "clone_call")
+        .unwrap();
+    let result_val = match call_site.try_as_basic_value() {
+        ValueKind::Basic(val) => Ok(val),
+        ValueKind::Instruction(_) => Err(SprsError::Internal {
+            message: "Expected basic value from clone function".to_string(),
+            location: None,
+        }),
+    };
+
+    let result_ptr = create_entry_block_alloca(self_compiler, "clone_res_alloc")?;
+
+    self_compiler
+        .builder
+        .build_store(result_ptr, result_val?)
+        .unwrap();
+
+    Ok(result_ptr.into())
 }
 
 pub fn var_load_at_init_variable<'ctx>(

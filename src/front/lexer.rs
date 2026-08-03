@@ -46,6 +46,7 @@ pub enum Token {
     Public,
     Enum,
     Struct,
+    Copy,
 
     // System types
     TypeInt,
@@ -170,7 +171,8 @@ enum RawTok {
     Enum,
     #[token("struct")]
     Struct,
-
+    #[token("cp")]
+    Copy,
     // System types
     #[token("int")]
     TypeInt,
@@ -272,17 +274,11 @@ impl<'input> Iterator for Lexer<'input> {
             RawTok::MacroIdent(name) => Token::Macro(name),
             RawTok::Num => match text.parse::<i64>() {
                 Ok(n) => Token::Num(n),
-                Err(e) => return Some(Err(format!(
-                    "invalid integer literal '{}': {}",
-                    text, e
-                ))),
+                Err(e) => return Some(Err(format!("invalid integer literal '{}': {}", text, e))),
             },
             RawTok::Float => match text.parse::<f64>() {
                 Ok(f) => Token::Float(f),
-                Err(e) => return Some(Err(format!(
-                    "invalid float literal '{}': {}",
-                    text, e
-                ))),
+                Err(e) => return Some(Err(format!("invalid float literal '{}': {}", text, e))),
             },
             RawTok::True => Token::Bool(true),
             RawTok::False => Token::Bool(false),
@@ -297,6 +293,7 @@ impl<'input> Iterator for Lexer<'input> {
             RawTok::Enum => Token::Enum,
             RawTok::Struct => Token::Struct,
             RawTok::Comment => return self.next(),
+            RawTok::Copy => Token::Copy,
 
             // System types
             RawTok::TypeInt => Token::TypeInt,
