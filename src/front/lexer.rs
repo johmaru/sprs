@@ -53,7 +53,10 @@ pub enum Token {
     TypeFloat,
     TypeBool,
     TypeStr,
+    TypeList,
+    TypeRange,
     TypeUnit,
+    TypeError,
 
     TypeI8,
     TypeU8,
@@ -182,8 +185,14 @@ enum RawTok {
     TypeBool,
     #[token("str")]
     TypeStr,
+    #[token("list")]
+    TypeList,
+    #[token("range")]
+    TypeRange,
     #[token("unit")]
     TypeUnit,
+    #[token("err")]
+    TypeError,
 
     #[token("i8")]
     TypeI8,
@@ -300,7 +309,10 @@ impl<'input> Iterator for Lexer<'input> {
             RawTok::TypeFloat => Token::TypeFloat,
             RawTok::TypeBool => Token::TypeBool,
             RawTok::TypeStr => Token::TypeStr,
+            RawTok::TypeList => Token::TypeList,
+            RawTok::TypeRange => Token::TypeRange,
             RawTok::TypeUnit => Token::TypeUnit,
+            RawTok::TypeError => Token::TypeError,
 
             RawTok::TypeI8 => Token::TypeI8,
             RawTok::TypeU8 => Token::TypeU8,

@@ -76,7 +76,10 @@ extern {
         TypeFloat => Token::TypeFloat,
         TypeBool => Token::TypeBool,
         TypeStr => Token::TypeStr,
+        TypeList => Token::TypeList,
+        TypeRange => Token::TypeRange,
         TypeUnit => Token::TypeUnit,
+        TypeError => Token::TypeError,
 
         TypeI8 => Token::TypeI8,
         TypeU8 => Token::TypeU8,
@@ -229,7 +232,10 @@ Type: Type = {
     TypeFloat => Type::Float,
     TypeBool => Type::Bool,
     TypeStr => Type::Str,
+    TypeList => Type::List,
+    TypeRange => Type::Range,
     TypeUnit => Type::Unit,
+    TypeError => Type::Error,
 
     TypeI8 => Type::TypeI8,
     TypeU8 => Type::TypeU8,

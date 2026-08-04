@@ -113,9 +113,15 @@ impl<'ctx> Compiler<'ctx> {
                     }
                 }
                 "not" => Type::Bool,
+                "err" => Type::Error,
                 "init" => Type::Any,
                 _ => Type::Any,
             },
+            ast::Expr::List(_) => Type::List,
+            ast::Expr::Range(_, _) => Type::Range,
+            // On the continuing path after `?`, the value has the inner type;
+            // Error propagates by returning from the function.
+            ast::Expr::Try(inner) => self.infer_type(inner),
             ast::Expr::StructInit(name, _) => Type::Struct(name.clone()),
             _ => Type::Any,
         }
@@ -417,20 +423,19 @@ impl<'ctx> Compiler<'ctx> {
                 ast::Stmt::Var(var) => {
                     let unit_expr = Spanned::new(ast::Expr::Unit(), Span::DUMMY);
                     let init_expr = var.expr.as_ref().unwrap_or(&unit_expr);
-                    let compiled_init_val = self.compile_expr(init_expr, module)?.into_pointer_value();
+                    let compiled_init_val =
+                        self.compile_expr(init_expr, module)?.into_pointer_value();
 
                     let var_type = self.infer_type(init_expr);
 
                     if var.always_clone {
-                        let expensive_cp = matches!(
-                            var_type,
-                            Type::Struct(_) | Type::Enum
-                        ) || matches!(
-                            &init_expr.node,
-                            ast::Expr::List(_)
-                                | ast::Expr::Range(_, _)
-                                | ast::Expr::StructInit(_, _)
-                        );
+                        let expensive_cp = matches!(var_type, Type::Struct(_) | Type::Enum)
+                            || matches!(
+                                &init_expr.node,
+                                ast::Expr::List(_)
+                                    | ast::Expr::Range(_, _)
+                                    | ast::Expr::StructInit(_, _)
+                            );
                         if expensive_cp {
                             eprintln!(
                                 "warning: `cp` on non-str heap value `{}` deep-copies on every use (Phase 1 recommends `cp` mainly for `str`)",

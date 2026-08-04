@@ -234,6 +234,11 @@ pub enum OS {
     Linux,
 }
 
+/// Runtime value tag stored in `{ i32 tag, i64 data }`.
+///
+/// Discriminants must stay in sync with [`Type::tag_discriminant`]
+/// (`front/type_helper.rs`).
+#[derive(PartialEq, Eq, Hash, Clone, Copy, Debug)]
 pub enum Tag {
     // Dynamic value tags
     Integer = 0, // i64
@@ -260,6 +265,43 @@ pub enum Tag {
     Float16 = 108,
     Float32 = 109,
     Float64 = 110,
+}
+
+impl Tag {
+    pub fn from_type(ty: &Type) -> Option<Tag> {
+        ty.tag_discriminant().and_then(Self::from_discriminant)
+    }
+
+    pub fn to_type(self) -> Type {
+        Type::from_tag_discriminant(self as u32).unwrap_or(Type::Any)
+    }
+
+    pub fn from_discriminant(disc: u32) -> Option<Tag> {
+        match disc {
+            0 => Some(Tag::Integer),
+            1 => Some(Tag::Float),
+            2 => Some(Tag::String),
+            3 => Some(Tag::Boolean),
+            4 => Some(Tag::List),
+            5 => Some(Tag::Range),
+            6 => Some(Tag::Unit),
+            7 => Some(Tag::Enum),
+            8 => Some(Tag::Struct),
+            9 => Some(Tag::Error),
+            100 => Some(Tag::Int8),
+            101 => Some(Tag::Uint8),
+            102 => Some(Tag::Int16),
+            103 => Some(Tag::Uint16),
+            104 => Some(Tag::Int32),
+            105 => Some(Tag::Uint32),
+            106 => Some(Tag::Int64),
+            107 => Some(Tag::Uint64),
+            108 => Some(Tag::Float16),
+            109 => Some(Tag::Float32),
+            110 => Some(Tag::Float64),
+            _ => None,
+        }
+    }
 }
 
 pub(crate) const WINDOWS_STR: &str = "Windows";
@@ -397,14 +439,17 @@ impl<'ctx> Compiler<'ctx> {
 
             let llvm_ty = if let Some(ty) = &field.ty {
                 match ty {
-                    Type::Any => self.runtime_value_type.into(),
+                    Type::Any
+                    | Type::Unit
+                    | Type::List
+                    | Type::Range
+                    | Type::Struct(_)
+                    | Type::Error => self.runtime_value_type.into(),
                     Type::Int => self.context.i64_type().into(),
                     Type::Str => self.context.ptr_type(AddressSpace::default()).into(),
                     Type::Float => self.context.f64_type().into(),
                     Type::Bool => self.context.bool_type().into(),
-                    Type::Unit => self.runtime_value_type.into(),
                     Type::Enum => self.context.i64_type().into(),
-                    Type::Struct(_) => self.runtime_value_type.into(),
 
                     Type::TypeI8 => self.context.i8_type().into(),
                     Type::TypeU8 => self.context.i8_type().into(),
@@ -586,5 +631,51 @@ impl<'ctx> Compiler<'ctx> {
         };
 
         Ok(module.add_function(name, fn_type, None))
+    }
+}
+
+#[cfg(test)]
+mod tag_type_sync_tests {
+    use super::Tag;
+    use crate::front::type_helper::Type;
+
+    #[test]
+    fn type_and_tag_discriminants_stay_aligned() {
+        let cases: &[(Type, Tag)] = &[
+            (Type::Int, Tag::Integer),
+            (Type::Float, Tag::Float),
+            (Type::Str, Tag::String),
+            (Type::Bool, Tag::Boolean),
+            (Type::List, Tag::List),
+            (Type::Range, Tag::Range),
+            (Type::Unit, Tag::Unit),
+            (Type::Enum, Tag::Enum),
+            (Type::Struct("Point".into()), Tag::Struct),
+            (Type::Error, Tag::Error),
+            (Type::TypeI8, Tag::Int8),
+            (Type::TypeU8, Tag::Uint8),
+            (Type::TypeI16, Tag::Int16),
+            (Type::TypeU16, Tag::Uint16),
+            (Type::TypeI32, Tag::Int32),
+            (Type::TypeU32, Tag::Uint32),
+            (Type::TypeI64, Tag::Int64),
+            (Type::TypeU64, Tag::Uint64),
+            (Type::TypeF16, Tag::Float16),
+            (Type::TypeF32, Tag::Float32),
+            (Type::TypeF64, Tag::Float64),
+        ];
+
+        for (ty, tag) in cases {
+            assert_eq!(
+                ty.tag_discriminant(),
+                Some(*tag as u32),
+                "Type::{ty:?} discriminant mismatch"
+            );
+            assert_eq!(Tag::from_type(ty), Some(*tag));
+            assert_eq!(tag.to_type().tag_discriminant(), Some(*tag as u32));
+        }
+
+        assert_eq!(Type::Any.tag_discriminant(), None);
+        assert_eq!(Tag::from_type(&Type::Any), None);
     }
 }
