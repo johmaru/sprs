@@ -51,6 +51,72 @@ fn h() >> err { return @error(100, "x"); }
     }
 
     #[test]
+    fn parses_app_type_annotations() {
+        let src = r#"
+fn f(xs >> List(int)) >> List(int) { return xs; }
+fn g() >> Result(int, err) { return 1; }
+fn h(xs >> List()) >> list { return xs; }
+"#;
+        let items = parse_only(src, "test.sprs").expect("parse");
+
+        let list_int = Type::App("List".into(), vec![Type::Int]);
+        let result_int_err = Type::App("Result".into(), vec![Type::Int, Type::Error]);
+
+        match &items[0] {
+            Item::FunctionItem(f) => {
+                assert_eq!(f.ret_ty.as_ref(), Some(&list_int));
+                assert_eq!(
+                    f.params[0].ty.as_ref(),
+                    Some(&TypeAnnot {
+                        ty: list_int.clone(),
+                        ambi: false
+                    })
+                );
+            }
+            other => panic!("expected f, got {:?}", other),
+        }
+        match &items[1] {
+            Item::FunctionItem(f) => {
+                assert_eq!(f.ret_ty.as_ref(), Some(&result_int_err));
+            }
+            other => panic!("expected g, got {:?}", other),
+        }
+        match &items[2] {
+            Item::FunctionItem(f) => {
+                assert_eq!(
+                    f.ret_ty.as_ref(),
+                    Some(&Type::List),
+                    "flat list keyword still parses"
+                );
+                assert_eq!(
+                    f.params[0].ty.as_ref(),
+                    Some(&TypeAnnot {
+                        ty: Type::App("List".into(), vec![]),
+                        ambi: false
+                    })
+                );
+            }
+            other => panic!("expected h, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parses_nested_app_type_annotation() {
+        let src = "fn f(x >> List(Result(int, err))) { return; }\n";
+        let items = parse_only(src, "test.sprs").expect("parse");
+        let expected = Type::App(
+            "List".into(),
+            vec![Type::App("Result".into(), vec![Type::Int, Type::Error])],
+        );
+        match &items[0] {
+            Item::FunctionItem(f) => {
+                assert_eq!(f.params[0].ty.as_ref().map(|a| &a.ty), Some(&expected));
+            }
+            other => panic!("expected function, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn parses_ambi_param_annotation() {
         let src = "fn f(a >> ambi int, b >> int) { a = \"x\"; }\n";
         let items = parse_only(src, "test.sprs").expect("parse");

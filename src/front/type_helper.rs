@@ -30,6 +30,15 @@
 /// | TypeF32         | Float32      | 109          |
 /// | TypeF64         | Float64      | 110          |
 /// | Any             | (none)       | (none)       |
+/// | App(name, args) | (none)       | (none)       |
+/// | Param(name)     | (none)       | (none)       |
+///
+/// `App` / `Param` are compile-time only: inputs to checking and (later)
+/// monomorphization (#29). They are not LLVM types and not runtime tags.
+///
+/// Flat `List` / `Range` / `Error` coexist with parametric forms such as
+/// `App("List", [Int])`. Everyday annotations keep the keywords (`list`,
+/// `err`); `App` is for explicit constructor application in annotations.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Type {
     Any,
@@ -74,6 +83,7 @@ impl Type {
     /// Runtime `Tag` discriminant for this type, if any.
     ///
     /// `Any` has no tag. `Struct(name)` maps to Struct (`8`) regardless of name.
+    /// `App` / `Param` never have a tag.
     /// Values must stay in sync with `Tag` in `llvm/compiler.rs`.
     pub fn tag_discriminant(&self) -> Option<u32> {
         match self {
@@ -108,6 +118,7 @@ impl Type {
     ///
     /// Struct (`8`) becomes `Type::Struct(String::new())` because the struct
     /// name is not stored in the tag.
+    /// There is no discriminant for `App` / `Param`.
     pub fn from_tag_discriminant(disc: u32) -> Option<Type> {
         match disc {
             0 => Some(Type::Int),
@@ -143,6 +154,14 @@ impl Type {
 /// - `Int` ≡ `TypeI64` (language default integer is i64)
 /// - `Float` ≡ `TypeF64` (language default float is f64)
 /// - `Struct` names must match; empty name (from tag recovery) matches any struct
+/// - `App(n1, a1)` ≡ `App(n2, a2)` when names and arities match and each
+///   argument pair is compatible (recursively)
+/// - `Param(n1)` ≡ `Param(n2)` only when names match (no substitution yet; #29)
+/// - Flat monomorphic forms bridge empty / `Any`-arg applications:
+///   - `List` ≡ `App("List", [])` ≡ `App("List", [Any])`
+///   - `Range` ≡ `App("Range", [])` ≡ `App("Range", [Any])`
+///   - `Error` ≡ `App("Error", [])`
+///   `App("List", [Int])` is not compatible with bare `List`
 /// - otherwise exact equality
 pub fn types_compatible(expected: &Type, actual: &Type) -> bool {
     if expected == actual {
@@ -159,6 +178,33 @@ pub fn types_compatible(expected: &Type, actual: &Type) -> bool {
     }
     match (expected, actual) {
         (Type::Struct(a), Type::Struct(b)) => a.is_empty() || b.is_empty() || a == b,
+        (Type::App(n1, a1), Type::App(n2, a2)) => {
+            n1 == n2
+                && a1.len() == a2.len()
+                && a1
+                    .iter()
+                    .zip(a2.iter())
+                    .all(|(x, y)| types_compatible(x, y))
+        }
+        (Type::Param(a), Type::Param(b)) => a == b,
+        (Type::List, Type::App(n, args)) | (Type::App(n, args), Type::List) => {
+            n == "List" && is_untyped_collection_args(args)
+        }
+        (Type::Range, Type::App(n, args)) | (Type::App(n, args), Type::Range) => {
+            n == "Range" && is_untyped_collection_args(args)
+        }
+        (Type::Error, Type::App(n, args)) | (Type::App(n, args), Type::Error) => {
+            n == "Error" && args.is_empty()
+        }
+        _ => false,
+    }
+}
+
+/// Args that still mean “monomorphic / untyped” collection in the flat sense.
+fn is_untyped_collection_args(args: &[Type]) -> bool {
+    match args {
+        [] => true,
+        [Type::Any] => true,
         _ => false,
     }
 }
@@ -217,8 +263,12 @@ mod tests {
         assert_eq!(Type::Range.tag_discriminant(), Some(5));
         assert_eq!(Type::Error.tag_discriminant(), Some(9));
         assert_eq!(Type::Any.tag_discriminant(), None);
+        assert_eq!(Type::App("List".into(), vec![Type::Int]).tag_discriminant(), None);
+        assert_eq!(Type::Param("T".into()).tag_discriminant(), None);
         assert_eq!(Type::from_tag_discriminant(4), Some(Type::List));
         assert_eq!(Type::from_tag_discriminant(9), Some(Type::Error));
+        assert_eq!(Type::from_tag_discriminant(10), None);
+        assert_eq!(Type::from_tag_discriminant(11), None);
     }
 
     #[test]
@@ -237,5 +287,60 @@ mod tests {
             &Type::Struct("A".into()),
             &Type::Struct("B".into())
         ));
+    }
+
+    #[test]
+    fn types_compatible_app_by_name_and_args() {
+        let list_int = Type::App("List".into(), vec![Type::Int]);
+        let list_i64 = Type::App("List".into(), vec![Type::TypeI64]);
+        let list_str = Type::App("List".into(), vec![Type::Str]);
+        let result_int_err = Type::App("Result".into(), vec![Type::Int, Type::Error]);
+        let result_i64_err = Type::App("Result".into(), vec![Type::TypeI64, Type::Error]);
+
+        assert!(types_compatible(&list_int, &list_i64));
+        assert!(!types_compatible(&list_int, &list_str));
+        assert!(types_compatible(&result_int_err, &result_i64_err));
+        assert!(!types_compatible(
+            &result_int_err,
+            &Type::App("Result".into(), vec![Type::Int])
+        ));
+        assert!(!types_compatible(&list_int, &result_int_err));
+    }
+
+    #[test]
+    fn types_compatible_list_bridges_empty_app() {
+        assert!(types_compatible(
+            &Type::List,
+            &Type::App("List".into(), vec![])
+        ));
+        assert!(types_compatible(
+            &Type::App("List".into(), vec![Type::Any]),
+            &Type::List
+        ));
+        assert!(!types_compatible(
+            &Type::List,
+            &Type::App("List".into(), vec![Type::Int])
+        ));
+        assert!(types_compatible(
+            &Type::Error,
+            &Type::App("Error".into(), vec![])
+        ));
+        assert!(!types_compatible(
+            &Type::Error,
+            &Type::App("Error".into(), vec![Type::Int])
+        ));
+    }
+
+    #[test]
+    fn types_compatible_param_same_name_only() {
+        assert!(types_compatible(
+            &Type::Param("T".into()),
+            &Type::Param("T".into())
+        ));
+        assert!(!types_compatible(
+            &Type::Param("T".into()),
+            &Type::Param("U".into())
+        ));
+        assert!(!types_compatible(&Type::Param("T".into()), &Type::Int));
     }
 }

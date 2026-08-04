@@ -255,6 +255,19 @@ Type: Type = {
     TypeF16 => Type::TypeF16,
     TypeF32 => Type::TypeF32,
     TypeF64 => Type::TypeF64,
+
+    // Type application: `List(int)`, `Result(int, err)`, `List()` …
+    // Bare idents are not `Param` yet (generics / #29).
+    <name:Ident> LParen <args:TypeArgList> RParen => Type::App(name, args),
+};
+
+TypeArgList: Vec<Type> = {
+    => vec![],
+    <first:Type> <rest:(Comma <Type>)*> => {
+        let mut v = vec![first];
+        v.extend(rest);
+        v
+    },
 };
 
 

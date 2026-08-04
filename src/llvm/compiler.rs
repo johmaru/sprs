@@ -499,8 +499,8 @@ impl<'ctx> Compiler<'ctx> {
                     Type::Float => self.context.f64_type().into(),
                     Type::Bool => self.context.bool_type().into(),
                     Type::Enum(name) => self.context.i64_type().into(),
-                    Type::App(_, _) => unreachable!(),
-                    Type::Param(_) => unreachable!(),
+                    // App / Param are compile-time only; erase to a runtime slot.
+                    Type::App(_, _) | Type::Param(_) => self.runtime_value_type.into(),
                     Type::TypeI8 => self.context.i8_type().into(),
                     Type::TypeU8 => self.context.i8_type().into(),
                     Type::TypeI16 => self.context.i16_type().into(),
