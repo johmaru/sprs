@@ -190,6 +190,13 @@ var a = "hello";
 
 ```
 
+* `@move(value)`: Move out of a `cp` binding for one use (invalidates the binding)
+examples:
+```rust
+cp var a = "hello";
+@println(@move(a)); # a becomes Unit
+```
+
 * `@cast(value, type)`: Cast the value to the specified type
 examples:
 ```rust
@@ -304,6 +311,15 @@ Assigning or passing one of these values transfers ownership; the old binding be
 (`Unit`). Integers, floats, and bools are copied instead.
 
 Use `@clone(x)` when you need to keep the original value after a move.
+Use `cp var` when the same binding is read many times and writing `@clone` each time is noisy.
+Use `@move(x)` to opt out of that sugar for one use.
+
+Auto-clone from `cp` applies when ownership would otherwise move: function arguments,
+`@println` / `@list_push`, assignment RHS, `var` / `cp var` init from another variable,
+and `return`. It does **not** rewrite every expression operand (for example `a + b`).
+
+**Phase 1:** `cp` is intended mainly for `str`. Other heap types still work, but each use
+deep-copies; the compiler warns when `cp` is clearly applied to `list` / `range` / `struct` / `enum`.
 
 **Move on assignment:**
 ```
@@ -330,6 +346,16 @@ fn main() {
     var greeting = "Hello, Sprs!";
     @println(@clone(greeting)); # prints a copy; greeting stays valid
     @println(greeting);         # still prints: Hello, Sprs!
+}
+```
+
+**Always-clone binding with `cp var`:**
+```
+fn main() {
+    cp var greeting = "Hello, Sprs!";
+    @println(greeting);         # same as @println(@clone(greeting))
+    @println(greeting);         # still valid
+    @println(@move(greeting));  # one-shot real move; greeting becomes Unit
 }
 ```
 

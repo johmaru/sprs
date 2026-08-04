@@ -421,6 +421,24 @@ impl<'ctx> Compiler<'ctx> {
 
                     let var_type = self.infer_type(init_expr);
 
+                    if var.always_clone {
+                        let expensive_cp = matches!(
+                            var_type,
+                            Type::Struct(_) | Type::Enum
+                        ) || matches!(
+                            &init_expr.node,
+                            ast::Expr::List(_)
+                                | ast::Expr::Range(_, _)
+                                | ast::Expr::StructInit(_, _)
+                        );
+                        if expensive_cp {
+                            eprintln!(
+                                "warning: `cp` on non-str heap value `{}` deep-copies on every use (Phase 1 recommends `cp` mainly for `str`)",
+                                var.ident
+                            );
+                        }
+                    }
+
                     let init_val = if let ast::Expr::Var(src_val_name) = &init_expr.node {
                         let (src_val, _, src_always_clone) = self
                             .get_variables(src_val_name)
