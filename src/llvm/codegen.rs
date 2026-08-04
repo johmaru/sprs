@@ -3,7 +3,7 @@ use crate::front::error::{ErrorCategory, ErrorCode, Location, SprsError};
 use crate::front::span::Span;
 use crate::front::span::Spanned;
 use crate::front::type_helper;
-use crate::front::type_helper::Type;
+use crate::front::type_helper::{Type, types_compatible};
 use crate::llvm::builder_helper;
 use crate::llvm::builder_helper::Comparison;
 use crate::llvm::builder_helper::EqNeq;
@@ -51,6 +51,62 @@ impl<'ctx> Compiler<'ctx> {
         }
     }
 
+    /// Check call arity and annotated parameter types against argument expressions.
+    pub fn check_call_arguments(
+        &self,
+        fn_name: &str,
+        args: &[Spanned<ast::Expr>],
+    ) -> Result<(), SprsError> {
+        let Some(sig) = self.fn_types.get(fn_name) else {
+            return Ok(());
+        };
+
+        let expected = sig.params.len();
+        let actual = args.len();
+        if expected != actual {
+            let span = args.first().map(|a| a.span).unwrap_or(Span::DUMMY);
+            return Err(SprsError::Semantic {
+                code: ErrorCode {
+                    category: ErrorCategory::Semantic,
+                    number: 16,
+                },
+                location: Location::new(String::new(), span),
+                message: format!(
+                    "Argument count mismatch: function `{}` expects {} argument(s), found {}",
+                    fn_name, expected, actual
+                ),
+                help: None,
+            });
+        }
+
+        for (idx, (param_annot, arg)) in sig.params.iter().zip(args.iter()).enumerate() {
+            let Some(annot) = param_annot else {
+                continue;
+            };
+            let actual_ty = self.infer_type(arg);
+            if !types_compatible(&annot.ty, &actual_ty) {
+                return Err(SprsError::Type {
+                    code: ErrorCode {
+                        category: ErrorCategory::Type,
+                        number: 7,
+                    },
+                    location: Location::new(String::new(), arg.span),
+                    message: format!(
+                        "Type mismatch: argument {} of `{}` expects {:?}, found {:?}",
+                        idx + 1,
+                        fn_name,
+                        annot.ty,
+                        actual_ty
+                    ),
+                    expected_type: Some(format!("{:?}", annot.ty)),
+                    actual_type: Some(format!("{:?}", actual_ty)),
+                    help: None,
+                });
+            }
+        }
+        Ok(())
+    }
+
     fn infer_type(&self, expr: &Spanned<ast::Expr>) -> Type {
         match &expr.node {
             ast::Expr::Number(_) => Type::Int,
@@ -58,10 +114,7 @@ impl<'ctx> Compiler<'ctx> {
             ast::Expr::Str(_) => Type::Str,
             ast::Expr::Bool(_) => Type::Bool,
             ast::Expr::Unit() => Type::Unit,
-            ast::Expr::Var(name) => self
-                .get_variables(name)
-                .map(|(_, ty, _)| ty)
-                .unwrap_or(Type::Any),
+            ast::Expr::Var(name) => self.get_variables(name).map(|b| b.ty).unwrap_or(Type::Any),
             ast::Expr::TypeI8 => Type::TypeI8,
             ast::Expr::TypeU8 => Type::TypeU8,
             ast::Expr::TypeI16 => Type::TypeI16,
@@ -84,19 +137,27 @@ impl<'ctx> Compiler<'ctx> {
             ast::Expr::If(_, then, if_else) => {
                 let then_ty = self.infer_type(then);
                 let else_ty = self.infer_type(if_else);
-                if then_ty == else_ty {
-                    then_ty
+                if types_compatible(&then_ty, &else_ty) {
+                    // Prefer the more specific side when one is a default-width alias.
+                    if then_ty != Type::Any {
+                        then_ty
+                    } else {
+                        else_ty
+                    }
                 } else {
                     Type::Any
                 }
             }
-            ast::Expr::Call(_, _, ret_ty_opt) => {
-                if let Some(ret_ty) = ret_ty_opt {
-                    ret_ty.clone()
-                } else {
-                    Type::Any
-                }
-            }
+            ast::Expr::Call(name, _) => self
+                .fn_types
+                .get(name)
+                .and_then(|sig| sig.ret_ty.clone())
+                .unwrap_or(Type::Any),
+            ast::Expr::ModuleAccess(_, function_name, _) => self
+                .fn_types
+                .get(function_name)
+                .and_then(|sig| sig.ret_ty.clone())
+                .unwrap_or(Type::Any),
             ast::Expr::Macro(ident, args) => match ident.as_str() {
                 "cast" => {
                     if args.len() >= 2 {
@@ -113,7 +174,7 @@ impl<'ctx> Compiler<'ctx> {
                     }
                 }
                 "not" => Type::Bool,
-                "err" => Type::Error,
+                "error" => Type::Error,
                 "init" => Type::Any,
                 _ => Type::Any,
             },
@@ -155,6 +216,9 @@ impl<'ctx> Compiler<'ctx> {
 
         self.enter_scope();
 
+        let fn_sig = self.fn_types.get(func_name).cloned();
+        self.current_fn_ret_ty = func.ret_ty.clone();
+
         for (idx, param) in func.params.iter().enumerate() {
             let arg_val = fn_val.get_nth_param(idx as u32).unwrap();
             // Params are declared as pointers to SprsValue (see declare_fn_prototype).
@@ -174,7 +238,23 @@ impl<'ctx> Compiler<'ctx> {
                     message: e.to_string(),
                     location: None,
                 })?;
-            self.add_variable(param.ident.clone(), alloca.into(), Type::Any, false);
+            let annot = param.ty.clone().or_else(|| {
+                fn_sig
+                    .as_ref()
+                    .and_then(|s| s.params.get(idx).cloned().flatten())
+            });
+            let (param_ty, is_ambi, is_annotated) = match annot {
+                Some(a) => (a.ty, a.ambi, true),
+                None => (Type::Any, false, false),
+            };
+            self.add_variable(
+                param.ident.clone(),
+                alloca.into(),
+                param_ty,
+                false,
+                is_ambi,
+                is_annotated,
+            );
         }
 
         self.compile_block(&func.blk, module)?;
@@ -188,6 +268,7 @@ impl<'ctx> Compiler<'ctx> {
             self.scopes.pop();
         }
 
+        self.current_fn_ret_ty = None;
         if fn_val.verify(true) {
             Ok(fn_val)
         } else {
@@ -212,10 +293,10 @@ impl<'ctx> Compiler<'ctx> {
             let mut ptr = self.compile_expr(expr, module)?.into_pointer_value();
 
             if let ast::Expr::Var(name) = &expr.node {
-                let (val, _, always_clone) = self.get_variables(name).unwrap();
-                let val_ptr = val.into_pointer_value();
+                let binding = self.get_variables(name).unwrap();
+                let val_ptr = binding.value.into_pointer_value();
 
-                if always_clone {
+                if binding.always_clone {
                     ptr = builder_helper::clone_runtime_value(self, val_ptr, module)?;
                 } else {
                     // Copy first, then invalidate the binding. Unit-ing before
@@ -228,7 +309,9 @@ impl<'ctx> Compiler<'ctx> {
             let current_fn = self.function_signatures.unwrap();
             let return_type = current_fn.get_type().get_return_type();
             let expr_type = self.infer_type(expr);
+            let expected_ret = self.current_fn_ret_ty.clone();
 
+            self.validate_sprs_return_type(&expected_ret, expr_type.clone(), expr)?;
             self.validate_return_type(return_type, expr_type, expr)?;
 
             self.convert_return_value(return_type, ptr)?
@@ -246,7 +329,44 @@ impl<'ctx> Compiler<'ctx> {
         Ok(())
     }
 
-    /// Validate that the expression type matches the function return type.
+    /// Check a `return` expression against the Sprs `>> T` annotation.
+    ///
+    /// `Tag::Error` may always propagate (catchable errors), so `Error` is allowed
+    /// alongside the declared success type. `Any` (unknown) is not rejected.
+    fn validate_sprs_return_type(
+        &self,
+        expected: &Option<Type>,
+        actual: Type,
+        expr: &Spanned<ast::Expr>,
+    ) -> Result<(), SprsError> {
+        let Some(expected_ty) = expected else {
+            return Ok(());
+        };
+        if actual == Type::Any || actual == Type::Error || types_compatible(expected_ty, &actual) {
+            return Ok(());
+        }
+        Err(SprsError::Type {
+            code: ErrorCode {
+                category: ErrorCategory::Type,
+                number: 5,
+            },
+            location: Location::new(String::new(), expr.span),
+            message: format!(
+                "Type mismatch: Function declares >> {:?} but return expression has {:?}",
+                expected_ty, actual
+            ),
+            expected_type: Some(format!("{:?}", expected_ty)),
+            actual_type: Some(format!("{:?}", actual)),
+            help: None,
+        })
+    }
+
+    /// Validate that the expression type matches the LLVM function return type.
+    ///
+    /// After catchable errors, Sprs functions always use `runtime_value_type` as
+    /// the LLVM return type, so the int/float/pointer branches below are mainly
+    /// for residual / non-Sprs ABI cases. Prefer [`validate_sprs_return_type`]
+    /// for `>> T` checking.
     fn validate_return_type(
         &self,
         return_type: Option<BasicTypeEnum<'ctx>>,
@@ -429,7 +549,7 @@ impl<'ctx> Compiler<'ctx> {
                     let var_type = self.infer_type(init_expr);
 
                     if var.always_clone {
-                        let expensive_cp = matches!(var_type, Type::Struct(_) | Type::Enum)
+                        let expensive_cp = matches!(var_type, Type::Struct(_) | Type::Enum(_))
                             || matches!(
                                 &init_expr.node,
                                 ast::Expr::List(_)
@@ -445,14 +565,14 @@ impl<'ctx> Compiler<'ctx> {
                     }
 
                     let init_val = if let ast::Expr::Var(src_val_name) = &init_expr.node {
-                        let (src_val, _, src_always_clone) = self
+                        let src = self
                             .get_variables(src_val_name)
                             .ok_or_else(|| format!("Undefined variable: {}", src_val_name))?;
 
-                        if src_always_clone {
+                        if src.always_clone {
                             builder_helper::clone_runtime_value(
                                 self,
-                                src_val.into_pointer_value(),
+                                src.value.into_pointer_value(),
                                 module,
                             )?
                         } else {
@@ -461,7 +581,7 @@ impl<'ctx> Compiler<'ctx> {
                                 compiled_init_val,
                                 &var.ident,
                             )?;
-                            builder_helper::move_variable(self, &src_val, &var.ident);
+                            builder_helper::move_variable(self, &src.value, &var.ident);
                             copied_val
                         }
                     } else {
@@ -476,6 +596,8 @@ impl<'ctx> Compiler<'ctx> {
                         init_val.into(),
                         var_type,
                         var.always_clone,
+                        false,
+                        false,
                     );
                 }
                 ast::Stmt::Return(expr_opt) => {
@@ -517,25 +639,48 @@ impl<'ctx> Compiler<'ctx> {
                     // aliases it, so the assignment stores Unit.
                     let mut source_to_move: Option<(BasicValueEnum<'ctx>, String)> = None;
                     if let ast::Expr::Var(src_val_name) = &assign_stmt.expr.node {
-                        let (val, _, src_cp) = self
+                        let src = self
                             .get_variables(src_val_name)
                             .ok_or_else(|| format!("Undefined variable: {}", src_val_name))?;
-                        if src_cp {
+                        if src.always_clone {
                             val_ptr = builder_helper::clone_runtime_value(
                                 self,
-                                val.into_pointer_value(),
+                                src.value.into_pointer_value(),
                                 module,
                             )?;
                         } else {
-                            source_to_move = Some((val, src_val_name.clone()));
+                            source_to_move = Some((src.value, src_val_name.clone()));
                         }
                     }
 
-                    let (target_val, _, _) = self
+                    let target = self
                         .get_variables(&assign_stmt.name)
                         .ok_or_else(|| format!("Undefined variable: {}", &assign_stmt.name))?;
 
-                    let target_ptr = target_val.into_pointer_value();
+                    let rhs_ty = self.infer_type(&assign_stmt.expr);
+                    if target.is_annotated && !target.is_ambi {
+                        if !types_compatible(&target.ty, &rhs_ty) {
+                            return Err(SprsError::Type {
+                                code: ErrorCode {
+                                    category: ErrorCategory::Type,
+                                    number: 6,
+                                },
+                                location: Location::new(String::new(), assign_stmt.span),
+                                message: format!(
+                                    "Type mismatch: cannot assign {:?} to fixed binding `{}` of type {:?}",
+                                    rhs_ty, assign_stmt.name, target.ty
+                                ),
+                                expected_type: Some(format!("{:?}", target.ty)),
+                                actual_type: Some(format!("{:?}", rhs_ty)),
+                                help: Some(
+                                    "use `>> ambi T` if this parameter should allow dynamic reassignment"
+                                        .to_string(),
+                                ),
+                            });
+                        }
+                    }
+
+                    let target_ptr = target.value.into_pointer_value();
 
                     let drop_fn = self.get_runtime_fn(module, "__drop")?;
                     builder_helper::drop_var(self, target_ptr, drop_fn, &assign_stmt.name);
@@ -550,6 +695,11 @@ impl<'ctx> Compiler<'ctx> {
 
                     if let Some((val, src_name)) = source_to_move {
                         builder_helper::move_variable(self, &val, &src_name);
+                    }
+
+                    // Update static type: ambi / unannotated bindings track the RHS.
+                    if !target.is_annotated || target.is_ambi {
+                        self.set_variable_type(&assign_stmt.name, rhs_ty);
                     }
                 }
             }
@@ -582,8 +732,8 @@ impl<'ctx> Compiler<'ctx> {
             ast::Expr::Str(str) => Ok(builder_helper::create_string(self, str, module)?),
             ast::Expr::Bool(boolean) => Ok(builder_helper::create_bool(self, boolean)?),
             ast::Expr::Var(ident) => {
-                if let Some((var_addr, _, _)) = self.get_variables(ident) {
-                    Ok(var_addr)
+                if let Some(binding) = self.get_variables(ident) {
+                    Ok(binding.value)
                 } else {
                     Err(SprsError::Semantic {
                         code: ErrorCode { category: ErrorCategory::Semantic, number: 2 },
@@ -593,7 +743,7 @@ impl<'ctx> Compiler<'ctx> {
                     })
                 }
             }
-            ast::Expr::Call(ident, args, _) => Ok(builder_helper::create_call_expr(self, ident, args, module)?),
+            ast::Expr::Call(ident, args) => Ok(builder_helper::create_call_expr(self, ident, args, module)?),
             ast::Expr::Macro(ident, args) => {
                 match ident.as_str() {
                     "println" => Ok(builder_helper::call_builtin_macro_println(self, args, module)?),
@@ -626,8 +776,8 @@ impl<'ctx> Compiler<'ctx> {
                 if let ast::Expr::Var(name) = &lhs.node {
                     if self.enum_names.contains(name) {
                         let full_name = format!("{}.{}", name, rhs);
-                        if let Some((var_addr, _, _)) = self.get_variables(&full_name) {
-                            return Ok(var_addr);
+                        if let Some(binding) = self.get_variables(&full_name) {
+                            return Ok(binding.value);
                         } else {
                             return Err(SprsError::Semantic {
                                 code: ErrorCode { category: ErrorCategory::Semantic, number: 4 },

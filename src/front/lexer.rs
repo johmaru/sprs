@@ -48,6 +48,8 @@ pub enum Token {
     Struct,
     Copy,
 
+    Ambi,
+
     // System types
     TypeInt,
     TypeFloat,
@@ -176,6 +178,8 @@ enum RawTok {
     Struct,
     #[token("cp")]
     Copy,
+    #[token("ambi")]
+    Ambi,
     // System types
     #[token("int")]
     TypeInt,
@@ -303,6 +307,7 @@ impl<'input> Iterator for Lexer<'input> {
             RawTok::Struct => Token::Struct,
             RawTok::Comment => return self.next(),
             RawTok::Copy => Token::Copy,
+            RawTok::Ambi => Token::Ambi,
 
             // System types
             RawTok::TypeInt => Token::TypeInt,

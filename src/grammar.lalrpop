@@ -15,7 +15,7 @@ use crate::front::ast::{
 };
 use crate::front::span::{Span, Spanned};
 use crate::front::lexer::Token;
-use crate::front::type_helper::Type;
+use crate::front::type_helper::{Type, TypeAnnot};
 use lalrpop_util::ParseError;
 use half::f16;
 
@@ -70,6 +70,7 @@ extern {
         Enum => Token::Enum,
         Struct => Token::Struct,
         Copy => Token::Copy,
+        Ambi => Token::Ambi,
 
         // System types
         TypeInt => Token::TypeInt,
@@ -222,10 +223,15 @@ ParamList: Vec<FunctionParam> = {
 };
 
 FunctionParamNode: FunctionParam = {
-    <start:@L> <id:Ident> GtGt <t:Type> <end:@R> => FunctionParam { ident: id, ty: Some(t), span: Span::new(start, end) },
+    <start:@L> <id:Ident> GtGt <t:TypeAnnot> <end:@R> => FunctionParam { ident: id, ty: Some(t), span: Span::new(start, end) },
     <start:@L> <id:Ident> <end:@R> => FunctionParam { ident: id, ty: None, span: Span::new(start, end) },
 };
 
+
+TypeAnnot: TypeAnnot = {
+    Ambi <t:Type> => TypeAnnot { ty: t, ambi: true },
+    <t:Type> => TypeAnnot { ty: t, ambi: false },
+};
 
 Type: Type = {
     TypeInt => Type::Int,
@@ -253,7 +259,8 @@ Type: Type = {
 
 
 ReturnType: Option<Type> = {
-    GtGt <t:Type> => Some(t),
+    // `ambi` on return is accepted syntactically but ignored (return slots are not rebound).
+    GtGt <t:TypeAnnot> => Some(t.ty),
     => None,
 };
 
@@ -407,7 +414,7 @@ Postfix: Spanned<Expr> = {
         if let Expr::Var(mod_name) = base.node {
             Spanned::new(Expr::ModuleAccess(mod_name, field, vec![]), Span::new(start, end))
         } else {
-            Spanned::new(Expr::Call(field, vec![], None), Span::new(start, end))
+            Spanned::new(Expr::Call(field, vec![]), Span::new(start, end))
         }
     },
     <start:@L> <base:Postfix> Dot <field:Ident> LParen <first:Expr> <rest:(Comma <Expr>)*> RParen <end:@R> => {
@@ -416,7 +423,7 @@ Postfix: Spanned<Expr> = {
         if let Expr::Var(mod_name) = base.node {
             Spanned::new(Expr::ModuleAccess(mod_name, field, args), Span::new(start, end))
         } else {
-            Spanned::new(Expr::Call(field, args, None), Span::new(start, end))
+            Spanned::new(Expr::Call(field, args), Span::new(start, end))
         }
     },
     <start:@L> <base:Postfix> Dot <field:Ident> <end:@R> => {
@@ -444,11 +451,11 @@ Atom: Spanned<Expr> = {
             Err(ParseError::User { error: format!("Macro '{}' does not support struct init syntax. Use @init for struct initialization.", m) })
         }
     },
-    <start:@L> <id:Ident> LParen RParen <end:@R> => Spanned::new(Expr::Call(id, vec![], None), Span::new(start, end)),
+    <start:@L> <id:Ident> LParen RParen <end:@R> => Spanned::new(Expr::Call(id, vec![]), Span::new(start, end)),
     <start:@L> <id:Ident> LParen <first:Expr> <rest:(Comma <Expr>)*> RParen <end:@R> => {
         let mut args = vec![first];
         args.extend(rest);
-        Spanned::new(Expr::Call(id, args, None), Span::new(start, end))
+        Spanned::new(Expr::Call(id, args), Span::new(start, end))
     },
     <start:@L> <id:Ident> <end:@R> => Spanned::new(Expr::Var(id), Span::new(start, end)),
     <start:@L> <n:Num> <end:@R> => Spanned::new(Expr::Number(n), Span::new(start, end)),

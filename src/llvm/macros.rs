@@ -46,21 +46,21 @@ pub fn call_builtin_macro_list_push<'ctx>(
         .compile_expr(&args[1], module)?
         .into_pointer_value();
     let (val_ptr, source_var) = if let ast::Expr::Var(name) = &args[1].node {
-        let (source_ptr, _, source_always_clone) = self_compiler
+        let src = self_compiler
             .get_variables(name)
             .ok_or_else(|| format!("Undefined variable: {}", name))?;
 
-        if source_always_clone {
+        if src.always_clone {
             (
                 clone_runtime_value(
                     self_compiler,
-                    source_ptr.into_pointer_value(),
+                    src.value.into_pointer_value(),
                     module,
                 )?,
                 None,
             )
         } else {
-            (compiled_val_ptr, Some((source_ptr, name)))
+            (compiled_val_ptr, Some((src.value, name)))
         }
     } else {
         (compiled_val_ptr, None)
@@ -176,7 +176,7 @@ pub fn call_builtin_macro_move<'ctx>(
         }
     };
 
-    let (source_value, _, always_clone) = self_compiler
+    let source = self_compiler
         .get_variables(name)
         .ok_or_else(|| SprsError::Semantic {
             code: ErrorCode {
@@ -188,7 +188,7 @@ pub fn call_builtin_macro_move<'ctx>(
             help: None,
         })?;
 
-    if !always_clone {
+    if !source.always_clone {
         return Err(SprsError::Semantic {
             code: ErrorCode {
                 category: ErrorCategory::Semantic,
@@ -200,7 +200,7 @@ pub fn call_builtin_macro_move<'ctx>(
         });
     }
 
-    let source_ptr = source_value.into_pointer_value();
+    let source_ptr = source.value.into_pointer_value();
     let moved_ptr = var_load_at_init_variable(self_compiler, source_ptr, "move_arg")?;
     move_variable(self_compiler, &source_ptr.into(), name);
     Ok(moved_ptr.into())

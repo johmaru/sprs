@@ -233,6 +233,8 @@ pub fn create_module_access<'ctx>(
         module.add_function(&function_name, target_func.get_type(), None)
     };
 
+    self_compiler.check_call_arguments(function_name, args)?;
+
     let mut compiled_args = Vec::with_capacity(args.len());
     for arg_expr in args {
         let arg_val = self_compiler.compile_expr(arg_expr, module)?.into();

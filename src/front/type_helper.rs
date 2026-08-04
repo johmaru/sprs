@@ -40,9 +40,12 @@ pub enum Type {
     List,
     Range,
     Unit,
-    Enum,
+    Enum(String),
     Struct(String),
     Error,
+
+    App(String, Vec<Type>),
+    Param(String),
 
     // System types
     TypeI8,
@@ -57,6 +60,14 @@ pub enum Type {
     TypeF16,
     TypeF32,
     TypeF64,
+}
+
+/// A type annotation as written in source (`>> int`, `>> ambi int`, …).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeAnnot {
+    pub ty: Type,
+    /// When true, the binding starts as `ty` but reassignment may widen it dynamically.
+    pub ambi: bool,
 }
 
 impl Type {
@@ -74,9 +85,11 @@ impl Type {
             Type::List => Some(4),
             Type::Range => Some(5),
             Type::Unit => Some(6),
-            Type::Enum => Some(7),
+            Type::Enum(_) => Some(7),
             Type::Struct(_) => Some(8),
             Type::Error => Some(9),
+            Type::App(_, _) => None,
+            Type::Param(_) => None,
             Type::TypeI8 => Some(100),
             Type::TypeU8 => Some(101),
             Type::TypeI16 => Some(102),
@@ -104,7 +117,7 @@ impl Type {
             4 => Some(Type::List),
             5 => Some(Type::Range),
             6 => Some(Type::Unit),
-            7 => Some(Type::Enum),
+            7 => Some(Type::Enum(String::new())),
             8 => Some(Type::Struct(String::new())),
             9 => Some(Type::Error),
             100 => Some(Type::TypeI8),
@@ -121,6 +134,41 @@ impl Type {
             _ => None,
         }
     }
+}
+
+/// Whether two static types are interchangeable for checking.
+///
+/// Rules:
+/// - `Any` is compatible with every type (either side)
+/// - `Int` ≡ `TypeI64` (language default integer is i64)
+/// - `Float` ≡ `TypeF64` (language default float is f64)
+/// - `Struct` names must match; empty name (from tag recovery) matches any struct
+/// - otherwise exact equality
+pub fn types_compatible(expected: &Type, actual: &Type) -> bool {
+    if expected == actual {
+        return true;
+    }
+    if matches!(expected, Type::Any) || matches!(actual, Type::Any) {
+        return true;
+    }
+    if is_default_int(expected) && is_default_int(actual) {
+        return true;
+    }
+    if is_default_float(expected) && is_default_float(actual) {
+        return true;
+    }
+    match (expected, actual) {
+        (Type::Struct(a), Type::Struct(b)) => a.is_empty() || b.is_empty() || a == b,
+        _ => false,
+    }
+}
+
+fn is_default_int(ty: &Type) -> bool {
+    matches!(ty, Type::Int | Type::TypeI64)
+}
+
+fn is_default_float(ty: &Type) -> bool {
+    matches!(ty, Type::Float | Type::TypeF64)
 }
 
 pub fn is_int_type_in_llvm() -> Vec<Type> {
@@ -149,6 +197,8 @@ pub fn not_int_type_in_llvm() -> Vec<Type> {
         Type::Unit,
         Type::Bool,
         Type::Error,
+        Type::App(String::new(), Vec::new()),
+        Type::Param(String::new()),
     ]
 }
 
@@ -167,13 +217,25 @@ mod tests {
         assert_eq!(Type::Range.tag_discriminant(), Some(5));
         assert_eq!(Type::Error.tag_discriminant(), Some(9));
         assert_eq!(Type::Any.tag_discriminant(), None);
-        assert_eq!(
-            Type::from_tag_discriminant(4),
-            Some(Type::List)
-        );
-        assert_eq!(
-            Type::from_tag_discriminant(9),
-            Some(Type::Error)
-        );
+        assert_eq!(Type::from_tag_discriminant(4), Some(Type::List));
+        assert_eq!(Type::from_tag_discriminant(9), Some(Type::Error));
+    }
+
+    #[test]
+    fn types_compatible_int_equals_i64() {
+        assert!(types_compatible(&Type::Int, &Type::TypeI64));
+        assert!(types_compatible(&Type::TypeI64, &Type::Int));
+        assert!(types_compatible(&Type::Float, &Type::TypeF64));
+        assert!(!types_compatible(&Type::Int, &Type::TypeI32));
+        assert!(!types_compatible(&Type::Int, &Type::Str));
+        assert!(types_compatible(&Type::Any, &Type::Str));
+        assert!(types_compatible(
+            &Type::Struct("A".into()),
+            &Type::Struct("A".into())
+        ));
+        assert!(!types_compatible(
+            &Type::Struct("A".into()),
+            &Type::Struct("B".into())
+        ));
     }
 }

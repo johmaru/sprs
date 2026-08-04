@@ -5,7 +5,8 @@
 ## Rust-based compiler for 'Sprs': A language designed for embedded and system control.
 ## Overview
 This project implements a super simple compiler for a custom programming language called 'Sprs' using Rust and LLVM via the Inkwell library. The compiler translates Sprs source code into LLVM IR, which is then compiled into machine code for execution.
-The compiler is dynamic type checking and easy to use and clear for the base of the language design.
+The compiler uses hybrid typing: runtime values are tag-dispatched, while `>>`
+annotations keep static types for checking. Unannotated code stays dynamic and easy to use.
 
 ## Super Thanks to
 * [Inkwell](https://github.com/TheDan64/inkwell) - LLVM bindings for Rust
@@ -36,26 +37,18 @@ For this language development environment setup is WSL2(Ubuntu) + VSCode is reco
 
 ### Language Features
 #### **Basic data types:**
- * Int (i64)
- * Float (f64) : return type semantic use this word 'fp'
- * Bool
- * Str
- * List(128) (dynamic array)
- * Range
- * Unit
+ * Int (i64) — annotation keyword `int` (compatible with `i64` in type checks)
+ * Float (f64) — annotation keyword `fp` (compatible with `fp64` / `f64` in type checks)
+ * Bool — `bool`
+ * Str — `str`
+ * List (dynamic array) — annotation keyword `list`
+ * Range — `range`
+ * Unit — `unit`
  * Enum
  * Struct
- * i8 (only for @cast macro)
- * u8 (only for @cast macro)
- * i16 (only for @cast macro)
- * u16 (only for @cast macro)
- * i32 (only for @cast macro)
- * u32 (only for @cast macro)
- * i64 (only for @cast macro)
- * u64 (only for @cast macro)
- * f16 (only for @cast macro)
- * f32 (only for @cast macro)
- * f64 (only for @cast macro)
+ * Error (catchable) — annotation keyword `err`
+ * i8 / u8 / i16 / u16 / i32 / u32 / i64 / u64 (mainly `@cast`; also usable in `>>` annotations)
+ * fp16 / fp32 / fp64 (mainly `@cast`; also usable in `>>` annotations)
 
 - Variables and assignments
 ```sprs
@@ -92,10 +85,23 @@ fn main() {
 if a function is not marked as 'pub', it is private function.
 the function can call in same module.
 
-if when need to use a return type for function, use '>>' syntax.
+Parameter and return types use `>>` annotations. Unannotated parameters stay dynamic.
+Annotated parameters are checked at call sites (arity and type). `int` and `i64` are
+treated as the same type for checking; `fp` and `fp64` likewise.
 ```rust
-fn add(a, b) >> int {
+fn add(a >> int, b >> int) >> int {
   return a + b;
+}
+```
+
+Fixed annotations reject incompatible reassignment. Prefix the type with `ambi`
+(ambiguous) when the binding should start as that type but allow dynamic reassignment:
+```rust
+fn demo(fixed >> int, flex >> ambi int) {
+  fixed = 1;      # ok
+  # fixed = "x";  # type error
+  flex = 1;       # ok
+  flex = "x";     # ok — becomes dynamic after reassignment
 }
 ```
 

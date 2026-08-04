@@ -4,7 +4,7 @@ use crate::front::span::Span;
 use crate::front::type_helper;
 use crate::front::type_helper::Type;
 use crate::llvm::builder_helper;
-use crate::llvm::compiler::{Compiler, LINUX_STR, OS, StructDef, Tag, WINDOWS_STR};
+use crate::llvm::compiler::{Compiler, FnTypeInfo, LINUX_STR, OS, StructDef, Tag, WINDOWS_STR};
 use crate::llvm::parser::parse_only;
 use crate::naming;
 use inkwell::AddressSpace;
@@ -377,7 +377,14 @@ impl<'ctx> Compiler<'ctx> {
                 global.as_pointer_value()
             };
 
-            self.add_variable(full_name.to_string(), ptr.into(), Type::Enum, false);
+            self.add_variable(
+                full_name.to_string(),
+                ptr.into(),
+                Type::Enum(enm.ident.clone()),
+                false,
+                false,
+                false,
+            );
         }
     }
 
@@ -399,7 +406,7 @@ impl<'ctx> Compiler<'ctx> {
         global.set_constant(true);
     }
 
-    pub(crate) fn declare_fn_prototype(&self, func: &ast::Function, module: &Module<'ctx>) {
+    pub(crate) fn declare_fn_prototype(&mut self, func: &ast::Function, module: &Module<'ctx>) {
         let arg_types: Vec<BasicMetadataTypeEnum> = (0..func.params.len())
             .map(|_| self.context.ptr_type(AddressSpace::default()).into())
             .collect();
@@ -422,6 +429,24 @@ impl<'ctx> Compiler<'ctx> {
 
         if !func.is_public {
             fn_val.set_linkage(Linkage::Private);
+        }
+
+        self.fn_types.insert(
+            func_name.to_string(),
+            FnTypeInfo {
+                ret_ty: func.ret_ty.clone(),
+                params: func.params.iter().map(|p| p.ty.clone()).collect(),
+            },
+        );
+        // Plain source name also resolves for non-main calls / inference.
+        if func.ident == "main" {
+            self.fn_types.insert(
+                "main".to_string(),
+                FnTypeInfo {
+                    ret_ty: func.ret_ty.clone(),
+                    params: func.params.iter().map(|p| p.ty.clone()).collect(),
+                },
+            );
         }
     }
 }

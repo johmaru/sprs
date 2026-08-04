@@ -172,17 +172,17 @@ pub fn create_list_from_expr<'ctx>(
             .compile_expr(elem, module)?
             .into_pointer_value();
         let (val_ptr, source_var) = if let ast::Expr::Var(name) = &elem.node {
-            let (source_ptr, _, source_always_clone) = self_compiler
+            let src = self_compiler
                 .get_variables(name)
                 .ok_or_else(|| format!("Undefined variable: {}", name))?;
 
-            if source_always_clone {
+            if src.always_clone {
                 (
-                    clone_runtime_value(self_compiler, source_ptr.into_pointer_value(), module)?,
+                    clone_runtime_value(self_compiler, src.value.into_pointer_value(), module)?,
                     None,
                 )
             } else {
-                (compiled_val_ptr, Some((source_ptr, name)))
+                (compiled_val_ptr, Some((src.value, name)))
             }
         } else {
             (compiled_val_ptr, None)
@@ -519,23 +519,26 @@ pub fn create_call_expr<'ctx>(
             message: format!("Undefined function: {}", ident),
             help: None,
         })?;
+
+    self_compiler.check_call_arguments(ident, args)?;
+
     let mut compiled_args = Vec::with_capacity(args.len());
     for arg in args {
         let compiled_arg_ptr = self_compiler
             .compile_expr(arg, module)?
             .into_pointer_value();
         let (arg_ptr, source_var) = if let ast::Expr::Var(name) = &arg.node {
-            let (source_ptr, _, source_always_clone) = self_compiler
+            let src = self_compiler
                 .get_variables(name)
                 .ok_or_else(|| format!("Undefined variable: {}", name))?;
 
-            if source_always_clone {
+            if src.always_clone {
                 (
-                    clone_runtime_value(self_compiler, source_ptr.into_pointer_value(), module)?,
+                    clone_runtime_value(self_compiler, src.value.into_pointer_value(), module)?,
                     None,
                 )
             } else {
-                (compiled_arg_ptr, Some((source_ptr, name)))
+                (compiled_arg_ptr, Some((src.value, name)))
             }
         } else {
             (compiled_arg_ptr, None)

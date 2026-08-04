@@ -3,7 +3,7 @@ use crate::front::error::{ErrorCategory, ErrorCode, Location, SprsError};
 use crate::front::span::Span;
 use crate::front::span::Spanned;
 use crate::front::type_helper;
-use crate::front::type_helper::Type;
+use crate::front::type_helper::{Type, TypeAnnot};
 use crate::llvm::builder_helper;
 use crate::llvm::builder_helper::Comparison;
 use crate::llvm::builder_helper::EqNeq;
@@ -29,12 +29,35 @@ pub struct StructDef<'ctx> {
     pub llvm_type: StructType<'ctx>,
 }
 
+/// Sprs-level function signature (not the LLVM ABI).
+#[derive(Debug, Clone)]
+pub struct FnTypeInfo {
+    pub ret_ty: Option<Type>,
+    pub params: Vec<Option<TypeAnnot>>,
+}
+
+/// Local binding metadata in a scope.
+#[derive(Clone)]
+pub struct VarBinding<'ctx> {
+    pub value: BasicValueEnum<'ctx>,
+    pub ty: Type,
+    pub always_clone: bool,
+    /// Annotated with `ambi` — reassignment may change the static type.
+    pub is_ambi: bool,
+    /// Came from a type annotation (`>> T` / `>> ambi T`).
+    pub is_annotated: bool,
+}
+
 pub struct Compiler<'ctx> {
     pub context: &'ctx Context,
     pub modules: HashMap<String, Module<'ctx>>, // name, module
     pub builder: Builder<'ctx>,
     pub scopes: Vec<Scope<'ctx>>,
     pub function_signatures: Option<FunctionValue<'ctx>>,
+    /// Current function's Sprs return annotation while compiling its body.
+    pub current_fn_ret_ty: Option<Type>,
+    /// Declared Sprs signatures, keyed by LLVM/function name.
+    pub fn_types: HashMap<String, FnTypeInfo>,
     pub runtime_value_type: StructType<'ctx>,
     pub target_os: OS,
     pub string_counter: usize,
@@ -308,7 +331,7 @@ pub(crate) const WINDOWS_STR: &str = "Windows";
 pub(crate) const LINUX_STR: &str = "Linux";
 
 pub struct Scope<'ctx> {
-    pub variables: HashMap<String, (BasicValueEnum<'ctx>, Type, bool)>,
+    pub variables: HashMap<String, VarBinding<'ctx>>,
     pub var_name: Vec<String>,
 }
 
@@ -342,6 +365,8 @@ impl<'ctx> Compiler<'ctx> {
             builder,
             scopes,
             function_signatures: None,
+            current_fn_ret_ty: None,
+            fn_types: HashMap::new(),
             runtime_value_type,
             target_os: OS::Unknown,
             string_counter: 0,
@@ -370,9 +395,14 @@ impl<'ctx> Compiler<'ctx> {
             let drop_fn = self.get_runtime_fn(module, "__drop")?;
 
             for name in scope.var_name.iter().rev() {
-                if let Some((val, _, _)) = scope.variables.get(name) {
-                    if val.is_pointer_value() {
-                        builder_helper::drop_var(self, val.into_pointer_value(), drop_fn, name);
+                if let Some(binding) = scope.variables.get(name) {
+                    if binding.value.is_pointer_value() {
+                        builder_helper::drop_var(
+                            self,
+                            binding.value.into_pointer_value(),
+                            drop_fn,
+                            name,
+                        );
                     }
                 }
             }
@@ -380,7 +410,7 @@ impl<'ctx> Compiler<'ctx> {
         Ok(())
     }
 
-    pub fn get_variables(&self, name: &str) -> Option<(BasicValueEnum<'ctx>, Type, bool)> {
+    pub fn get_variables(&self, name: &str) -> Option<VarBinding<'ctx>> {
         for scope in self.scopes.iter().rev() {
             if let Some(var) = scope.variables.get(name) {
                 return Some(var.clone());
@@ -395,12 +425,31 @@ impl<'ctx> Compiler<'ctx> {
         value: BasicValueEnum<'ctx>,
         ty: Type,
         is_clone_variable: bool,
+        is_ambi: bool,
+        is_annotated: bool,
     ) {
         if let Some(current_scope) = self.scopes.last_mut() {
-            current_scope
-                .variables
-                .insert(name.clone(), (value, ty, is_clone_variable));
+            current_scope.variables.insert(
+                name.clone(),
+                VarBinding {
+                    value,
+                    ty,
+                    always_clone: is_clone_variable,
+                    is_ambi,
+                    is_annotated,
+                },
+            );
             current_scope.var_name.push(name);
+        }
+    }
+
+    /// Update the static type of an existing binding (e.g. after `ambi` reassignment).
+    pub fn set_variable_type(&mut self, name: &str, ty: Type) {
+        for scope in self.scopes.iter_mut().rev() {
+            if let Some(var) = scope.variables.get_mut(name) {
+                var.ty = ty;
+                return;
+            }
         }
     }
 
@@ -417,9 +466,9 @@ impl<'ctx> Compiler<'ctx> {
 
         for scope in self.scopes.iter().skip(1).rev() {
             for name in scope.var_name.iter().rev() {
-                if let Some((val, _, _)) = scope.variables.get(name) {
-                    if val.is_pointer_value() {
-                        vars_to_drop.push((val.into_pointer_value(), name.clone()));
+                if let Some(binding) = scope.variables.get(name) {
+                    if binding.value.is_pointer_value() {
+                        vars_to_drop.push((binding.value.into_pointer_value(), name.clone()));
                     }
                 }
             }
@@ -449,8 +498,9 @@ impl<'ctx> Compiler<'ctx> {
                     Type::Str => self.context.ptr_type(AddressSpace::default()).into(),
                     Type::Float => self.context.f64_type().into(),
                     Type::Bool => self.context.bool_type().into(),
-                    Type::Enum => self.context.i64_type().into(),
-
+                    Type::Enum(name) => self.context.i64_type().into(),
+                    Type::App(_, _) => unreachable!(),
+                    Type::Param(_) => unreachable!(),
                     Type::TypeI8 => self.context.i8_type().into(),
                     Type::TypeU8 => self.context.i8_type().into(),
                     Type::TypeI16 => self.context.i16_type().into(),
@@ -649,7 +699,7 @@ mod tag_type_sync_tests {
             (Type::List, Tag::List),
             (Type::Range, Tag::Range),
             (Type::Unit, Tag::Unit),
-            (Type::Enum, Tag::Enum),
+            (Type::Enum("Point".into()), Tag::Enum),
             (Type::Struct("Point".into()), Tag::Struct),
             (Type::Error, Tag::Error),
             (Type::TypeI8, Tag::Int8),
@@ -677,5 +727,21 @@ mod tag_type_sync_tests {
 
         assert_eq!(Type::Any.tag_discriminant(), None);
         assert_eq!(Tag::from_type(&Type::Any), None);
+    }
+
+    #[test]
+    fn sprs_return_allows_declared_type_or_error() {
+        // Mirrors validate_sprs_return_type rules without needing LLVM.
+        fn ok(expected: Option<Type>, actual: Type) -> bool {
+            match expected {
+                None => true,
+                Some(exp) => actual == Type::Any || actual == Type::Error || actual == exp,
+            }
+        }
+        assert!(ok(Some(Type::List), Type::List));
+        assert!(ok(Some(Type::List), Type::Error));
+        assert!(ok(Some(Type::List), Type::Any));
+        assert!(!ok(Some(Type::List), Type::Int));
+        assert!(ok(None, Type::Int));
     }
 }

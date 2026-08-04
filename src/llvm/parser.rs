@@ -16,7 +16,7 @@ pub fn parse_only(input: &str, file_path: &str) -> Result<Vec<ast::Item>, SprsEr
 mod tests {
     use super::parse_only;
     use crate::front::ast::{Function, Item};
-    use crate::front::type_helper::Type;
+    use crate::front::type_helper::{Type, TypeAnnot};
 
     #[test]
     fn parses_list_range_error_type_annotations() {
@@ -41,6 +41,56 @@ fn h() >> err { return @error(100, "x"); }
             Item::FunctionItem(f) => f.params[0].ty.as_ref(),
             _ => None,
         };
-        assert_eq!(list_param, Some(&Type::List));
+        assert_eq!(
+            list_param,
+            Some(&TypeAnnot {
+                ty: Type::List,
+                ambi: false
+            })
+        );
+    }
+
+    #[test]
+    fn parses_ambi_param_annotation() {
+        let src = "fn f(a >> ambi int, b >> int) { a = \"x\"; }\n";
+        let items = parse_only(src, "test.sprs").expect("parse");
+        match &items[0] {
+            Item::FunctionItem(f) => {
+                assert_eq!(
+                    f.params[0].ty.as_ref(),
+                    Some(&TypeAnnot {
+                        ty: Type::Int,
+                        ambi: true
+                    })
+                );
+                assert_eq!(
+                    f.params[1].ty.as_ref(),
+                    Some(&TypeAnnot {
+                        ty: Type::Int,
+                        ambi: false
+                    })
+                );
+            }
+            other => panic!("expected function, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn call_expr_has_no_embedded_ret_ty() {
+        let src = "fn f() >> list { return []; }\nfn main() { var x = f(); }\n";
+        let items = parse_only(src, "test.sprs").expect("parse");
+        match &items[1] {
+            Item::FunctionItem(f) => {
+                let stmt = &f.blk[0];
+                match &stmt.node {
+                    crate::front::ast::Stmt::Var(v) => {
+                        let init = v.expr.as_ref().unwrap();
+                        assert!(matches!(init.node, crate::front::ast::Expr::Call(_, _)));
+                    }
+                    other => panic!("expected var, got {:?}", other),
+                }
+            }
+            other => panic!("expected main, got {:?}", other),
+        }
     }
 }

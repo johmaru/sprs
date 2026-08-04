@@ -1,5 +1,5 @@
 use crate::front::span::{Span, Spanned};
-use crate::front::type_helper::Type;
+use crate::front::type_helper::{Type, TypeAnnot};
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum Expr {
@@ -19,7 +19,7 @@ pub enum Expr {
     Le(Box<Spanned<Expr>>, Box<Spanned<Expr>>),                     // Lhs, Rhs
     Ge(Box<Spanned<Expr>>, Box<Spanned<Expr>>),                     // Lhs, Rhs
     If(Box<Spanned<Expr>>, Box<Spanned<Expr>>, Box<Spanned<Expr>>), // Cond, Then, Else
-    Call(String, Vec<Spanned<Expr>>, Option<Type>),                 // Ident, Args, RetTy
+    Call(String, Vec<Spanned<Expr>>),                               // Ident, Args
     Var(String),                                                    // Ident
     Increment(Box<Spanned<Expr>>),                                  // Ident
     Decrement(Box<Spanned<Expr>>),                                  // Ident
@@ -52,7 +52,7 @@ pub enum Expr {
 #[derive(Debug, PartialEq)]
 pub struct FunctionParam {
     pub ident: String,
-    pub ty: Option<Type>,
+    pub ty: Option<TypeAnnot>,
     pub span: Span,
 }
 
@@ -71,9 +71,10 @@ pub enum Item {
 pub struct Function {
     pub ident: String,
     pub params: Vec<FunctionParam>,
-    // pub ret_ty: Option<Type>, currently all any
     pub blk: Vec<Spanned<Stmt>>,
     pub is_public: bool,
+    /// Declared success-path return type (`>> T`). Absent means unannotated.
+    /// LLVM ABI still returns `runtime_value_type` so `Tag::Error` can propagate.
     pub ret_ty: Option<Type>,
     pub span: Span,
 }
