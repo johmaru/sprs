@@ -41,7 +41,7 @@ For this language development environment setup is WSL2(Ubuntu) + VSCode is reco
  * Float (f64) — annotation keyword `fp` (compatible with `fp64` / `f64` in type checks)
  * Bool — `bool`
  * Str — `str`
- * List (dynamic array) — annotation keyword `list`
+ * List (dynamic array) — annotation keyword `list` (also `List(T)` application form)
  * Range — `range`
  * Unit — `unit`
  * Enum
@@ -49,6 +49,11 @@ For this language development environment setup is WSL2(Ubuntu) + VSCode is reco
  * Error (catchable) — annotation keyword `err`
  * i8 / u8 / i16 / u16 / i32 / u32 / i64 / u64 (mainly `@cast`; also usable in `>>` annotations)
  * fp16 / fp32 / fp64 (mainly `@cast`; also usable in `>>` annotations)
+
+Type *application* in annotations uses `Name(Type, …)` (for example `List(int)`,
+`Result(int, err)`). These are compile-time forms only: they are not runtime tags.
+Everyday code keeps the flat keywords (`list`, `err`). Generics / type parameters
+(`Param`) are not user-facing yet.
 
 - Variables and assignments
 ```sprs
@@ -102,6 +107,19 @@ fn demo(fixed >> int, flex >> ambi int) {
   # fixed = "x";  # type error
   flex = 1;       # ok
   flex = "x";     # ok — becomes dynamic after reassignment
+}
+```
+
+Applied types nest and are checked by constructor name and each argument:
+```rust
+fn take(xs >> List(int)) >> List(int) {
+  return xs;
+}
+
+# `Result(...)` here is only an annotation shape (App), not a dedicated
+# error ABI. Catchable errors still use `err` / `@error` / `?`.
+fn parse() >> Result(int, err) {
+  return 1;
 }
 ```
 
