@@ -46,13 +46,13 @@ For this language development environment setup is WSL2(Ubuntu) + VSCode is reco
  * Unit — `unit`
  * Enum
  * Struct
- * Error (catchable) — annotation keyword `err`
- * Label (tagged value) — annotation keyword `label` (also `Label(T)` application form)
+ * Error labels (catchable) — `err` sugar for `Label(:error)`
+ * Label (tagged value) — annotation keyword `label` (also `Label(:name[, T])` application form)
  * i8 / u8 / i16 / u16 / i32 / u32 / i64 / u64 (mainly `@cast`; also usable in `>>` annotations)
  * fp16 / fp32 / fp64 (mainly `@cast`; also usable in `>>` annotations)
 
 Type *application* in annotations uses `Name(Type, …)` (for example `List(int)`,
-`Result(int, err)`, `Label(int)`). These are compile-time forms only: they are not runtime tags.
+`Result(int, err)`, `Label(:ok, int)`). These are compile-time forms only: they are not runtime tags.
 Everyday code keeps the flat keywords (`list`, `err`, `label`). Generics / type parameters
 (`Param`) are not user-facing yet.
 
@@ -228,12 +228,30 @@ Errors are ordinary labels, not a dedicated runtime value. `err` is syntax sugar
 for `Label(:error)`, and `@error(reason)` creates `{:error, reason}` with exactly
 one argument.
 
+The same value can be created directly as a normal label literal. Use
+`Label(:error, T)` when the error name and payload type should be part of the
+function signature:
+
+```sprs
+fn make_error_label() >> Label(:error, str) {
+  return {:error, "file not found"};
+}
+
+fn main() {
+  var e = make_error_label();
+  @println(@is_error(e));         # true
+  @println(@error_message(e));    # file not found
+}
+```
+
+`err` and `@error(reason)` are shorthand for the same label convention:
+
 ```sprs
 fn make_error() >> err {
   return @error("file not found");
 }
 
-fn main() {
+fn show_error() {
   var e = make_error();
   @println(@is_error(e));         # true
   @println(@error_message(e));    # file not found
