@@ -205,6 +205,9 @@ if @label_is(c, :"{i}-item") {
 fn wrap(x >> int) >> Label(int) {
   return {:ok, x};
 }
+fn wrap_named(x >> int) >> Label(:ok, int) {
+  return {:ok, x};
+}
 fn take(v >> label) >> label {
   return v;
 }
@@ -216,8 +219,40 @@ fn take(v >> label) >> label {
 Notes:
 - Dynamic templates reject `{}`, `{expr}`, and nested braces. Use `{ident}` only.
 - `@attach` currently accepts only a static label without payload (`:name`).
-- `?` still propagates `Tag::Error` only; it is not connected to labels yet.
+- `?` propagates only the label named `:error`; ordinary labels such as `:ok` continue on the normal path.
 - There is no `match` / `case` syntax; use `@label_is` with `if`.
+
+#### **Error labels**
+
+Errors are ordinary labels, not a dedicated runtime value. `err` is syntax sugar
+for `Label(:error)`, and `@error(reason)` creates `{:error, reason}` with exactly
+one argument.
+
+```sprs
+fn make_error() >> err {
+  return @error("file not found");
+}
+
+fn main() {
+  var e = make_error();
+  @println(@is_error(e));         # true
+  @println(@error_message(e));    # file not found
+  @println(@error_message(@error(:enoent))); # :enoent
+}
+```
+
+`@error_message` returns the String payload directly when the reason is a
+String; other payloads are rendered using the normal value formatter. The
+removed `@error_code` macro and the legacy `Tag::Error`/`SlotData::Error` ABI
+are no longer available. Runtime tag `9` is intentionally unused, while
+`Tag::Label` remains `10`.
+
+When an error label reaches the `main` boundary without being handled, Sprs
+prints `Uncaught error in main` and exits. A known runtime limitation is that
+the subsequent thread-local slot cleanup may emit a TLS destruction warning:
+the cleanup of a label payload re-enters the same thread-local slot table after
+it has started being destroyed. This warning occurs during process termination,
+after the uncaught-error message, and does not change the error-label result.
 
 ####  **Operators**
 * Arithmetic: `+`, `-`, `*`, `/`, `%`
@@ -381,7 +416,7 @@ This command creates a new directory structure with a default `sprs.toml` config
 
 ### Memory Management
 
-Sprs uses **move semantics** for heap values (`str`, `list`, `range`, `struct`, `enum`, `error`).
+Sprs uses **move semantics** for heap values (`str`, `list`, `range`, `struct`, `enum`, `label`).
 Assigning or passing one of these values transfers ownership; the old binding becomes invalid
 (`Unit`). Integers, floats, and bools are copied instead.
 

@@ -46,7 +46,7 @@ pub enum Tag {
     Unit = 6,
     Enum = 7,
     Struct = 8,
-    Error = 9,
+    // 9 was the legacy Error tag; removed in Phase 3 Step 3 (left unused).
     Label = 10,
 
     // System types
@@ -73,7 +73,6 @@ const fn is_heap_tag(tag: i32) -> bool {
             || t == Tag::Range as i32
             || t == Tag::Struct as i32
             || t == Tag::Enum as i32
-            || t == Tag::Error as i32
             || t == Tag::Label as i32
     )
 }
@@ -113,10 +112,6 @@ enum SlotData {
         owned: bool,
     },
     Enum(EnumInfo),
-    Error {
-        code: u32,
-        message: Option<String>,
-    },
     Label {
         name: String,
         payload: SprsValue,
@@ -127,9 +122,8 @@ enum SlotData {
 impl Drop for SlotData {
     fn drop(&mut self) {
         match self {
-            // Vec / String / SprsRange / Error drop themselves.
-            SlotData::List(_) | SlotData::String(_) | SlotData::Range(_)
-            | SlotData::Error { .. } => {}
+            // Vec / String / SprsRange drop themselves.
+            SlotData::List(_) | SlotData::String(_) | SlotData::Range(_) => {}
             SlotData::Label { payload, .. } => __drop(payload.tag, payload.data),
             SlotData::Struct { ptr, layout, owned } => {
                 if *owned && !ptr.is_null() {
@@ -755,13 +749,6 @@ pub extern "C" fn __clone(tag: i32, data: u64) -> SprsValue {
         };
     }
 
-    if tag == Tag::Error as i32 {
-        let new_handle = error_clone(data);
-        return SprsValue {
-            tag,
-            data: new_handle,
-        };
-    }
     if tag == Tag::Label as i32 {
         let new_handle = label_clone(data);
         return SprsValue {
@@ -871,13 +858,6 @@ fn enum_clone(handle: u64) -> u64 {
     __enum_new(name_ptr, name_len as i64, variant_index)
 }
 
-fn error_clone(handle: u64) -> u64 {
-    let (code, message) = slot_with(handle, (0u32, None), |d| match d {
-        SlotData::Error { code, message } => (*code, message.clone()),
-        _ => (0, None),
-    });
-    slot_insert(SlotData::Error { code, message })
-}
 fn label_clone(handle: u64) -> u64 {
     let snapshot: Option<(String, SprsValue)> = slot_with(handle, None, |d| match d {
         SlotData::Label { name, payload } => Some((name.clone(), *payload)),
@@ -893,55 +873,70 @@ fn label_clone(handle: u64) -> u64 {
 }
 
 // ---------------------------------------------------------------------------
-// C ABI: Error values
+// C ABI: error labels (`{:error, …}`)
 // ---------------------------------------------------------------------------
 
-/// Create an error value in the slab. `message_ptr` may be null (no message).
+/// Returns 1 (true) if the value is a `Label` whose name is "error",
+/// 0 (false) otherwise. Replaces the legacy `Tag::Error` check.
 #[unsafe(no_mangle)]
-pub extern "C" fn __error_new(code: u32, message_ptr: *const u8, message_len: u64) -> u64 {
-    let message = if message_ptr.is_null() || message_len == 0 {
-        None
-    } else {
-        let bytes = unsafe { std::slice::from_raw_parts(message_ptr, message_len as usize) };
-        Some(String::from_utf8_lossy(bytes).into_owned())
-    };
-    slot_insert(SlotData::Error { code, message })
-}
-
-/// Check if a value's tag is `Tag::Error`. Returns 1 (true) or 0 (false).
-#[unsafe(no_mangle)]
-pub extern "C" fn __is_error(handle: u64) -> i32 {
-    let tag = slot_with(handle, Tag::Unit as i32, |d| {
-        if matches!(d, SlotData::Error { .. }) {
-            Tag::Error as i32
-        } else {
-            Tag::Unit as i32
-        }
-    });
-    if tag == Tag::Error as i32 { 1 } else { 0 }
-}
-
-/// Get the error code from an error value. Returns 0 if not an error.
-#[unsafe(no_mangle)]
-pub extern "C" fn __error_code(handle: u64) -> u32 {
-    slot_with(handle, 0u32, |d| match d {
-        SlotData::Error { code, .. } => *code,
-        _ => 0,
-    })
-}
-
-/// Get the error message as a new String slab handle.
-/// Returns INVALID_HANDLE if not an error or no message.
-#[unsafe(no_mangle)]
-pub extern "C" fn __error_message(handle: u64) -> u64 {
-    let message_opt: Option<String> = slot_with(handle, None, |d| match d {
-        SlotData::Error { message, .. } => message.clone(),
-        _ => None,
-    });
-    match message_opt {
-        Some(s) => slot_insert(SlotData::String(s)),
-        None => INVALID_HANDLE,
+pub extern "C" fn __label_is_error(tag: i32, data: u64) -> i32 {
+    if tag != Tag::Label as i32 {
+        return 0;
     }
+    __label_name_eq(data, b"error".as_ptr(), 5)
+}
+
+/// Create an error label `{:error, msg}` whose payload is a fresh String slot
+/// built from the given UTF-8 bytes. Used by arithmetic/cast/shift failure
+/// paths so the reason is carried as a normal label payload.
+#[unsafe(no_mangle)]
+pub extern "C" fn __error_label_from_str(bytes_ptr: *const u8, len: i64) -> u64 {
+    let msg_handle = __string_new(bytes_ptr, len);
+    if msg_handle == INVALID_HANDLE {
+        return INVALID_HANDLE;
+    }
+    __label_new(b"error".as_ptr(), 5, Tag::String as i32, msg_handle)
+}
+
+/// Return the error reason of an error label as a new String slot.
+/// - Label named "error" with a String payload: clone of that payload.
+/// - Label named "error" with any other payload: `format_sprs_value` rendering.
+/// - Anything else (including non-labels): empty string slot (never INVALID).
+#[unsafe(no_mangle)]
+pub extern "C" fn __error_message_from_label(handle: u64) -> u64 {
+    let (name, payload) = slot_with(
+        handle,
+        (
+            String::new(),
+            SprsValue {
+                tag: Tag::Unit as i32,
+                data: 0,
+            },
+        ),
+        |d| match d {
+            SlotData::Label { name, payload } => (name.clone(), *payload),
+            _ => (
+                String::new(),
+                SprsValue {
+                    tag: Tag::Unit as i32,
+                    data: 0,
+                },
+            ),
+        },
+    );
+    if name != "error" {
+        return slot_insert(SlotData::String(String::new()));
+    }
+    if payload.tag == Tag::String as i32 {
+        let cloned = string_clone(payload.data);
+        if cloned != INVALID_HANDLE {
+            return cloned;
+        }
+        return slot_insert(SlotData::String(String::new()));
+    }
+    let mut buf = String::new();
+    format_sprs_value(&payload, &mut buf);
+    slot_insert(SlotData::String(buf))
 }
 
 // ---------------------------------------------------------------------------
@@ -1129,20 +1124,6 @@ fn format_sprs_value(val: &SprsValue, out: &mut String) {
                 out.push('}');
             }
         }
-        t if t == Tag::Error as i32 => {
-            let (code, msg) = slot_with(val.data, (0u32, String::new()), |d| match d {
-                SlotData::Error { code, message } => {
-                    (*code, message.clone().unwrap_or_default())
-                }
-                _ => (0, String::new()),
-            });
-            use std::fmt::Write;
-            if msg.is_empty() {
-                let _ = write!(out, "<error code={}>", code);
-            } else {
-                let _ = write!(out, "<error code={} \"{}\">", code, msg);
-            }
-        }
         _ => {
             out.push_str("<unknown type>");
         }
@@ -1170,8 +1151,10 @@ pub extern "C" fn __panic(message_ptr: *const i8) {
 #[cfg(test)]
 mod tests {
     use super::{
-        __clone, __drop, __label_name, __label_name_eq, __label_new, __label_new_from_string,
-        __label_payload, __string_new, __value_to_string, format_sprs_value, SprsValue, Tag,
+        __clone, __drop, __error_label_from_str, __error_message_from_label, __label_is_error,
+        __label_name, __label_name_eq, __label_new, __label_new_from_string, __label_payload,
+        __string_new, __value_to_string, format_sprs_value, slot_with, INVALID_HANDLE, SlotData,
+        SprsValue, Tag,
     };
 
     #[test]
@@ -1271,5 +1254,77 @@ mod tests {
         assert_eq!(__label_name_eq(empty_label, b"".as_ptr(), 0), 1);
         __drop(Tag::Label as i32, empty_label);
         __drop(Tag::String as i32, empty_name);
+    }
+
+    #[test]
+    fn label_is_error_matches_error_named_label() {
+        let err_handle = __label_new(b"error".as_ptr(), 5, Tag::Unit as i32, 0);
+        let ok_handle = __label_new(b"ok".as_ptr(), 2, Tag::Unit as i32, 0);
+        assert_eq!(__label_is_error(Tag::Label as i32, err_handle), 1);
+        assert_eq!(__label_is_error(Tag::Label as i32, ok_handle), 0);
+        // Non-label tags never count as errors.
+        assert_eq!(__label_is_error(Tag::Integer as i32, err_handle), 0);
+        __drop(Tag::Label as i32, err_handle);
+        __drop(Tag::Label as i32, ok_handle);
+    }
+
+    #[test]
+    fn error_label_from_str_builds_error_label_with_string_payload() {
+        let handle = __error_label_from_str(b"division by zero".as_ptr(), 16);
+        assert_ne!(handle, INVALID_HANDLE);
+        assert_eq!(__label_is_error(Tag::Label as i32, handle), 1);
+        assert_eq!(__label_name_eq(handle, b"error".as_ptr(), 5), 1);
+        let payload = __label_payload(handle);
+        assert_eq!(payload.tag, Tag::String as i32);
+        // Clean up the label and its string payload.
+        __drop(Tag::Label as i32, handle);
+        __drop(Tag::String as i32, payload.data);
+    }
+
+    #[test]
+    fn error_message_from_label_returns_reason_string() {
+        // String payload: cloned back out.
+        let str_err = __error_label_from_str(b"boom".as_ptr(), 4);
+        let msg = __error_message_from_label(str_err);
+        let text = slot_with(msg, String::new(), |d| match d {
+            SlotData::String(s) => s.clone(),
+            _ => String::new(),
+        });
+        assert_eq!(text, "boom");
+        __drop(Tag::String as i32, msg);
+        __drop(Tag::Label as i32, str_err);
+
+        // Non-string payload: rendered via format_sprs_value (`:enoent`).
+        let label_err = __label_new(b"error".as_ptr(), 5, Tag::Integer as i32, 42);
+        let msg = __error_message_from_label(label_err);
+        let text = slot_with(msg, String::new(), |d| match d {
+            SlotData::String(s) => s.clone(),
+            _ => String::new(),
+        });
+        assert_eq!(text, "42");
+        __drop(Tag::String as i32, msg);
+        __drop(Tag::Label as i32, label_err);
+
+        // Non-error label: empty string, never INVALID.
+        let ok = __label_new(b"ok".as_ptr(), 2, Tag::Unit as i32, 0);
+        let msg = __error_message_from_label(ok);
+        assert_ne!(msg, INVALID_HANDLE);
+        let text = slot_with(msg, String::new(), |d| match d {
+            SlotData::String(s) => s.clone(),
+            _ => String::new(),
+        });
+        assert_eq!(text, "");
+        __drop(Tag::String as i32, msg);
+        __drop(Tag::Label as i32, ok);
+
+        // Non-label handle: empty string as well.
+        let msg = __error_message_from_label(0);
+        assert_ne!(msg, INVALID_HANDLE);
+        let text = slot_with(msg, String::new(), |d| match d {
+            SlotData::String(s) => s.clone(),
+            _ => String::new(),
+        });
+        assert_eq!(text, "");
+        __drop(Tag::String as i32, msg);
     }
 }

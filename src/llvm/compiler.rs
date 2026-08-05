@@ -275,7 +275,7 @@ pub enum Tag {
     Unit = 6,
     Enum = 7,
     Struct = 8,
-    Error = 9,
+    // 9 was the legacy Error tag; removed in Phase 3 Step 3 (left unused).
     Label = 10,
 
     // System types
@@ -313,7 +313,7 @@ impl Tag {
             6 => Some(Tag::Unit),
             7 => Some(Tag::Enum),
             8 => Some(Tag::Struct),
-            9 => Some(Tag::Error),
+            // 9 is the legacy Error tag (removed in Phase 3 Step 3); no Tag maps to it.
             10 => Some(Tag::Label),
             100 => Some(Tag::Int8),
             101 => Some(Tag::Uint8),
@@ -515,15 +515,14 @@ impl<'ctx> Compiler<'ctx> {
                     | Type::List
                     | Type::Range
                     | Type::Struct(_)
-                    | Type::Error
                     | Type::Label => self.runtime_value_type.into(),
                     Type::Int => self.context.i64_type().into(),
                     Type::Str => self.context.ptr_type(AddressSpace::default()).into(),
                     Type::Float => self.context.f64_type().into(),
                     Type::Bool => self.context.bool_type().into(),
                     Type::Enum(name) => self.context.i64_type().into(),
-                    // App / Param are compile-time only; erase to a runtime slot.
-                    Type::App(_, _) | Type::Param(_) => self.runtime_value_type.into(),
+                    // App / Param / Atom are compile-time only; erase to a runtime slot.
+                    Type::App(_, _) | Type::Param(_) | Type::Atom(_) => self.runtime_value_type.into(),
                     Type::TypeI8 => self.context.i8_type().into(),
                     Type::TypeU8 => self.context.i8_type().into(),
                     Type::TypeI16 => self.context.i16_type().into(),
@@ -687,24 +686,22 @@ impl<'ctx> Compiler<'ctx> {
                 &[i64_type.into()], // label handle
                 false,
             ),
-            "__error_new" => i64_type.fn_type(
+            "__label_is_error" => i32_type.fn_type(
                 &[
-                    i32_type.into(),    // error code
-                    i8_ptr_type.into(), // message ptr (may be null)
-                    i64_type.into(),    // message length
+                    i32_type.into(), // value tag
+                    i64_type.into(), // value data
                 ],
                 false,
             ),
-            "__is_error" => i32_type.fn_type(
-                &[i64_type.into()], // slab handle (data field)
+            "__error_label_from_str" => i64_type.fn_type(
+                &[
+                    i8_ptr_type.into(), // reason bytes
+                    i64_type.into(),    // reason length
+                ],
                 false,
             ),
-            "__error_code" => i32_type.fn_type(
-                &[i64_type.into()], // slab handle
-                false,
-            ),
-            "__error_message" => i64_type.fn_type(
-                &[i64_type.into()], // slab handle
+            "__error_message_from_label" => i64_type.fn_type(
+                &[i64_type.into()], // label handle
                 false,
             ),
             "__panic" => void_type.fn_type(&[i8_ptr_type.into()], false),
@@ -771,7 +768,6 @@ mod tag_type_sync_tests {
             (Type::Unit, Tag::Unit),
             (Type::Enum("Point".into()), Tag::Enum),
             (Type::Struct("Point".into()), Tag::Struct),
-            (Type::Error, Tag::Error),
             (Type::Label, Tag::Label),
             (Type::TypeI8, Tag::Int8),
             (Type::TypeU8, Tag::Uint8),
@@ -801,17 +797,25 @@ mod tag_type_sync_tests {
     }
 
     #[test]
-    fn sprs_return_allows_declared_type_or_error() {
+    fn sprs_return_allows_declared_type_or_error_label() {
         // Mirrors validate_sprs_return_type rules without needing LLVM.
+        use crate::front::type_helper::{is_error_label_type, types_compatible};
         fn ok(expected: Option<Type>, actual: Type) -> bool {
             match expected {
                 None => true,
-                Some(exp) => actual == Type::Any || actual == Type::Error || actual == exp,
+                Some(exp) => {
+                    actual == Type::Any
+                        || is_error_label_type(&actual)
+                        || types_compatible(&exp, &actual)
+                }
             }
         }
+        let err_label = Type::App("Label".into(), vec![Type::Atom("error".into())]);
+        let ok_label = Type::App("Label".into(), vec![Type::Atom("ok".into())]);
         assert!(ok(Some(Type::List), Type::List));
-        assert!(ok(Some(Type::List), Type::Error));
+        assert!(ok(Some(Type::List), err_label.clone()));
         assert!(ok(Some(Type::List), Type::Any));
+        assert!(!ok(Some(Type::List), ok_label));
         assert!(!ok(Some(Type::List), Type::Int));
         assert!(ok(None, Type::Int));
     }

@@ -1,15 +1,16 @@
 use crate::front::ast;
 use crate::front::error::{ErrorCategory, ErrorCode, Location, SprsError};
+use crate::front::label_name::LabelName;
 use crate::front::span::Span;
 use crate::front::span::Spanned;
 use crate::front::type_helper;
-use crate::front::type_helper::{Type, types_compatible};
+use crate::front::type_helper::{Type, is_error_label_type, types_compatible};
 use crate::llvm::builder_helper;
 use crate::llvm::builder_helper::Comparison;
 use crate::llvm::builder_helper::EqNeq;
 use crate::llvm::builder_helper::UpDown;
-use crate::llvm::compiler::{Compiler, OS, Tag};
-use crate::llvm::value::create_label;
+use crate::llvm::compiler::Compiler;
+use crate::llvm::value::{build_label_is_error, create_label};
 use crate::naming;
 use inkwell::AddressSpace;
 use inkwell::module::Module;
@@ -175,7 +176,16 @@ impl<'ctx> Compiler<'ctx> {
                     }
                 }
                 "not" => Type::Bool,
-                "error" => Type::Error,
+                "error" => {
+                    if args.is_empty() {
+                        Type::App("Label".into(), vec![Type::Atom("error".into())])
+                    } else {
+                        Type::App(
+                            "Label".into(),
+                            vec![Type::Atom("error".into()), self.infer_type(&args[0])],
+                        )
+                    }
+                }
                 "label_is" => Type::Bool,
                 "label_name" => Type::Str,
                 "label_payload" => Type::Any,
@@ -188,13 +198,32 @@ impl<'ctx> Compiler<'ctx> {
             // Error propagates by returning from the function.
             ast::Expr::Try(inner) => self.infer_type(inner),
             ast::Expr::StructInit(name, _) => Type::Struct(name.clone()),
-            ast::Expr::Label(_, None) => Type::Label,
-            ast::Expr::Label(_, Some(payload)) => {
+            ast::Expr::Label(name, None) => match name {
+                LabelName::Static(static_name) => {
+                    Type::App("Label".into(), vec![Type::Atom(static_name.clone())])
+                }
+                LabelName::Dynamic(_) => Type::Label,
+            },
+            ast::Expr::Label(name, Some(payload)) => {
                 let payload_ty = self.infer_type(payload);
-                if matches!(payload_ty, Type::Unit) {
-                    Type::Label
-                } else {
-                    Type::App("Label".into(), vec![payload_ty])
+                match name {
+                    LabelName::Static(static_name) => {
+                        if matches!(payload_ty, Type::Unit) {
+                            Type::App("Label".into(), vec![Type::Atom(static_name.clone())])
+                        } else {
+                            Type::App(
+                                "Label".into(),
+                                vec![Type::Atom(static_name.clone()), payload_ty],
+                            )
+                        }
+                    }
+                    LabelName::Dynamic(_) => {
+                        if matches!(payload_ty, Type::Unit) {
+                            Type::Label
+                        } else {
+                            Type::App("Label".into(), vec![payload_ty])
+                        }
+                    }
                 }
             }
             _ => Type::Any,
@@ -346,8 +375,9 @@ impl<'ctx> Compiler<'ctx> {
 
     /// Check a `return` expression against the Sprs `>> T` annotation.
     ///
-    /// `Tag::Error` may always propagate (catchable errors), so `Error` is allowed
-    /// alongside the declared success type. `Any` (unknown) is not rejected.
+    /// An `:error` label (including the `err` sugar) may always propagate
+    /// (catchable errors), so it is allowed alongside the declared success
+    /// type. `Any` (unknown) is not rejected.
     fn validate_sprs_return_type(
         &self,
         expected: &Option<Type>,
@@ -357,7 +387,10 @@ impl<'ctx> Compiler<'ctx> {
         let Some(expected_ty) = expected else {
             return Ok(());
         };
-        if actual == Type::Any || actual == Type::Error || types_compatible(expected_ty, &actual) {
+        if actual == Type::Any
+            || is_error_label_type(&actual)
+            || types_compatible(expected_ty, &actual)
+        {
             return Ok(());
         }
         Err(SprsError::Type {
@@ -770,7 +803,6 @@ impl<'ctx> Compiler<'ctx> {
                     "rshift" => Ok(builder_helper::call_builtin_macro_rshift(self, args, module)?),
                     "not" => Ok(builder_helper::call_builtin_macro_not(self, args, module)?),
                     "is_error" => Ok(builder_helper::call_builtin_macro_is_error(self, args, module)?),
-                    "error_code" => Ok(builder_helper::call_builtin_macro_error_code(self, args, module)?),
                     "error_message" => Ok(builder_helper::call_builtin_macro_error_message(self, args, module)?),
                     "attach" => Ok(builder_helper::call_builtin_macro_attach(self, args, module)?),
                     "label_is" => Ok(builder_helper::call_builtin_macro_label_is(self, args, module)?),
@@ -965,7 +997,7 @@ impl<'ctx> Compiler<'ctx> {
             ast::Expr::Try(inner_expr) => {
                 let inner_ptr = self.compile_expr(inner_expr, module)?.into_pointer_value();
 
-                // Load the tag of the inner result.
+                // Load the tag and data of the inner result.
                 let tag_ptr = self
                     .builder
                     .build_struct_gep(self.runtime_value_type, inner_ptr, 0, "try_tag_ptr")
@@ -975,12 +1007,18 @@ impl<'ctx> Compiler<'ctx> {
                     .build_load(self.context.i32_type(), tag_ptr, "try_tag")
                     .unwrap()
                     .into_int_value();
-
-                let error_tag_const = self.context.i32_type().const_int(Tag::Error as u64, false);
-                let is_error = self
+                let data_ptr = self
                     .builder
-                    .build_int_compare(inkwell::IntPredicate::EQ, tag_val, error_tag_const, "try_is_error")
+                    .build_struct_gep(self.runtime_value_type, inner_ptr, 1, "try_data_ptr")
                     .unwrap();
+                let data_val = self
+                    .builder
+                    .build_load(self.context.i64_type(), data_ptr, "try_data")
+                    .unwrap()
+                    .into_int_value();
+
+                // `?` propagates only labels named "error".
+                let is_error = build_label_is_error(self, tag_val, data_val, module)?;
 
                 let current_fn = self.function_signatures.unwrap();
                 let propagate_bb = self.context.append_basic_block(current_fn, "try_propagate");

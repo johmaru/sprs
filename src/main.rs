@@ -222,7 +222,7 @@
 //! Notes:
 //! - Dynamic templates reject `{}`, `{expr}`, and nested braces. Use `{ident}` only.
 //! - `@attach` currently accepts only a static label without payload (`:name`).
-//! - `?` still propagates `Tag::Error` only; it is not connected to labels yet.
+//! - `?` propagates labels named "error" (`{:error, _}`).
 //! - There is no `match` / `case` syntax; use `@label_is` with `if`.
 //!
 //! ###  **Operators**

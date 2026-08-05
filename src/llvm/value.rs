@@ -16,30 +16,18 @@ use crate::{
     llvm::data_structures::create_unit,
 };
 
-pub struct ErrorValueSettings {
-    pub is_const: bool,
-    pub is_global: bool,
-}
-
-/// Generate IR that creates a `Tag::Error` value in the slab.
-/// Stores the result as a runtime_value_type `{ i32 tag=Error, i64 data=handle }`
-/// in a fresh alloca and returns the pointer.
-/// The caller should NOT emit `build_unreachable` — the error value flows
-/// through normal control flow so callers can propagate or catch it.
-pub fn create_error_value<'ctx>(
+/// Generate IR that creates a `Label` named "error" whose payload is a String
+/// slot built from `message`. Stores the result as a runtime_value_type
+/// `{ i32 tag=Label, i64 data=handle }` in a fresh alloca and returns the
+/// pointer. The caller should NOT emit `build_unreachable` — the error label
+/// flows through normal control flow so callers can propagate or catch it.
+pub fn create_error_label_from_str<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    error_code: u32,
     message: &str,
     module: &inkwell::module::Module<'ctx>,
-    settings: ErrorValueSettings,
 ) -> Result<PointerValue<'ctx>, SprsError> {
     // Store the message string as a global constant.
-    let global = self_compiler.set_global_constant_str(
-        module,
-        message,
-        settings.is_global,
-        settings.is_const,
-    );
+    let global = self_compiler.set_global_constant_str(module, message, true, true);
 
     let (msg_ptr, msg_len) = match global {
         Some(StrConstantResult::Global(g)) => {
@@ -62,19 +50,15 @@ pub fn create_error_value<'ctx>(
         }
     };
 
-    let error_code_val = self_compiler
-        .context
-        .i32_type()
-        .const_int(error_code as u64, false);
     let msg_len_val = self_compiler.context.i64_type().const_int(msg_len, false);
 
-    let error_new_fn = self_compiler.get_runtime_fn(module, "__error_new")?;
-    let error_handle = match self_compiler
+    let error_label_fn = self_compiler.get_runtime_fn(module, "__error_label_from_str")?;
+    let handle = match self_compiler
         .builder
         .build_call(
-            error_new_fn,
-            &[error_code_val.into(), msg_ptr.into(), msg_len_val.into()],
-            "error_new_call",
+            error_label_fn,
+            &[msg_ptr.into(), msg_len_val.into()],
+            "error_label_call",
         )
         .unwrap()
         .try_as_basic_value()
@@ -82,22 +66,60 @@ pub fn create_error_value<'ctx>(
         ValueKind::Basic(val) => val.into_int_value(),
         ValueKind::Instruction(_) => {
             return Err(SprsError::Internal {
-                message: "__error_new returned void".to_string(),
+                message: "__error_label_from_str returned void".to_string(),
                 location: None,
             });
         }
     };
 
-    // Store as a runtime_value_type { tag: Error, data: handle }
-    let res_ptr = create_entry_block_alloca(self_compiler, "error_val")?;
+    // Store as a runtime_value_type { tag: Label, data: handle }
+    let res_ptr = create_entry_block_alloca(self_compiler, "error_label_val")?;
     self_compiler.build_runtime_value_store(
         res_ptr,
-        StoreTag::Int(Tag::Error as u64),
-        StoreValue::Int(error_handle),
-        "error_val_store",
+        StoreTag::Int(Tag::Label as u64),
+        StoreValue::Int(handle),
+        "error_label_val_store",
     );
 
     Ok(res_ptr)
+}
+
+/// Emit `__label_is_error(tag, data)` and lower its i32 (0/1) result to an
+/// i1 predicate. True iff the value is a Label named "error".
+pub fn build_label_is_error<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+    tag: IntValue<'ctx>,
+    data: IntValue<'ctx>,
+    module: &inkwell::module::Module<'ctx>,
+) -> Result<IntValue<'ctx>, SprsError> {
+    let label_is_error_fn = self_compiler.get_runtime_fn(module, "__label_is_error")?;
+    let result = match self_compiler
+        .builder
+        .build_call(
+            label_is_error_fn,
+            &[tag.into(), data.into()],
+            "label_is_error_call",
+        )
+        .unwrap()
+        .try_as_basic_value()
+    {
+        ValueKind::Basic(val) => val.into_int_value(),
+        ValueKind::Instruction(_) => {
+            return Err(SprsError::Internal {
+                message: "__label_is_error returned void".to_string(),
+                location: None,
+            });
+        }
+    };
+    Ok(self_compiler
+        .builder
+        .build_int_compare(
+            inkwell::IntPredicate::NE,
+            result,
+            self_compiler.context.i32_type().const_int(0, false),
+            "label_is_error_pred",
+        )
+        .unwrap())
 }
 
 pub(crate) fn create_entry_block_alloca<'ctx>(

@@ -77,7 +77,7 @@ pub struct Function {
     pub blk: Vec<Spanned<Stmt>>,
     pub is_public: bool,
     /// Declared success-path return type (`>> T`). Absent means unannotated.
-    /// LLVM ABI still returns `runtime_value_type` so `Tag::Error` can propagate.
+    /// LLVM ABI still returns `runtime_value_type` so error labels (`{:error, _}`) can propagate.
     pub ret_ty: Option<Type>,
     pub span: Span,
 }

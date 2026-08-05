@@ -245,8 +245,12 @@ Type: Type = {
     TypeList => Type::List,
     TypeRange => Type::Range,
     TypeUnit => Type::Unit,
-    TypeError => Type::Error,
+    // `err` sugar: `{:error, reason}` label. `Type::Error` is removed in Phase 3 Step 3.
+    TypeError => Type::App("Label".into(), vec![Type::Atom("error".into())]),
     TypeLabel => Type::Label,
+
+    // Named label argument: `Label(:ok)`, `Label(:ok, int)`. Compile-time only.
+    Colon <id:Ident> => Type::Atom(id),
 
     TypeI8 => Type::TypeI8,
     TypeU8 => Type::TypeU8,

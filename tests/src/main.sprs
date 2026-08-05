@@ -164,12 +164,12 @@ fn main() {
 
     @println("=== Error Mechanism ===");
     @println(errors.check_error());
-    @println(errors.get_error_code());
     @println(errors.get_error_message());
     @println(errors.propagate_error());
+    @println(errors.label_reason_message());
     @println(errors.short_circuit_test());
     @println(errors.div_zero_is_error());
-    @println(errors.div_zero_code());
+    @println(errors.div_zero_message());
     @println(errors.mod_zero_is_error());
     @println(errors.not_an_error());
 
@@ -186,5 +186,5 @@ fn main() {
 
     @println("=== All Tests Done ===");
 
-    # div/mod by zero now return catchable Tag::Error (see Error Mechanism section)
+    # div/mod by zero now return catchable error labels (see Error Mechanism section)
 }

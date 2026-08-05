@@ -35,7 +35,14 @@ fn h() >> err { return @error(100, "x"); }
                 _ => None,
             })
             .collect();
-        assert_eq!(tys, vec![&Type::List, &Type::Range, &Type::Error]);
+        assert_eq!(
+            tys,
+            vec![
+                &Type::List,
+                &Type::Range,
+                &Type::App("Label".into(), vec![Type::Atom("error".into())])
+            ]
+        );
 
         let list_param = match &items[0] {
             Item::FunctionItem(f) => f.params[0].ty.as_ref(),
@@ -60,7 +67,10 @@ fn h(xs >> List()) >> list { return xs; }
         let items = parse_only(src, "test.sprs").expect("parse");
 
         let list_int = Type::App("List".into(), vec![Type::Int]);
-        let result_int_err = Type::App("Result".into(), vec![Type::Int, Type::Error]);
+        let result_int_err = Type::App(
+            "Result".into(),
+            vec![Type::Int, Type::App("Label".into(), vec![Type::Atom("error".into())])],
+        );
 
         match &items[0] {
             Item::FunctionItem(f) => {
@@ -106,7 +116,10 @@ fn h(xs >> List()) >> list { return xs; }
         let items = parse_only(src, "test.sprs").expect("parse");
         let expected = Type::App(
             "List".into(),
-            vec![Type::App("Result".into(), vec![Type::Int, Type::Error])],
+            vec![Type::App(
+                "Result".into(),
+                vec![Type::Int, Type::App("Label".into(), vec![Type::Atom("error".into())])],
+            )],
         );
         match &items[0] {
             Item::FunctionItem(f) => {
@@ -266,6 +279,65 @@ fn g(x >> Label(int)) >> Label(int) { return x; }
                 assert_eq!(f.ret_ty.as_ref(), Some(&expected));
             }
             other => panic!("expected g, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parses_named_label_type_annotations() {
+        let src = r#"
+fn f() >> Label(:ok) { return :ok; }
+fn g(x >> Label(:ok, int)) >> Label(:ok, int) { return x; }
+fn h() >> err { return :error; }
+"#;
+        let items = parse_only(src, "named_label_ty.sprs").expect("parse");
+        let label_ok = Type::App("Label".into(), vec![Type::Atom("ok".into())]);
+        let label_ok_int =
+            Type::App("Label".into(), vec![Type::Atom("ok".into()), Type::Int]);
+        let err_sugar = Type::App("Label".into(), vec![Type::Atom("error".into())]);
+
+        match &items[0] {
+            Item::FunctionItem(f) => {
+                assert_eq!(f.ret_ty.as_ref(), Some(&label_ok));
+            }
+            other => panic!("expected f, got {:?}", other),
+        }
+        match &items[1] {
+            Item::FunctionItem(f) => {
+                assert_eq!(f.ret_ty.as_ref(), Some(&label_ok_int));
+                assert_eq!(
+                    f.params[0].ty.as_ref(),
+                    Some(&TypeAnnot {
+                        ty: label_ok_int.clone(),
+                        ambi: false
+                    })
+                );
+            }
+            other => panic!("expected g, got {:?}", other),
+        }
+        match &items[2] {
+            Item::FunctionItem(f) => {
+                assert_eq!(f.ret_ty.as_ref(), Some(&err_sugar));
+            }
+            other => panic!("expected h, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parses_named_label_inside_app_type_annotation() {
+        let src = "fn f(x >> List(Label(:ok, str))) { return; }\n";
+        let items = parse_only(src, "named_label_nested.sprs").expect("parse");
+        let expected = Type::App(
+            "List".into(),
+            vec![Type::App(
+                "Label".into(),
+                vec![Type::Atom("ok".into()), Type::Str],
+            )],
+        );
+        match &items[0] {
+            Item::FunctionItem(f) => {
+                assert_eq!(f.params[0].ty.as_ref().map(|a| &a.ty), Some(&expected));
+            }
+            other => panic!("expected function, got {:?}", other),
         }
     }
 }

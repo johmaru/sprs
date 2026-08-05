@@ -6,6 +6,7 @@ use crate::front::type_helper::Type;
 use crate::llvm::builder_helper;
 use crate::llvm::compiler::{Compiler, FnTypeInfo, LINUX_STR, OS, StructDef, Tag, WINDOWS_STR};
 use crate::llvm::parser::parse_only;
+use crate::llvm::value::build_label_is_error;
 use crate::naming;
 use inkwell::AddressSpace;
 use inkwell::module::Linkage;
@@ -132,7 +133,7 @@ impl<'ctx> Compiler<'ctx> {
                     .build_call(sprs_main_fn, &[], "call_sprs_main")
                     .unwrap();
 
-                // If sprs main returns a Tag::Error value, panic at the process boundary.
+                // If sprs main returns an error label (`{:error, _}`), panic at the process boundary.
                 if let Some(ret_ty) = sprs_main_fn.get_type().get_return_type() {
                     if ret_ty == self.runtime_value_type.into() {
                         let main_ret = match main_call.try_as_basic_value() {
@@ -160,17 +161,24 @@ impl<'ctx> Compiler<'ctx> {
                                 .build_load(i32_type, tag_ptr, "main_ret_tag")
                                 .unwrap()
                                 .into_int_value();
-
-                            let error_tag = i32_type.const_int(Tag::Error as u64, false);
-                            let is_error = self
+                            let data_ptr = self
                                 .builder
-                                .build_int_compare(
-                                    inkwell::IntPredicate::EQ,
-                                    tag_val,
-                                    error_tag,
-                                    "main_ret_is_error",
+                                .build_struct_gep(
+                                    self.runtime_value_type,
+                                    main_ret_alloca,
+                                    1,
+                                    "main_ret_data_ptr",
                                 )
                                 .unwrap();
+                            let data_val = self
+                                .builder
+                                .build_load(self.context.i64_type(), data_ptr, "main_ret_data")
+                                .unwrap()
+                                .into_int_value();
+
+                            // An uncaught `{:error, _}` label returned from
+                            // sprs main panics at the process boundary.
+                            let is_error = build_label_is_error(self, tag_val, data_val, &module)?;
 
                             let panic_bb =
                                 self.context.append_basic_block(c_main, "main_error_panic");
@@ -413,7 +421,7 @@ impl<'ctx> Compiler<'ctx> {
 
         let fn_type = self.runtime_value_type.fn_type(&arg_types, false);
         // Return annotations (`>> T`) describe the success path only.
-        // All functions return runtime_value_type so Tag::Error can propagate
+        // All functions return runtime_value_type so error labels (`{:error, _}`) can propagate
         // across any declared return type (catchable error mechanism).
         let func_name = if func.ident == "main" {
             naming::INTERNAL_MAIN_FN

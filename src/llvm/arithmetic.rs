@@ -10,7 +10,9 @@ use crate::{
     front::type_helper,
     llvm::compiler::{Compiler, StoreTag, StoreValue, Tag},
 };
-use crate::llvm::value::{create_error_value, create_entry_block_alloca, ErrorValueSettings};
+use crate::llvm::value::{
+    build_label_is_error, create_entry_block_alloca, create_error_label_from_str,
+};
 use crate::llvm::variable::move_variable;
 
 pub fn create_add_expr<'ctx>(
@@ -78,15 +80,17 @@ pub fn create_add_expr<'ctx>(
         .context
         .append_basic_block(parent_fn, "add_merge_bb");
 
-    // short-circuit: if either operand is Tag::Error, return it directly.
-    let error_tag_const = self_compiler
-        .context
-        .i32_type()
-        .const_int(Tag::Error as u64, false);
-    let l_is_error = self_compiler
+    // short-circuit: if either operand is an error label, return it directly.
+    let l_data_ptr = self_compiler
         .builder
-        .build_int_compare(inkwell::IntPredicate::EQ, l_tag, error_tag_const, "l_is_error")
+        .build_struct_gep(self_compiler.runtime_value_type, l_ptr, 1, "l_data_ptr")
         .unwrap();
+    let l_data = self_compiler
+        .builder
+        .build_load(self_compiler.context.i64_type(), l_data_ptr, "l_data")
+        .unwrap()
+        .into_int_value();
+    let l_is_error = build_label_is_error(self_compiler, l_tag, l_data, module)?;
     let l_error_bb = self_compiler
         .context
         .append_basic_block(parent_fn, "l_error_short_circuit");
@@ -103,10 +107,16 @@ pub fn create_add_expr<'ctx>(
     let _ = self_compiler.builder.build_unconditional_branch(merge_bb);
 
     self_compiler.builder.position_at_end(check_r_error_bb);
-    let r_is_error = self_compiler
+    let r_data_ptr = self_compiler
         .builder
-        .build_int_compare(inkwell::IntPredicate::EQ, r_tag, error_tag_const, "r_is_error")
+        .build_struct_gep(self_compiler.runtime_value_type, r_ptr, 1, "r_data_ptr")
         .unwrap();
+    let r_data = self_compiler
+        .builder
+        .build_load(self_compiler.context.i64_type(), r_data_ptr, "r_data")
+        .unwrap()
+        .into_int_value();
+    let r_is_error = build_label_is_error(self_compiler, r_tag, r_data, module)?;
     let r_error_bb = self_compiler
         .context
         .append_basic_block(parent_fn, "r_error_short_circuit");
@@ -159,18 +169,7 @@ pub fn create_add_expr<'ctx>(
         self_compiler.get_known_type_from_expr(rhs)
     );
 
-    let settings = ErrorValueSettings {
-        is_const: true,
-        is_global: true,
-    };
-
-    let error_ptr = create_error_value(
-        self_compiler,
-        4,  // SprsErrorCode::TypeMismatch
-        &error_message,
-        module,
-        settings,
-    )?;
+    let error_ptr = create_error_label_from_str(self_compiler, &error_message, module)?;
 
     let _ = self_compiler.builder.build_unconditional_branch(merge_bb);
 
@@ -659,20 +658,10 @@ fn create_add_expr_build_float_branch<'ctx>(
         .build_switch(float_tag, error_bb, &cases)
         .unwrap();
 
-    // error branch (BUG-L17): unknown float tag → error value instead of panic
+    // error branch (BUG-L17): unknown float tag → error label instead of panic
     self_compiler.builder.position_at_end(error_bb);
     let error_message = "TypeError: unexpected float tag in add";
-    let settings = ErrorValueSettings {
-        is_const: true,
-        is_global: true,
-    };
-    let error_ptr = create_error_value(
-        self_compiler,
-        4,  // SprsErrorCode::TypeMismatch
-        error_message,
-        module,
-        settings,
-    )?;
+    let error_ptr = create_error_label_from_str(self_compiler, error_message, module)?;
     let _ = self_compiler.builder.build_unconditional_branch(final_merge);
 
     // Float16
@@ -1658,15 +1647,29 @@ pub fn create_div_expr<'ctx>(
         .context
         .append_basic_block(parent_fn, "div_merge_bb");
 
-    // short-circuit: if either operand is Tag::Error, return it directly.
-    let error_tag_const = self_compiler
-        .context
-        .i32_type()
-        .const_int(Tag::Error as u64, false);
-    let l_is_error = self_compiler
+    // Load operand data before the short-circuit so `__label_is_error` can
+    // inspect the label name.
+    let l_data_ptr = self_compiler
         .builder
-        .build_int_compare(inkwell::IntPredicate::EQ, l_tag, error_tag_const, "div_l_is_error")
+        .build_struct_gep(self_compiler.runtime_value_type, l_ptr, 1, "l_data_ptr")
         .unwrap();
+    let l_val = self_compiler
+        .builder
+        .build_load(self_compiler.context.i64_type(), l_data_ptr, "l_val")
+        .unwrap()
+        .into_int_value();
+    let r_data_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, r_ptr, 1, "r_data_ptr")
+        .unwrap();
+    let r_val = self_compiler
+        .builder
+        .build_load(self_compiler.context.i64_type(), r_data_ptr, "r_val")
+        .unwrap()
+        .into_int_value();
+
+    // short-circuit: if either operand is an error label, return it directly.
+    let l_is_error = build_label_is_error(self_compiler, l_tag, l_val, module)?;
     let l_error_bb = self_compiler
         .context
         .append_basic_block(parent_fn, "div_l_error_short_circuit");
@@ -1683,10 +1686,7 @@ pub fn create_div_expr<'ctx>(
     let _ = self_compiler.builder.build_unconditional_branch(merge_bb);
 
     self_compiler.builder.position_at_end(check_r_error_bb);
-    let r_is_error = self_compiler
-        .builder
-        .build_int_compare(inkwell::IntPredicate::EQ, r_tag, error_tag_const, "div_r_is_error")
-        .unwrap();
+    let r_is_error = build_label_is_error(self_compiler, r_tag, r_val, module)?;
     let r_error_bb = self_compiler
         .context
         .append_basic_block(parent_fn, "div_r_error_short_circuit");
@@ -1704,26 +1704,6 @@ pub fn create_div_expr<'ctx>(
 
     self_compiler.builder.position_at_end(normal_dispatch_bb);
 
-    let l_data_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, l_ptr, 1, "l_data_ptr")
-        .unwrap();
-    let l_val = self_compiler
-        .builder
-        .build_load(self_compiler.context.i64_type(), l_data_ptr, "l_val")
-        .unwrap()
-        .into_int_value();
-
-    let r_data_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, r_ptr, 1, "r_data_ptr")
-        .unwrap();
-    let r_val = self_compiler
-        .builder
-        .build_load(self_compiler.context.i64_type(), r_data_ptr, "r_val")
-        .unwrap()
-        .into_int_value();
-
     // Zero-division check
     let zero = self_compiler.context.i64_type().const_int(0, false);
     let is_zero = self_compiler
@@ -1736,17 +1716,7 @@ pub fn create_div_expr<'ctx>(
 
     // Error: division by zero
     self_compiler.builder.position_at_end(bb_err);
-    let settings = ErrorValueSettings {
-        is_const: true,
-        is_global: true,
-    };
-    let error_ptr = create_error_value(
-        self_compiler,
-        2,  // SprsErrorCode::DivByZero
-        "Division by zero",
-        module,
-        settings,
-    )?;
+    let error_ptr = create_error_label_from_str(self_compiler, "Division by zero", module)?;
     let _ = self_compiler.builder.build_unconditional_branch(merge_bb);
 
     // Div
@@ -1827,15 +1797,29 @@ pub fn create_mod_expr<'ctx>(
         .context
         .append_basic_block(parent_fn, "mod_merge_bb");
 
-    // short-circuit: if either operand is Tag::Error, return it directly.
-    let error_tag_const = self_compiler
-        .context
-        .i32_type()
-        .const_int(Tag::Error as u64, false);
-    let l_is_error = self_compiler
+    // Load operand data before the short-circuit so `__label_is_error` can
+    // inspect the label name.
+    let l_data_ptr = self_compiler
         .builder
-        .build_int_compare(inkwell::IntPredicate::EQ, l_tag, error_tag_const, "mod_l_is_error")
+        .build_struct_gep(self_compiler.runtime_value_type, l_ptr, 1, "l_data_ptr")
         .unwrap();
+    let l_val = self_compiler
+        .builder
+        .build_load(self_compiler.context.i64_type(), l_data_ptr, "l_val")
+        .unwrap()
+        .into_int_value();
+    let r_data_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, r_ptr, 1, "r_data_ptr")
+        .unwrap();
+    let r_val = self_compiler
+        .builder
+        .build_load(self_compiler.context.i64_type(), r_data_ptr, "r_val")
+        .unwrap()
+        .into_int_value();
+
+    // short-circuit: if either operand is an error label, return it directly.
+    let l_is_error = build_label_is_error(self_compiler, l_tag, l_val, module)?;
     let l_error_bb = self_compiler
         .context
         .append_basic_block(parent_fn, "mod_l_error_short_circuit");
@@ -1852,10 +1836,7 @@ pub fn create_mod_expr<'ctx>(
     let _ = self_compiler.builder.build_unconditional_branch(merge_bb);
 
     self_compiler.builder.position_at_end(check_r_error_bb);
-    let r_is_error = self_compiler
-        .builder
-        .build_int_compare(inkwell::IntPredicate::EQ, r_tag, error_tag_const, "mod_r_is_error")
-        .unwrap();
+    let r_is_error = build_label_is_error(self_compiler, r_tag, r_val, module)?;
     let r_error_bb = self_compiler
         .context
         .append_basic_block(parent_fn, "mod_r_error_short_circuit");
@@ -1873,26 +1854,6 @@ pub fn create_mod_expr<'ctx>(
 
     self_compiler.builder.position_at_end(normal_dispatch_bb);
 
-    let l_data_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, l_ptr, 1, "l_data_ptr")
-        .unwrap();
-    let l_val = self_compiler
-        .builder
-        .build_load(self_compiler.context.i64_type(), l_data_ptr, "l_val")
-        .unwrap()
-        .into_int_value();
-
-    let r_data_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, r_ptr, 1, "r_data_ptr")
-        .unwrap();
-    let r_val = self_compiler
-        .builder
-        .build_load(self_compiler.context.i64_type(), r_data_ptr, "r_val")
-        .unwrap()
-        .into_int_value();
-
     // Zero-division check
     let zero = self_compiler.context.i64_type().const_int(0, false);
     let is_zero = self_compiler
@@ -1905,17 +1866,7 @@ pub fn create_mod_expr<'ctx>(
 
     // Error: modulo by zero
     self_compiler.builder.position_at_end(bb_err);
-    let settings = ErrorValueSettings {
-        is_const: true,
-        is_global: true,
-    };
-    let error_ptr = create_error_value(
-        self_compiler,
-        3,  // SprsErrorCode::ModByZero
-        "Modulo by zero",
-        module,
-        settings,
-    )?;
+    let error_ptr = create_error_label_from_str(self_compiler, "Modulo by zero", module)?;
     let _ = self_compiler.builder.build_unconditional_branch(merge_bb);
 
     // Mod
@@ -2014,20 +1965,34 @@ where
         .context
         .append_basic_block(parent_fn, &format!("{op_name}_merge_bb"));
 
-    // short-circuit: if either operand is Tag::Error, return it directly.
-    let error_tag_const = self_compiler
-        .context
-        .i32_type()
-        .const_int(Tag::Error as u64, false);
-    let l_is_error = self_compiler
+    // Load operand data before the short-circuit so `__label_is_error` can
+    // inspect the label name.
+    let l_data_ptr = self_compiler
         .builder
-        .build_int_compare(
-            inkwell::IntPredicate::EQ,
-            l_tag,
-            error_tag_const,
-            &format!("{op_name}_l_is_error"),
-        )
+        .build_struct_gep(self_compiler.runtime_value_type, l_ptr, 1, "l_data_ptr")
         .unwrap();
+    let l_val = self_compiler
+        .builder
+        .build_load(self_compiler.context.i64_type(), l_data_ptr, "l_val")
+        .unwrap()
+        .into_int_value();
+    let r_data_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, r_ptr, 1, "r_data_ptr")
+        .unwrap();
+    let r_val = self_compiler
+        .builder
+        .build_load(self_compiler.context.i64_type(), r_data_ptr, "r_val")
+        .unwrap()
+        .into_int_value();
+
+    // short-circuit: if either operand is an error label, return it directly.
+    let l_is_error = build_label_is_error(
+        self_compiler,
+        l_tag,
+        l_val,
+        module,
+    )?;
     let l_error_bb = self_compiler.context.append_basic_block(
         parent_fn,
         &format!("{op_name}_l_error_short_circuit"),
@@ -2045,15 +2010,12 @@ where
     let _ = self_compiler.builder.build_unconditional_branch(merge_bb);
 
     self_compiler.builder.position_at_end(check_r_error_bb);
-    let r_is_error = self_compiler
-        .builder
-        .build_int_compare(
-            inkwell::IntPredicate::EQ,
-            r_tag,
-            error_tag_const,
-            &format!("{op_name}_r_is_error"),
-        )
-        .unwrap();
+    let r_is_error = build_label_is_error(
+        self_compiler,
+        r_tag,
+        r_val,
+        module,
+    )?;
     let r_error_bb = self_compiler.context.append_basic_block(
         parent_fn,
         &format!("{op_name}_r_error_short_circuit"),
@@ -2071,26 +2033,6 @@ where
     let _ = self_compiler.builder.build_unconditional_branch(merge_bb);
 
     self_compiler.builder.position_at_end(normal_dispatch_bb);
-
-    let l_data_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, l_ptr, 1, "l_data_ptr")
-        .unwrap();
-    let l_val = self_compiler
-        .builder
-        .build_load(self_compiler.context.i64_type(), l_data_ptr, "l_val")
-        .unwrap()
-        .into_int_value();
-
-    let r_data_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, r_ptr, 1, "r_data_ptr")
-        .unwrap();
-    let r_val = self_compiler
-        .builder
-        .build_load(self_compiler.context.i64_type(), r_data_ptr, "r_val")
-        .unwrap()
-        .into_int_value();
 
     let result = op_fn(
         &self_compiler.builder,

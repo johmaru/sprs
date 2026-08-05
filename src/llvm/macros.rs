@@ -9,7 +9,9 @@ use crate::{
     llvm::compiler::{Compiler, StoreTag, StoreValue, Tag},
 };
 use crate::llvm::data_structures::create_unit;
-use crate::llvm::value::{create_error_value, create_entry_block_alloca, create_label, ErrorValueSettings};
+use crate::llvm::value::{
+    build_label_is_error, create_entry_block_alloca, create_error_label_from_str, create_label,
+};
 use crate::front::label_name::LabelName;
 use crate::llvm::variable::{clone_runtime_value, move_variable, var_load_at_init_variable};
 
@@ -310,17 +312,8 @@ pub fn call_builtin_macro_cast<'ctx>(
 
     let i32_type = self_compiler.context.i32_type();
 
-    // short-circuit: if input is Tag::Error, return it directly.
-    let error_tag_const = i32_type.const_int(Tag::Error as u64, false);
-    let input_is_error = self_compiler
-        .builder
-        .build_int_compare(
-            inkwell::IntPredicate::EQ,
-            current_tag,
-            error_tag_const,
-            "cast_input_is_error",
-        )
-        .unwrap();
+    // short-circuit: if the input is an error label, return it directly.
+    let input_is_error = build_label_is_error(self_compiler, current_tag, data, module)?;
     let input_error_bb = self_compiler
         .context
         .append_basic_block(parent, "cast_input_error");
@@ -362,18 +355,12 @@ pub fn call_builtin_macro_cast<'ctx>(
         .build_switch(current_tag, error_bb, &cases)
         .unwrap();
 
-    // error branch: unknown tag → error value
+    // error branch: unknown tag → error label
     self_compiler.builder.position_at_end(error_bb);
-    let settings = ErrorValueSettings {
-        is_const: true,
-        is_global: true,
-    };
-    let error_ptr = create_error_value(
+    let error_ptr = create_error_label_from_str(
         self_compiler,
-        5,  // SprsErrorCode::CastError
         "TypeError: unexpected tag in @cast",
         module,
-        settings,
     )?;
     let _ = self_compiler.builder.build_unconditional_branch(final_merge);
 
@@ -846,17 +833,8 @@ fn shift_impl<'ctx>(
 
     let i32_type = self_compiler.context.i32_type();
 
-    // short-circuit: if either operand is Tag::Error, return it directly.
-    let error_tag_const = i32_type.const_int(Tag::Error as u64, false);
-    let val_is_error = self_compiler
-        .builder
-        .build_int_compare(
-            inkwell::IntPredicate::EQ,
-            value_tag,
-            error_tag_const,
-            "shift_val_is_error",
-        )
-        .unwrap();
+    // short-circuit: if either operand is an error label, return it directly.
+    let val_is_error = build_label_is_error(self_compiler, value_tag, value_data, module)?;
     let val_error_bb = self_compiler
         .context
         .append_basic_block(parent, "shift_val_error_short_circuit");
@@ -873,15 +851,7 @@ fn shift_impl<'ctx>(
     let _ = self_compiler.builder.build_unconditional_branch(final_merge);
 
     self_compiler.builder.position_at_end(check_shift_error_bb);
-    let shift_is_error = self_compiler
-        .builder
-        .build_int_compare(
-            inkwell::IntPredicate::EQ,
-            shift_tag,
-            error_tag_const,
-            "shift_amt_is_error",
-        )
-        .unwrap();
+    let shift_is_error = build_label_is_error(self_compiler, shift_tag, shift_amt, module)?;
     let shift_error_bb = self_compiler
         .context
         .append_basic_block(parent, "shift_amt_error_short_circuit");
@@ -957,23 +927,13 @@ fn shift_impl<'ctx>(
         .build_unconditional_branch(marge)
         .unwrap();
 
-    // Error: non-integer tag — create error value
+    // Error: non-integer tag — create error label
     self_compiler.builder.position_at_end(bb_err);
     let err_msg: &'static str = match dir {
         ShiftDir::Left => "@lshift expects an integer value",
         ShiftDir::Right => "@rshift expects an integer value",
     };
-    let settings = ErrorValueSettings {
-        is_const: true,
-        is_global: true,
-    };
-    let error_ptr = create_error_value(
-        self_compiler,
-        6,  // SprsErrorCode::ShiftTypeError
-        err_msg,
-        module,
-        settings,
-    )?;
+    let error_ptr = create_error_label_from_str(self_compiler, err_msg, module)?;
     self_compiler
         .builder
         .build_unconditional_branch(final_merge)
@@ -1072,7 +1032,7 @@ pub fn call_builtin_macro_not<'ctx>(
     Ok(result_ptr.into())
 }
 
-/// @is_error(x) — returns true (1) if x's tag is Tag::Error, false (0) otherwise.
+/// @is_error(x) — returns true (1) if x is a Label named "error", false (0) otherwise.
 pub fn call_builtin_macro_is_error<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
     args: &[Spanned<ast::Expr>],
@@ -1089,8 +1049,8 @@ pub fn call_builtin_macro_is_error<'ctx>(
 
     let val_ptr = self_compiler.compile_expr(&args[0], module)?.into_pointer_value();
 
-    // Prefer tag comparison: Tag::Error means the value is an error.
-    // (Checking the data handle alone can false-positive on immediate integers.)
+    // Delegate to `__label_is_error(tag, data)`: the data handle alone can
+    // false-positive on immediate integers, so both fields are loaded.
     let tag_ptr = self_compiler
         .builder
         .build_struct_gep(self_compiler.runtime_value_type, val_ptr, 0, "is_error_tag_ptr")
@@ -1100,20 +1060,17 @@ pub fn call_builtin_macro_is_error<'ctx>(
         .build_load(self_compiler.context.i32_type(), tag_ptr, "is_error_tag")
         .unwrap()
         .into_int_value();
-
-    let error_tag_const = self_compiler
-        .context
-        .i32_type()
-        .const_int(Tag::Error as u64, false);
-    let is_error = self_compiler
+    let data_ptr = self_compiler
         .builder
-        .build_int_compare(
-            inkwell::IntPredicate::EQ,
-            tag_val,
-            error_tag_const,
-            "is_error_cmp",
-        )
+        .build_struct_gep(self_compiler.runtime_value_type, val_ptr, 1, "is_error_data_ptr")
         .unwrap();
+    let data_val = self_compiler
+        .builder
+        .build_load(self_compiler.context.i64_type(), data_ptr, "is_error_data")
+        .unwrap()
+        .into_int_value();
+
+    let is_error = build_label_is_error(self_compiler, tag_val, data_val, module)?;
 
     // Store as a Bool runtime_value.
     let res_ptr = create_entry_block_alloca(self_compiler, "is_error_res")?;
@@ -1131,67 +1088,9 @@ pub fn call_builtin_macro_is_error<'ctx>(
     Ok(res_ptr.into())
 }
 
-/// @error_code(x) — returns the error code as an i64. Returns 0 if not an error.
-pub fn call_builtin_macro_error_code<'ctx>(
-    self_compiler: &mut Compiler<'ctx>,
-    args: &[Spanned<ast::Expr>],
-    module: &inkwell::module::Module<'ctx>,
-) -> Result<BasicValueEnum<'ctx>, SprsError> {
-    if args.len() != 1 {
-        return Err(SprsError::Semantic {
-            code: ErrorCode { category: ErrorCategory::Semantic, number: 3 },
-            location: Location::new(String::new(), Span::DUMMY),
-            message: "@error_code expects exactly 1 argument".to_string(),
-            help: None,
-        });
-    }
-
-    let val_ptr = self_compiler.compile_expr(&args[0], module)?.into_pointer_value();
-
-    let data_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, val_ptr, 1, "error_code_data_ptr")
-        .unwrap();
-    let data_val = self_compiler
-        .builder
-        .build_load(self_compiler.context.i64_type(), data_ptr, "error_code_data")
-        .unwrap()
-        .into_int_value();
-
-    let error_code_fn = self_compiler.get_runtime_fn(module, "__error_code")?;
-    let code_i32 = match self_compiler
-        .builder
-        .build_call(error_code_fn, &[data_val.into()], "error_code_call")
-        .unwrap()
-        .try_as_basic_value()
-    {
-        ValueKind::Basic(val) => val.into_int_value(),
-        ValueKind::Instruction(_) => {
-            return Err(SprsError::Internal {
-                message: "__error_code returned void".to_string(),
-                location: None,
-            });
-        }
-    };
-
-    // Zero-extend i32 to i64 for the data field.
-    let code_i64 = self_compiler
-        .builder
-        .build_int_z_extend(code_i32, self_compiler.context.i64_type(), "error_code_i64")
-        .unwrap();
-
-    let res_ptr = create_entry_block_alloca(self_compiler, "error_code_res")?;
-    self_compiler.build_runtime_value_store(
-        res_ptr,
-        StoreTag::Int(Tag::Integer as u64),
-        StoreValue::Int(code_i64),
-        "error_code_res_store",
-    );
-    Ok(res_ptr.into())
-}
-
-/// @error_message(x) — returns the error message as a String value.
-/// Returns an empty string if not an error or no message.
+/// @error_message(x) — returns the error reason as a String value.
+/// Error labels with a String payload return that payload; other error-label
+/// payloads are rendered via `format_sprs_value`; non-errors return "".
 pub fn call_builtin_macro_error_message<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
     args: &[Spanned<ast::Expr>],
@@ -1218,7 +1117,7 @@ pub fn call_builtin_macro_error_message<'ctx>(
         .unwrap()
         .into_int_value();
 
-    let error_msg_fn = self_compiler.get_runtime_fn(module, "__error_message")?;
+    let error_msg_fn = self_compiler.get_runtime_fn(module, "__error_message_from_label")?;
     let string_handle = match self_compiler
         .builder
         .build_call(error_msg_fn, &[data_val.into()], "error_msg_call")
@@ -1228,7 +1127,7 @@ pub fn call_builtin_macro_error_message<'ctx>(
         ValueKind::Basic(val) => val.into_int_value(),
         ValueKind::Instruction(_) => {
             return Err(SprsError::Internal {
-                message: "__error_message returned void".to_string(),
+                message: "__error_message_from_label returned void".to_string(),
                 location: None,
             });
         }
@@ -1505,49 +1404,26 @@ pub fn call_builtin_macro_label_name<'ctx>(
     Ok(res_ptr.into())
 }
 
-/// @error(code, message) — creates a Tag::Error value.
-/// code: integer literal (u32). message: string literal.
+/// @error(reason) — creates a `{:error, reason}` label.
+/// reason: any expression; the compiled value becomes the label payload.
 pub fn call_builtin_macro_error<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
     args: &[Spanned<ast::Expr>],
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
-    if args.len() != 2 {
+    if args.len() != 1 {
         return Err(SprsError::Semantic {
             code: ErrorCode { category: ErrorCategory::Semantic, number: 3 },
             location: Location::new(String::new(), Span::DUMMY),
-            message: "@error expects exactly 2 arguments: code and message".to_string(),
+            message: "@error expects exactly 1 argument: reason".to_string(),
             help: None,
         });
     }
 
-    // Extract code from the first argument (must be a Number literal).
-    let error_code: u32 = match &args[0].node {
-        ast::Expr::Number(n) => *n as u32,
-        _ => return Err(SprsError::Semantic {
-            code: ErrorCode { category: ErrorCategory::Semantic, number: 3 },
-            location: Location::new(String::new(), args[0].span),
-            message: "@error first argument must be an integer literal".to_string(),
-            help: None,
-        }),
-    };
-
-    // Extract message from the second argument (must be a Str literal).
-    let message: &str = match &args[1].node {
-        ast::Expr::Str(s) => s.as_str(),
-        _ => return Err(SprsError::Semantic {
-            code: ErrorCode { category: ErrorCategory::Semantic, number: 3 },
-            location: Location::new(String::new(), args[1].span),
-            message: "@error second argument must be a string literal".to_string(),
-            help: None,
-        }),
-    };
-
-    let settings = ErrorValueSettings {
-        is_const: true,
-        is_global: true,
-    };
-
-    let error_ptr = create_error_value(self_compiler, error_code, message, module, settings)?;
-    Ok(error_ptr.into())
+    create_label(
+        self_compiler,
+        &LabelName::Static("error".into()),
+        Some(&args[0]),
+        module,
+    )
 }

@@ -17,7 +17,6 @@
 /// | Unit            | Unit         | 6            |
 /// | Enum            | Enum         | 7            |
 /// | Struct(_)       | Struct       | 8            |
-/// | Error           | Error        | 9            |
 /// | Label           | Label        | 10           |
 /// | TypeI8          | Int8         | 100          |
 /// | TypeU8          | Uint8        | 101          |
@@ -33,13 +32,19 @@
 /// | Any             | (none)       | (none)       |
 /// | App(name, args) | (none)       | (none)       |
 /// | Param(name)     | (none)       | (none)       |
+/// | Atom(name)      | (none)       | (none)       |
 ///
-/// `App` / `Param` are compile-time only: inputs to checking and (later)
-/// monomorphization (#29). They are not LLVM types and not runtime tags.
+/// `App` / `Param` / `Atom` are compile-time only: inputs to checking and
+/// (later) monomorphization (#29). They are not LLVM types and not runtime
+/// tags. `Atom` carries a label name as written in a type argument
+/// (`Label(:ok)`); it has no tag of its own.
 ///
-/// Flat `List` / `Range` / `Error` / `Label` coexist with parametric forms such as
+/// Flat `List` / `Range` / `Label` coexist with parametric forms such as
 /// `App("List", [Int])`. Everyday annotations keep the keywords (`list`,
 /// `err`, `label`); `App` is for explicit constructor application in annotations.
+///
+/// Runtime tag 9 is unused: it was the legacy `Error` tag, removed in Phase 3
+/// Step 3. No `Type` maps to it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Type {
     Any,
@@ -52,11 +57,11 @@ pub enum Type {
     Unit,
     Enum(String),
     Struct(String),
-    Error,
     Label,
 
     App(String, Vec<Type>),
     Param(String),
+    Atom(String), // compile-time only: `:name` in type args. No tag_discriminant.
 
     // System types
     TypeI8,
@@ -99,10 +104,10 @@ impl Type {
             Type::Unit => Some(6),
             Type::Enum(_) => Some(7),
             Type::Struct(_) => Some(8),
-            Type::Error => Some(9),
             Type::Label => Some(10),
             Type::App(_, _) => None,
             Type::Param(_) => None,
+            Type::Atom(_) => None,
             Type::TypeI8 => Some(100),
             Type::TypeU8 => Some(101),
             Type::TypeI16 => Some(102),
@@ -133,7 +138,7 @@ impl Type {
             6 => Some(Type::Unit),
             7 => Some(Type::Enum(String::new())),
             8 => Some(Type::Struct(String::new())),
-            9 => Some(Type::Error),
+            // 9 is the legacy Error tag (removed in Phase 3 Step 3); no Type maps to it.
             10 => Some(Type::Label),
             100 => Some(Type::TypeI8),
             101 => Some(Type::TypeU8),
@@ -161,13 +166,19 @@ impl Type {
 /// - `App(n1, a1)` ≡ `App(n2, a2)` when names and arities match and each
 ///   argument pair is compatible (recursively)
 /// - `Param(n1)` ≡ `Param(n2)` only when names match (no substitution yet; #29)
+/// - `Atom(a)` ≡ `Atom(b)` only when `a == b` (label names are exact)
+/// - Named label applications:
+///   - `Label(:name)` ≡ `Label(:name, any)` (symmetric)
+///   - `Label(:name, T)` accepts `Label(:name)` — the expected side narrows
+///     the payload; the reverse (`Label(:name)` vs `Label(:name, T)`) is not
+///   - `App("Label", [Int])` (name free, payload `Int`) never matches
+///     `Label(:name, Int)` — a bare `Int` arg is not an `Atom`
 /// - Flat monomorphic forms bridge empty / `Any`-arg applications:
 ///   - `List` ≡ `App("List", [])` ≡ `App("List", [Any])`
 ///   - `Range` ≡ `App("Range", [])` ≡ `App("Range", [Any])`
-///   - `Error` ≡ `App("Error", [])`
 ///   - `Label` ≡ `App("Label", [])` ≡ `App("Label", [Any])`
-///   `App("List", [Int])` is not compatible with bare `List`
-/// - otherwise exact equality
+///   `App("List", [Int])` is not compatible with bare `List`; bare `Label` is
+///   not compatible with `Label(:name[, T])` either
 pub fn types_compatible(expected: &Type, actual: &Type) -> bool {
     if expected == actual {
         return true;
@@ -183,6 +194,10 @@ pub fn types_compatible(expected: &Type, actual: &Type) -> bool {
     }
     match (expected, actual) {
         (Type::Struct(a), Type::Struct(b)) => a.is_empty() || b.is_empty() || a == b,
+        (Type::Atom(a), Type::Atom(b)) => a == b,
+        (Type::App(n1, a1), Type::App(n2, a2)) if n1 == "Label" && n2 == "Label" => {
+            label_args_compatible(a1, a2)
+        }
         (Type::App(n1, a1), Type::App(n2, a2)) => {
             n1 == n2
                 && a1.len() == a2.len()
@@ -198,9 +213,6 @@ pub fn types_compatible(expected: &Type, actual: &Type) -> bool {
         (Type::Range, Type::App(n, args)) | (Type::App(n, args), Type::Range) => {
             n == "Range" && is_untyped_collection_args(args)
         }
-        (Type::Error, Type::App(n, args)) | (Type::App(n, args), Type::Error) => {
-            n == "Error" && args.is_empty()
-        }
         (Type::Label, Type::App(n, args)) | (Type::App(n, args), Type::Label) => {
             n == "Label" && is_untyped_collection_args(args)
         }
@@ -213,6 +225,40 @@ fn is_untyped_collection_args(args: &[Type]) -> bool {
     match args {
         [] => true,
         [Type::Any] => true,
+        _ => false,
+    }
+}
+
+/// Compatibility for `Label(:name[, T])` argument lists.
+///
+/// - `Label(:name)` ≡ `Label(:name, any)` (symmetric)
+/// - `Label(:name, T)` accepts `Label(:name)` — the expected side narrows the
+///   payload; the reverse (`Label(:name)` vs `Label(:name, T)`) is not
+/// - same-arity lists recurse; a bare `Int` never matches `Atom(name)`
+fn label_args_compatible(expected: &[Type], actual: &[Type]) -> bool {
+    match (expected, actual) {
+        ([Type::Atom(e_name), Type::Any], [Type::Atom(a_name)]) => e_name == a_name,
+        ([Type::Atom(e_name)], [Type::Atom(a_name), Type::Any]) => e_name == a_name,
+        ([Type::Atom(e_name), _], [Type::Atom(a_name)]) => e_name == a_name,
+        (e, a) if e.len() == a.len() => e
+            .iter()
+            .zip(a.iter())
+            .all(|(x, y)| types_compatible(x, y)),
+        _ => false,
+    }
+}
+
+/// Whether a static type denotes the `:error` label.
+///
+/// Matches the `err` sugar (`Label(:error)`) and both named forms
+/// `Label(:error)` / `Label(:error, T)`. Used for the failure check in
+/// return-type validation (`@error(reason)` produces `{:error, reason}`).
+pub fn is_error_label_type(ty: &Type) -> bool {
+    match ty {
+        Type::App(n, args) if n == "Label" => match args.as_slice() {
+            [Type::Atom(name)] | [Type::Atom(name), _] => name == "error",
+            _ => false,
+        },
         _ => false,
     }
 }
@@ -250,10 +296,10 @@ pub fn not_int_type_in_llvm() -> Vec<Type> {
         Type::Range,
         Type::Unit,
         Type::Bool,
-        Type::Error,
         Type::Label,
         Type::App(String::new(), Vec::new()),
         Type::Param(String::new()),
+        Type::Atom(String::new()),
     ]
 }
 
@@ -270,13 +316,14 @@ mod tests {
         assert_eq!(Type::Int.tag_discriminant(), Some(0));
         assert_eq!(Type::List.tag_discriminant(), Some(4));
         assert_eq!(Type::Range.tag_discriminant(), Some(5));
-        assert_eq!(Type::Error.tag_discriminant(), Some(9));
         assert_eq!(Type::Label.tag_discriminant(), Some(10));
         assert_eq!(Type::Any.tag_discriminant(), None);
+        assert_eq!(Type::Atom("ok".into()).tag_discriminant(), None);
         assert_eq!(Type::App("List".into(), vec![Type::Int]).tag_discriminant(), None);
         assert_eq!(Type::Param("T".into()).tag_discriminant(), None);
         assert_eq!(Type::from_tag_discriminant(4), Some(Type::List));
-        assert_eq!(Type::from_tag_discriminant(9), Some(Type::Error));
+        // 9 is the legacy Error tag (removed); no Type maps to it.
+        assert_eq!(Type::from_tag_discriminant(9), None);
         assert_eq!(Type::from_tag_discriminant(10), Some(Type::Label));
         assert_eq!(Type::from_tag_discriminant(11), None);
     }
@@ -304,8 +351,9 @@ mod tests {
         let list_int = Type::App("List".into(), vec![Type::Int]);
         let list_i64 = Type::App("List".into(), vec![Type::TypeI64]);
         let list_str = Type::App("List".into(), vec![Type::Str]);
-        let result_int_err = Type::App("Result".into(), vec![Type::Int, Type::Error]);
-        let result_i64_err = Type::App("Result".into(), vec![Type::TypeI64, Type::Error]);
+        let err_label = Type::App("Label".into(), vec![Type::Atom("error".into())]);
+        let result_int_err = Type::App("Result".into(), vec![Type::Int, err_label.clone()]);
+        let result_i64_err = Type::App("Result".into(), vec![Type::TypeI64, err_label]);
 
         assert!(types_compatible(&list_int, &list_i64));
         assert!(!types_compatible(&list_int, &list_str));
@@ -332,14 +380,6 @@ mod tests {
             &Type::App("List".into(), vec![Type::Int])
         ));
         assert!(types_compatible(
-            &Type::Error,
-            &Type::App("Error".into(), vec![])
-        ));
-        assert!(!types_compatible(
-            &Type::Error,
-            &Type::App("Error".into(), vec![Type::Int])
-        ));
-        assert!(types_compatible(
             &Type::Label,
             &Type::App("Label".into(), vec![])
         ));
@@ -364,5 +404,75 @@ mod tests {
             &Type::Param("U".into())
         ));
         assert!(!types_compatible(&Type::Param("T".into()), &Type::Int));
+    }
+
+    #[test]
+    fn types_compatible_named_labels() {
+        let label_ok = Type::App("Label".into(), vec![Type::Atom("ok".into())]);
+        let label_ok_any = Type::App("Label".into(), vec![Type::Atom("ok".into()), Type::Any]);
+        let label_ok_int = Type::App("Label".into(), vec![Type::Atom("ok".into()), Type::Int]);
+        let label_err = Type::App("Label".into(), vec![Type::Atom("error".into())]);
+        let label_free_int = Type::App("Label".into(), vec![Type::Int]);
+        let label_int_str = Type::App("Label".into(), vec![Type::Int, Type::Str]);
+
+        // Atom names match exactly
+        assert!(types_compatible(
+            &Type::Atom("ok".into()),
+            &Type::Atom("ok".into())
+        ));
+        assert!(!types_compatible(
+            &Type::Atom("ok".into()),
+            &Type::Atom("err".into())
+        ));
+        assert!(!types_compatible(&Type::Atom("ok".into()), &Type::Int));
+
+        // Label(:name) ≡ Label(:name, any), both directions
+        assert!(types_compatible(&label_ok, &label_ok_any));
+        assert!(types_compatible(&label_ok_any, &label_ok));
+
+        // Label(:ok, int) accepts Label(:ok) (expected narrows payload)…
+        assert!(types_compatible(&label_ok_int, &label_ok));
+        // …but the reverse does not
+        assert!(!types_compatible(&label_ok, &label_ok_int));
+
+        // names must match
+        assert!(!types_compatible(&label_ok, &label_err));
+        assert!(!types_compatible(
+            &Type::App(
+                "Label".into(),
+                vec![Type::Atom("ok".into()), Type::Int]
+            ),
+            &label_err
+        ));
+
+        // bare Int arg (name free) never matches Atom(name)
+        assert!(!types_compatible(&label_free_int, &label_ok_int));
+        assert!(!types_compatible(&label_ok_int, &label_free_int));
+        assert!(!types_compatible(&label_int_str, &label_ok_int));
+
+        // bare Label stays incompatible with named forms
+        assert!(!types_compatible(&Type::Label, &label_ok));
+        assert!(!types_compatible(&label_ok_int, &Type::Label));
+    }
+
+    #[test]
+    fn is_error_label_type_matches_err_sugar_and_named_forms() {
+        let err_sugar = Type::App("Label".into(), vec![Type::Atom("error".into())]);
+        let err_payload = Type::App(
+            "Label".into(),
+            vec![Type::Atom("error".into()), Type::Str],
+        );
+        let ok_label = Type::App("Label".into(), vec![Type::Atom("ok".into())]);
+        let ok_payload = Type::App("Label".into(), vec![Type::Atom("ok".into()), Type::Int]);
+
+        assert!(is_error_label_type(&err_sugar));
+        assert!(is_error_label_type(&err_payload));
+        assert!(!is_error_label_type(&ok_label));
+        assert!(!is_error_label_type(&ok_payload));
+        assert!(!is_error_label_type(&Type::Label));
+        assert!(!is_error_label_type(&Type::Any));
+        assert!(!is_error_label_type(
+            &Type::App("Result".into(), vec![Type::Int, err_sugar.clone()])
+        ));
     }
 }
