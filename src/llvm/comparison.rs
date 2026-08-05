@@ -78,16 +78,16 @@ pub enum EqNeq {
     Neq = 1,
 }
 
-pub fn create_eq_or_neq<'ctx, F>(
+pub fn create_eq_or_neq<'ctx, ComparisonBuilder>(
     self_compiler: &mut Compiler<'ctx>,
     lhs: &Spanned<ast::Expr>,
     rhs: &Spanned<ast::Expr>,
     module: &inkwell::module::Module<'ctx>,
     mode: EqNeq,
-    op_fn: F,
+    op_fn: ComparisonBuilder,
 ) -> Result<BasicValueEnum<'ctx>, SprsError>
 where
-    F: Fn(
+    ComparisonBuilder: Fn(
         &inkwell::builder::Builder<'ctx>,
         inkwell::values::IntValue<'ctx>,
         inkwell::values::IntValue<'ctx>,
@@ -150,16 +150,16 @@ pub enum Comparison {
     Le = 3,
 }
 
-pub fn create_comparison<'ctx, F>(
+pub fn create_comparison<'ctx, ComparisonBuilder>(
     self_compiler: &mut Compiler<'ctx>,
     lhs: &Spanned<ast::Expr>,
     rhs: &Spanned<ast::Expr>,
     module: &inkwell::module::Module<'ctx>,
     mode: Comparison,
-    comp_fn: F,
+    comp_fn: ComparisonBuilder,
 ) -> Result<BasicValueEnum<'ctx>, SprsError>
 where
-    F: Fn(
+    ComparisonBuilder: Fn(
         &inkwell::builder::Builder<'ctx>,
         inkwell::values::IntValue<'ctx>,
         inkwell::values::IntValue<'ctx>,

@@ -26,48 +26,48 @@ pub fn parse_dynamic_label_template(input: &str) -> Result<Vec<LabelNamePart>, S
     let mut parts: Vec<LabelNamePart> = Vec::new();
     let mut lit = String::new();
     let chars: Vec<char> = input.chars().collect();
-    let mut i = 0;
+    let mut cursor_index = 0;
 
-    while i < chars.len() {
-        match chars[i] {
+    while cursor_index < chars.len() {
+        match chars[cursor_index] {
             '{' => {
                 if !lit.is_empty() {
                     parts.push(LabelNamePart::Lit(std::mem::take(&mut lit)));
                 }
-                i += 1;
-                if i >= chars.len() {
+                cursor_index += 1;
+                if cursor_index >= chars.len() {
                     return Err("unclosed '{' in dynamic label name".to_string());
                 }
-                if chars[i] == '}' {
+                if chars[cursor_index] == '}' {
                     return Err("empty '{}' is not allowed in dynamic label name".to_string());
                 }
-                let start = i;
-                if !(chars[i].is_ascii_alphabetic() || chars[i] == '_') {
+                let start = cursor_index;
+                if !(chars[cursor_index].is_ascii_alphabetic() || chars[cursor_index] == '_') {
                     return Err(format!(
                         "invalid interpolation in dynamic label name: expected ident, found '{{{}}}'",
-                        collect_until_close(&chars, i)
+                        collect_until_close(&chars, cursor_index)
                     ));
                 }
-                i += 1;
-                while i < chars.len() && (chars[i].is_ascii_alphanumeric() || chars[i] == '_') {
-                    i += 1;
+                cursor_index += 1;
+                while cursor_index < chars.len() && (chars[cursor_index].is_ascii_alphanumeric() || chars[cursor_index] == '_') {
+                    cursor_index += 1;
                 }
-                if i >= chars.len() || chars[i] != '}' {
+                if cursor_index >= chars.len() || chars[cursor_index] != '}' {
                     return Err(format!(
                         "invalid interpolation in dynamic label name: expected ident, found '{{{}}}'",
                         collect_until_close(&chars, start)
                     ));
                 }
-                let ident: String = chars[start..i].iter().collect();
+                let ident: String = chars[start..cursor_index].iter().collect();
                 parts.push(LabelNamePart::Ident(ident));
-                i += 1; // skip '}'
+                cursor_index += 1; // skip '}'
             }
             '}' => {
                 return Err("unexpected '}' in dynamic label name".to_string());
             }
-            c => {
-                lit.push(c);
-                i += 1;
+            character => {
+                lit.push(character);
+                cursor_index += 1;
             }
         }
     }
@@ -80,11 +80,11 @@ pub fn parse_dynamic_label_template(input: &str) -> Result<Vec<LabelNamePart>, S
 
 fn collect_until_close(chars: &[char], start: usize) -> String {
     let mut out = String::new();
-    for &c in &chars[start..] {
-        if c == '}' {
+    for &character in &chars[start..] {
+        if character == '}' {
             break;
         }
-        out.push(c);
+        out.push(character);
         // Cap for error messages
         if out.len() > 32 {
             out.push_str("...");
@@ -100,11 +100,11 @@ mod tests {
 
     #[test]
     fn parses_ident_with_surrounding_lits() {
-        let parts = parse_dynamic_label_template("{i}-item").unwrap();
+        let parts = parse_dynamic_label_template("{item_index}-item").unwrap();
         assert_eq!(
             parts,
             vec![
-                LabelNamePart::Ident("i".into()),
+                LabelNamePart::Ident("item_index".into()),
                 LabelNamePart::Lit("-item".into()),
             ]
         );
@@ -112,12 +112,12 @@ mod tests {
 
     #[test]
     fn parses_prefix_and_suffix() {
-        let parts = parse_dynamic_label_template("item-{n}-x").unwrap();
+        let parts = parse_dynamic_label_template("item-{item_number}-x").unwrap();
         assert_eq!(
             parts,
             vec![
                 LabelNamePart::Lit("item-".into()),
-                LabelNamePart::Ident("n".into()),
+                LabelNamePart::Ident("item_number".into()),
                 LabelNamePart::Lit("-x".into()),
             ]
         );
@@ -136,7 +136,7 @@ mod tests {
 
     #[test]
     fn rejects_expr_interpolation() {
-        assert!(parse_dynamic_label_template("{i+1}").is_err());
+        assert!(parse_dynamic_label_template("{item_index+1}").is_err());
     }
 
     #[test]

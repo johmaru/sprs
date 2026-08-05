@@ -226,7 +226,7 @@ fn create_add_expr_type_check<'ctx>(
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
     let is_type = |expr: &Spanned<ast::Expr>, ty: &str| -> bool {
         match self_compiler.get_known_type_from_expr(expr) {
-            Ok(t) => t == ty,
+            Ok(known_type) => known_type == ty,
             Err(_) => false,
         }
     };
@@ -1907,16 +1907,16 @@ enum IntBinOp {
     Mul,
 }
 
-fn create_binary_int_op<'ctx, F>(
+fn create_binary_int_op<'ctx, OperationBuilder>(
     self_compiler: &mut Compiler<'ctx>,
     lhs: &Spanned<ast::Expr>,
     rhs: &Spanned<ast::Expr>,
     module: &inkwell::module::Module<'ctx>,
     op: IntBinOp,
-    op_fn: F,
+    op_fn: OperationBuilder,
 ) -> Result<BasicValueEnum<'ctx>, SprsError>
 where
-    F: Fn(
+    OperationBuilder: Fn(
         &inkwell::builder::Builder<'ctx>,
         inkwell::values::IntValue<'ctx>,
         inkwell::values::IntValue<'ctx>,

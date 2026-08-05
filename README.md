@@ -191,28 +191,29 @@ Labels are a core feature for tagging values (`Tag::Label`), not an error-only t
 A label has a name plus one optional payload (Unit when omitted).
 
 ```rust
-var a = :ok;
-var b = {:ok, 42};
+var success_label = :ok;
+var labeled_value = {:ok, 42};
 
-var i = 10;
-var c = {:"{i}-item", 42};   # name becomes "10-item"
+var item_index = 10;
+var dynamic_label = {:"{item_index}-item", 42};   # name becomes "10-item"
 
-if @label_is(c, :"{i}-item") {
-  @println(@label_payload(c));  # 42
-  @println(@label_name(c));     # "10-item"
+if @label_is(dynamic_label, :"{item_index}-item") {
+  @println(@label_payload(dynamic_label));  # 42
+  @println(@label_name(dynamic_label));     # "10-item"
 }
 
-fn wrap(x >> int) >> Label(int) {
-  return {:ok, x};
+fn wrap(value_input >> int) >> Label(int) {
+  var item_index = value_input;
+  return {:"{item_index}", value_input};
 }
-fn wrap_named(x >> int) >> Label(:ok, int) {
-  return {:ok, x};
+fn wrap_named(value_input >> int) >> Label(:ok, int) {
+  return {:ok, value_input};
 }
-fn take(v >> label) >> label {
-  return v;
+fn take(label_value >> label) >> label {
+  return label_value;
 }
 
-@attach(wrap(7), :item);
+@attach(wrap_named(7), :item);
 @println(:item);  # {:ok, 7}
 ```
 
@@ -238,9 +239,9 @@ fn make_error_label() >> Label(:error, str) {
 }
 
 fn main() {
-  var e = make_error_label();
-  @println(@is_error(e));         # true
-  @println(@error_message(e));    # file not found
+  var error_label_value = make_error_label();
+  @println(@is_error(error_label_value));         # true
+  @println(@error_message(error_label_value));    # file not found
 }
 ```
 
@@ -252,9 +253,9 @@ fn make_error() >> err {
 }
 
 fn show_error() {
-  var e = make_error();
-  @println(@is_error(e));         # true
-  @println(@error_message(e));    # file not found
+  var error_value = make_error();
+  @println(@is_error(error_value));         # true
+  @println(@error_message(error_value));    # file not found
   @println(@error_message(@error(:enoent))); # :enoent
 }
 ```

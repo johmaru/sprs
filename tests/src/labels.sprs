@@ -2,22 +2,22 @@ pkg labels;
 
 # Dynamic label name + payload
 pub fn dynamic_payload() >> int {
-    var i = 10;
-    var v = {:"{i}-item", 42};
-    if @label_is(v, :"{i}-item") {
-        return @label_payload(v);
+    var item_index = 10;
+    var labeled_value = {:"{item_index}-item", 42};
+    if @label_is(labeled_value, :"{item_index}-item") {
+        return @label_payload(labeled_value);
     }
     return 0;
 }
 
 pub fn dynamic_name() >> str {
-    var i = 10;
-    var v = {:"{i}-item", 42};
-    return @label_name(v);
+    var item_index = 10;
+    var labeled_value = {:"{item_index}-item", 42};
+    return @label_name(labeled_value);
 }
 
-fn wrap(x >> int) >> Label(int) {
-    return {:ok, x};
+fn wrap(input_value >> int) >> Label(:ok, int) {
+    return {:ok, input_value};
 }
 
 pub fn typed_label_payload() >> int {
@@ -25,6 +25,6 @@ pub fn typed_label_payload() >> int {
 }
 
 pub fn static_label_is() >> bool {
-    var v = {:ok, 1};
-    return @label_is(v, :ok);
+    var labeled_value = {:ok, 1};
+    return @label_is(labeled_value, :ok);
 }

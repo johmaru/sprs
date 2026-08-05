@@ -98,8 +98,8 @@ impl<'ctx> Compiler<'ctx> {
         name: &str,
     ) {
         let tag_val = match tag {
-            StoreTag::Int(t) => self.context.i32_type().const_int(t, false),
-            StoreTag::Dynamic(t) => t,
+            StoreTag::Int(tag_value) => self.context.i32_type().const_int(tag_value, false),
+            StoreTag::Dynamic(tag_value) => tag_value,
         };
 
         let tag_ptr = self
@@ -124,15 +124,15 @@ impl<'ctx> Compiler<'ctx> {
             .unwrap();
 
         let data_val = match value {
-            StoreValue::Int(v) => v,
-            StoreValue::Float(f) => self.context.i64_type().const_int(f.to_bits(), false),
-            StoreValue::Ptr(p) => self
+            StoreValue::Int(stored_value) => stored_value,
+            StoreValue::Float(float_value) => self.context.i64_type().const_int(float_value.to_bits(), false),
+            StoreValue::Ptr(pointer_value) => self
                 .builder
-                .build_ptr_to_int(p, self.context.i64_type(), "ptr_to_int")
+                .build_ptr_to_int(pointer_value, self.context.i64_type(), "ptr_to_int")
                 .unwrap(),
-            StoreValue::Bool(b) => self
+            StoreValue::Bool(boolean_value) => self
                 .builder
-                .build_int_z_extend(b, self.context.i64_type(), name)
+                .build_int_z_extend(boolean_value, self.context.i64_type(), name)
                 .unwrap(),
         };
 
@@ -222,7 +222,7 @@ impl<'ctx> Compiler<'ctx> {
     pub fn set_global_constant_str(
         &mut self,
         module: &Module<'ctx>,
-        s: &str,
+        source_text: &str,
         is_global: bool,
         is_const: bool,
     ) -> Option<StrConstantResult<'ctx>> {
@@ -233,7 +233,7 @@ impl<'ctx> Compiler<'ctx> {
         } else {
             format!("str_const_const_{}", idx)
         };
-        let str_const = self.context.const_string(s.as_bytes(), true);
+        let str_const = self.context.const_string(source_text.as_bytes(), true);
         let global_str = module.add_global(
             str_const.get_type(),
             Some(AddressSpace::default()),
@@ -505,8 +505,8 @@ impl<'ctx> Compiler<'ctx> {
     pub fn register_struct(&mut self, name: String, fields: Vec<ast::StructField>) {
         let mut field_indices = HashMap::new();
         let mut llvm_field_types: Vec<BasicTypeEnum> = Vec::new();
-        for (i, field) in fields.iter().enumerate() {
-            field_indices.insert(field.ident.clone(), i as u32);
+        for (field_index, field) in fields.iter().enumerate() {
+            field_indices.insert(field.ident.clone(), field_index as u32);
 
             let llvm_ty = if let Some(ty) = &field.ty {
                 match ty {

@@ -9,20 +9,20 @@ fn make_error() >> err {
 
 # Test: @is_error detects error labels
 pub fn check_error() >> bool {
-    var x = make_error();
-    return @is_error(x);
+    var error_value = make_error();
+    return @is_error(error_value);
 }
 
 # Test: @error_message extracts the reason
 pub fn get_error_message() >> str {
-    var x = make_error();
-    return @error_message(x);
+    var error_value = make_error();
+    return @error_message(error_value);
 }
 
 # Test: ? propagation — returns the error label without running the rest
 pub fn propagate_error() >> err {
-    var x = make_error()?;
-    return x; # unreachable when error propagates
+    var error_value = make_error()?;
+    return error_value; # unreachable when error propagates
 }
 
 # Test: label reason (詳細表示: non-string payload renders via format_sprs_value)
@@ -32,31 +32,31 @@ pub fn label_reason_message() >> str {
 
 # Test: short-circuit (error + 1 should preserve the error)
 pub fn short_circuit_test() >> bool {
-    var x = make_error();
-    var y = x + 1;
-    return @is_error(y);
+    var error_value = make_error();
+    var calculated_value = error_value + 1;
+    return @is_error(calculated_value);
 }
 
 # Test: div by zero returns catchable error label
 pub fn div_zero_is_error() >> bool {
-    var x = 5 / 0;
-    return @is_error(x);
+    var error_value = 5 / 0;
+    return @is_error(error_value);
 }
 
 # Test: div by zero error message
 pub fn div_zero_message() >> str {
-    var x = 5 / 0;
-    return @error_message(x);
+    var error_value = 5 / 0;
+    return @error_message(error_value);
 }
 
 # Test: mod by zero returns catchable error label
 pub fn mod_zero_is_error() >> bool {
-    var x = 5 % 0;
-    return @is_error(x);
+    var error_value = 5 % 0;
+    return @is_error(error_value);
 }
 
 # Test: non-error is not an error
 pub fn not_an_error() >> bool {
-    var x = 42;
-    return @is_error(x);
+    var normal_value = 42;
+    return @is_error(normal_value);
 }

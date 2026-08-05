@@ -66,7 +66,7 @@ impl<'ctx> Compiler<'ctx> {
         let expected = sig.params.len();
         let actual = args.len();
         if expected != actual {
-            let span = args.first().map(|a| a.span).unwrap_or(Span::DUMMY);
+            let span = args.first().map(|argument| argument.span).unwrap_or(Span::DUMMY);
             return Err(SprsError::Semantic {
                 code: ErrorCode {
                     category: ErrorCategory::Semantic,
@@ -116,7 +116,7 @@ impl<'ctx> Compiler<'ctx> {
             ast::Expr::Str(_) => Type::Str,
             ast::Expr::Bool(_) => Type::Bool,
             ast::Expr::Unit() => Type::Unit,
-            ast::Expr::Var(name) => self.get_variables(name).map(|b| b.ty).unwrap_or(Type::Any),
+            ast::Expr::Var(name) => self.get_variables(name).map(|binding| binding.ty).unwrap_or(Type::Any),
             ast::Expr::TypeI8 => Type::TypeI8,
             ast::Expr::TypeU8 => Type::TypeU8,
             ast::Expr::TypeI16 => Type::TypeI16,
@@ -277,17 +277,17 @@ impl<'ctx> Compiler<'ctx> {
                 .unwrap();
             self.builder
                 .build_store(alloca, loaded)
-                .map_err(|e| SprsError::Internal {
-                    message: e.to_string(),
+                .map_err(|compile_error| SprsError::Internal {
+                    message: compile_error.to_string(),
                     location: None,
                 })?;
             let annot = param.ty.clone().or_else(|| {
                 fn_sig
                     .as_ref()
-                    .and_then(|s| s.params.get(idx).cloned().flatten())
+                    .and_then(|signature| signature.params.get(idx).cloned().flatten())
             });
             let (param_ty, is_ambi, is_annotated) = match annot {
-                Some(a) => (a.ty, a.ambi, true),
+                Some(argument) => (argument.ty, argument.ambi, true),
                 None => (Type::Any, false, false),
             };
             self.add_variable(
@@ -657,11 +657,11 @@ impl<'ctx> Compiler<'ctx> {
                     else_blk,
                 } => {
                     builder_helper::create_if_condition(self, cond, then_blk, else_blk, module)
-                        .map_err(|e| e.to_string())?;
+                        .map_err(|compile_error| compile_error.to_string())?;
                 }
                 ast::Stmt::While { cond, body } => {
                     builder_helper::create_while_condition(self, cond, body, module)
-                        .map_err(|e| e.to_string())?;
+                        .map_err(|compile_error| compile_error.to_string())?;
                 }
                 ast::Stmt::Expr(expr) => {
                     self.compile_expr(expr, module)?;
@@ -739,7 +739,7 @@ impl<'ctx> Compiler<'ctx> {
                         .unwrap();
                     self.builder
                         .build_store(target_ptr, new_val)
-                        .map_err(|e| e.to_string())?;
+                        .map_err(|compile_error| compile_error.to_string())?;
 
                     if let Some((val, src_name)) = source_to_move {
                         builder_helper::move_variable(self, &val, &src_name);
@@ -764,7 +764,7 @@ impl<'ctx> Compiler<'ctx> {
         module: &Module<'ctx>,
     ) -> Result<BasicValueEnum<'ctx>, SprsError> {
         match &expr.node {
-            ast::Expr::Number(n) => Ok(builder_helper::create_integer(self, n)?),
+            ast::Expr::Number(number_value) => Ok(builder_helper::create_integer(self, number_value)?),
             ast::Expr::Float(fp) => Ok(builder_helper::create_float(self, *fp)?),
             ast::Expr::TypeI8 => builder_helper::create_int8(self),
             ast::Expr::TypeU8 => builder_helper::create_uint8(self),

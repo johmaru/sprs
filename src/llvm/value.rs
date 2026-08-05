@@ -30,8 +30,8 @@ pub fn create_error_label_from_str<'ctx>(
     let global = self_compiler.set_global_constant_str(module, message, true, true);
 
     let (msg_ptr, msg_len) = match global {
-        Some(StrConstantResult::Global(g)) => {
-            let ptr = g.as_pointer_value();
+        Some(StrConstantResult::Global(global_value)) => {
+            let ptr = global_value.as_pointer_value();
             let ptr_i8 = self_compiler.builder.build_bit_cast(
                 ptr,
                 self_compiler.context.ptr_type(AddressSpace::default()),
@@ -39,7 +39,7 @@ pub fn create_error_label_from_str<'ctx>(
             );
             (ptr_i8.unwrap().into_pointer_value(), message.len() as u64)
         }
-        Some(StrConstantResult::Pointer(p)) => (p, message.len() as u64),
+        Some(StrConstantResult::Pointer(pointer_value)) => (pointer_value, message.len() as u64),
         None => {
             // Empty message — pass null pointer.
             let null_ptr = self_compiler
@@ -231,14 +231,14 @@ pub fn create_list_from_expr<'ctx>(
 
 pub fn create_integer<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    n: &i64,
+    number_value: &i64,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
     let ptr = create_entry_block_alloca(self_compiler, "num_alloc")?;
 
     self_compiler.build_runtime_value_store(
         ptr,
         StoreTag::Int(Tag::Integer as u64),
-        StoreValue::Int(self_compiler.context.i64_type().const_int(*n as u64, true)),
+        StoreValue::Int(self_compiler.context.i64_type().const_int(*number_value as u64, true)),
         "int",
     );
 
@@ -247,14 +247,14 @@ pub fn create_integer<'ctx>(
 
 pub fn create_float<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    f: f64,
+    float_value: f64,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
     let ptr = create_entry_block_alloca(self_compiler, "float_alloc")?;
 
     self_compiler.build_runtime_value_store(
         ptr,
         StoreTag::Int(Tag::Float as u64),
-        StoreValue::Float(f),
+        StoreValue::Float(float_value),
         "float",
     );
 
@@ -515,7 +515,7 @@ fn build_dynamic_label_handle<'ctx>(
         .unwrap()
         .try_as_basic_value()
     {
-        ValueKind::Basic(v) => v.into_int_value(),
+        ValueKind::Basic(basic_value) => basic_value.into_int_value(),
         _ => {
             return Err(SprsError::Internal {
                 message: "__string_new returned void".to_string(),
@@ -553,7 +553,7 @@ fn build_dynamic_label_handle<'ctx>(
                     .unwrap()
                     .try_as_basic_value()
                 {
-                    ValueKind::Basic(v) => v.into_int_value(),
+                    ValueKind::Basic(basic_value) => basic_value.into_int_value(),
                     _ => {
                         return Err(SprsError::Internal {
                             message: "__string_new returned void".to_string(),
@@ -645,7 +645,7 @@ fn build_dynamic_label_handle<'ctx>(
                     .unwrap()
                     .try_as_basic_value()
                 {
-                    ValueKind::Basic(v) => v.into_int_value(),
+                    ValueKind::Basic(basic_value) => basic_value.into_int_value(),
                     _ => {
                         return Err(SprsError::Internal {
                             message: "__value_to_string returned void".to_string(),
@@ -713,7 +713,7 @@ fn build_dynamic_label_handle<'ctx>(
             .unwrap()
             .try_as_basic_value()
         {
-            ValueKind::Basic(v) => v.into_int_value(),
+            ValueKind::Basic(basic_value) => basic_value.into_int_value(),
             _ => {
                 return Err(SprsError::Internal {
                     message: "__string_concat returned void".to_string(),
@@ -735,7 +735,7 @@ fn build_dynamic_label_handle<'ctx>(
         .unwrap()
         .try_as_basic_value()
     {
-        ValueKind::Basic(v) => v.into_int_value(),
+        ValueKind::Basic(basic_value) => basic_value.into_int_value(),
         _ => {
             return Err(SprsError::Internal {
                 message: "__label_new_from_string returned void".to_string(),
@@ -749,13 +749,13 @@ fn build_dynamic_label_handle<'ctx>(
         .context
         .i32_type()
         .const_int(Tag::String as u64, false);
-    for (i, temp) in temps_to_drop.into_iter().enumerate() {
+    for (temporary_index, temp) in temps_to_drop.into_iter().enumerate() {
         self_compiler
             .builder
             .build_call(
                 drop_fn,
                 &[string_tag.into(), temp.into()],
-                &format!("dyn_label_drop_tmp_{}", i),
+                &format!("dyn_label_drop_tmp_{}", temporary_index),
             )
             .unwrap();
     }
@@ -778,38 +778,38 @@ pub fn create_typed_zero<'ctx>(
     Ok(ptr.into())
 }
 
-pub fn create_int8<'ctx>(c: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, SprsError> {
-    create_typed_zero(c, Tag::Int8, "int8")
+pub fn create_int8<'ctx>(compiler: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, SprsError> {
+    create_typed_zero(compiler, Tag::Int8, "int8")
 }
-pub fn create_uint8<'ctx>(c: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, SprsError> {
-    create_typed_zero(c, Tag::Uint8, "uint8")
+pub fn create_uint8<'ctx>(compiler: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, SprsError> {
+    create_typed_zero(compiler, Tag::Uint8, "uint8")
 }
-pub fn create_int16<'ctx>(c: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, SprsError> {
-    create_typed_zero(c, Tag::Int16, "int16")
+pub fn create_int16<'ctx>(compiler: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, SprsError> {
+    create_typed_zero(compiler, Tag::Int16, "int16")
 }
-pub fn create_uint16<'ctx>(c: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, SprsError> {
-    create_typed_zero(c, Tag::Uint16, "uint16")
+pub fn create_uint16<'ctx>(compiler: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, SprsError> {
+    create_typed_zero(compiler, Tag::Uint16, "uint16")
 }
-pub fn create_int32<'ctx>(c: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, SprsError> {
-    create_typed_zero(c, Tag::Int32, "int32")
+pub fn create_int32<'ctx>(compiler: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, SprsError> {
+    create_typed_zero(compiler, Tag::Int32, "int32")
 }
-pub fn create_uint32<'ctx>(c: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, SprsError> {
-    create_typed_zero(c, Tag::Uint32, "uint32")
+pub fn create_uint32<'ctx>(compiler: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, SprsError> {
+    create_typed_zero(compiler, Tag::Uint32, "uint32")
 }
-pub fn create_int64<'ctx>(c: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, SprsError> {
-    create_typed_zero(c, Tag::Int64, "int64")
+pub fn create_int64<'ctx>(compiler: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, SprsError> {
+    create_typed_zero(compiler, Tag::Int64, "int64")
 }
-pub fn create_uint64<'ctx>(c: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, SprsError> {
-    create_typed_zero(c, Tag::Uint64, "uint64")
+pub fn create_uint64<'ctx>(compiler: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, SprsError> {
+    create_typed_zero(compiler, Tag::Uint64, "uint64")
 }
-pub fn create_float16<'ctx>(c: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, SprsError> {
-    create_typed_zero(c, Tag::Float16, "f16")
+pub fn create_float16<'ctx>(compiler: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, SprsError> {
+    create_typed_zero(compiler, Tag::Float16, "f16")
 }
-pub fn create_float32<'ctx>(c: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, SprsError> {
-    create_typed_zero(c, Tag::Float32, "f32")
+pub fn create_float32<'ctx>(compiler: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, SprsError> {
+    create_typed_zero(compiler, Tag::Float32, "f32")
 }
-pub fn create_float64<'ctx>(c: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, SprsError> {
-    create_typed_zero(c, Tag::Float64, "f64")
+pub fn create_float64<'ctx>(compiler: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, SprsError> {
+    create_typed_zero(compiler, Tag::Float64, "f64")
 }
 
 pub fn create_dummy_for_no_return<'ctx>(
@@ -942,7 +942,7 @@ pub fn create_call_expr<'ctx>(
             self_compiler
                 .modules
                 .values()
-                .find_map(|m| m.get_function(ident))
+                .find_map(|module_value| module_value.get_function(ident))
         })
         .ok_or(SprsError::Semantic {
             code: ErrorCode {

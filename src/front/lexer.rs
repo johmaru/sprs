@@ -249,16 +249,16 @@ impl<'input> Iterator for Lexer<'input> {
     fn next(&mut self) -> Option<Self::Item> {
         let res = self.inner.next()?;
         let span = self.inner.span();
-        let s = span.start;
-        let e = span.end;
+        let span_start = span.start;
+        let span_end = span.end;
 
         let tok = match res {
-            Ok(t) => t,
-            Err(()) => return Some(Err(format!("invalid token at {}..{}", s, e))),
+            Ok(token_value) => token_value,
+            Err(()) => return Some(Err(format!("invalid token at {}..{}", span_start, span_end))),
         };
 
-        let text = &self.input[s..e];
-        let t = match tok {
+        let text = &self.input[span_start..span_end];
+        let token_value = match tok {
             RawTok::LBrace => Token::LBrace,
             RawTok::RBrace => Token::RBrace,
             RawTok::LBracket => Token::LBracket,
@@ -286,19 +286,19 @@ impl<'input> Iterator for Lexer<'input> {
             RawTok::Semi => Token::Semi,
             RawTok::Comma => Token::Comma,
             RawTok::Colon => Token::Colon,
-            RawTok::StrLiteral(s) => Token::StrLiteral(s),
+            RawTok::StrLiteral(span_start) => Token::StrLiteral(span_start),
             RawTok::If => Token::If,
             RawTok::Else => Token::Else,
             RawTok::While => Token::While,
             RawTok::Ident => Token::Ident(text.to_string()),
             RawTok::MacroIdent(name) => Token::Macro(name),
             RawTok::Num => match text.parse::<i64>() {
-                Ok(n) => Token::Num(n),
-                Err(e) => return Some(Err(format!("invalid integer literal '{}': {}", text, e))),
+                Ok(integer_value) => Token::Num(integer_value),
+                Err(span_end) => return Some(Err(format!("invalid integer literal '{}': {}", text, span_end))),
             },
             RawTok::Float => match text.parse::<f64>() {
-                Ok(f) => Token::Float(f),
-                Err(e) => return Some(Err(format!("invalid float literal '{}': {}", text, e))),
+                Ok(float_value) => Token::Float(float_value),
+                Err(span_end) => return Some(Err(format!("invalid float literal '{}': {}", text, span_end))),
             },
             RawTok::True => Token::Bool(true),
             RawTok::False => Token::Bool(false),
@@ -340,7 +340,7 @@ impl<'input> Iterator for Lexer<'input> {
             RawTok::TypeF32 => Token::TypeF32,
             RawTok::TypeF64 => Token::TypeF64,
         };
-        Some(Ok((s, t, e)))
+        Some(Ok((span_start, token_value, span_end)))
     }
 }
 
@@ -351,9 +351,9 @@ impl<'input> Iterator for Lexer<'input> {
 fn unescape_sprs_string(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     let mut chars = raw.chars();
-    while let Some(c) = chars.next() {
-        if c != '\\' {
-            out.push(c);
+    while let Some(character) = chars.next() {
+        if character != '\\' {
+            out.push(character);
             continue;
         }
         // Escape sequence.

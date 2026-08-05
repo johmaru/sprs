@@ -33,13 +33,13 @@ impl<'ctx> Compiler<'ctx> {
             }
         }
 
-        let source = std::fs::read_to_string(&path).map_err(|e| SprsError::Semantic {
+        let source = std::fs::read_to_string(&path).map_err(|load_error| SprsError::Semantic {
             code: ErrorCode {
                 category: ErrorCategory::Semantic,
                 number: 10,
             },
             location: Location::new(path.clone(), Span::DUMMY),
-            message: format!("Failed to read module file {}: {}", path, e),
+            message: format!("Failed to read module file {}: {}", path, load_error),
             help: None,
         })?;
 
@@ -195,10 +195,10 @@ impl<'ctx> Compiler<'ctx> {
                                 true,
                             );
                             let panic_ptr = match panic_msg {
-                                Some(crate::llvm::compiler::StrConstantResult::Global(g)) => {
-                                    g.as_pointer_value()
+                                Some(crate::llvm::compiler::StrConstantResult::Global(global_value)) => {
+                                    global_value.as_pointer_value()
                                 }
-                                Some(crate::llvm::compiler::StrConstantResult::Pointer(p)) => p,
+                                Some(crate::llvm::compiler::StrConstantResult::Pointer(parameter)) => parameter,
                                 None => {
                                     return Err(SprsError::Internal {
                                         message: "Failed to create panic message".to_string(),
@@ -429,8 +429,8 @@ impl<'ctx> Compiler<'ctx> {
             &func.ident
         };
 
-        let fn_val = if let Some(f) = module.get_function(func_name) {
-            f
+        let fn_val = if let Some(function_value) = module.get_function(func_name) {
+            function_value
         } else {
             module.add_function(func_name, fn_type, None)
         };
@@ -443,7 +443,7 @@ impl<'ctx> Compiler<'ctx> {
             func_name.to_string(),
             FnTypeInfo {
                 ret_ty: func.ret_ty.clone(),
-                params: func.params.iter().map(|p| p.ty.clone()).collect(),
+                params: func.params.iter().map(|parameter| parameter.ty.clone()).collect(),
             },
         );
         // Plain source name also resolves for non-main calls / inference.
@@ -452,7 +452,7 @@ impl<'ctx> Compiler<'ctx> {
                 "main".to_string(),
                 FnTypeInfo {
                     ret_ty: func.ret_ty.clone(),
-                    params: func.params.iter().map(|p| p.ty.clone()).collect(),
+                    params: func.params.iter().map(|parameter| parameter.ty.clone()).collect(),
                 },
             );
         }

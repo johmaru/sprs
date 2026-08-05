@@ -68,12 +68,12 @@ pub enum Tag {
 const fn is_heap_tag(tag: i32) -> bool {
     matches!(
         tag,
-        t if t == Tag::String as i32
-            || t == Tag::List as i32
-            || t == Tag::Range as i32
-            || t == Tag::Struct as i32
-            || t == Tag::Enum as i32
-            || t == Tag::Label as i32
+        tag_value if tag_value == Tag::String as i32
+            || tag_value == Tag::List as i32
+            || tag_value == Tag::Range as i32
+            || tag_value == Tag::Struct as i32
+            || tag_value == Tag::Enum as i32
+            || tag_value == Tag::Label as i32
     )
 }
 
@@ -176,21 +176,21 @@ const fn handle_pack(index: u32, generation: u32) -> u64 {
 }
 
 #[inline]
-const fn handle_index(h: u64) -> u32 {
-    (h >> 32) as u32
+const fn handle_index(handle_value: u64) -> u32 {
+    (handle_value >> 32) as u32
 }
 
 #[inline]
-const fn handle_gen(h: u64) -> u32 {
-    h as u32
+const fn handle_gen(handle_value: u64) -> u32 {
+    handle_value as u32
 }
 
 /// Allocate a slot, returning a fresh handle. Index 0 is reserved.
 fn slot_insert(data: SlotData) -> u64 {
     FREE_LIST.with(|fl| {
-        SLOTS.with(|s| {
+        SLOTS.with(|slots_cell| {
             let mut free_list = fl.borrow_mut();
-            let mut slots = s.borrow_mut();
+            let mut slots = slots_cell.borrow_mut();
             if let Some(idx) = free_list.pop() {
                 let slot = &mut slots[idx as usize];
                 slot.generation = slot.generation.wrapping_add(1);
@@ -225,8 +225,8 @@ fn slot_release(handle: u64) {
         return;
     }
 
-    let released = SLOTS.with(|s| {
-        let mut slots = s.borrow_mut();
+    let released = SLOTS.with(|slots_cell| {
+        let mut slots = slots_cell.borrow_mut();
         let idx = handle_index(handle) as usize;
         if idx >= slots.len() {
             return None;
@@ -253,15 +253,15 @@ fn slot_release(handle: u64) {
 
 /// Read-only lookup that runs `f` with a reference to the payload if the
 /// handle is live. Returns `f`'s result, or `default` on stale/invalid handle.
-fn slot_with<T, F>(handle: u64, default: T, f: F) -> T
+fn slot_with<ResultType, Callback>(handle: u64, default: ResultType, callback_function: Callback) -> ResultType
 where
-    F: FnOnce(&SlotData) -> T,
+    Callback: FnOnce(&SlotData) -> ResultType,
 {
     if handle == INVALID_HANDLE {
         return default;
     }
-    SLOTS.with(|s| {
-        let slots = s.borrow();
+    SLOTS.with(|slots_cell| {
+        let slots = slots_cell.borrow();
         let idx = handle_index(handle) as usize;
         let Some(slot) = slots.get(idx) else {
             return default;
@@ -269,7 +269,7 @@ where
         if slot.generation != handle_gen(handle) {
             return default;
         }
-        f(&slot.data)
+        callback_function(&slot.data)
     })
 }
 
@@ -280,17 +280,17 @@ where
 /// Register a function that receives raw bytes for output. The runtime uses
 /// this for `__println`. If never called, output falls back to `eprintln!`.
 #[unsafe(no_mangle)]
-pub extern "C" fn __sprs_set_output(f: unsafe extern "C" fn(*const u8, usize)) {
-    OUTPUT_FN.with(|cell| *cell.borrow_mut() = Some(f));
+pub extern "C" fn __sprs_set_output(callback_function: unsafe extern "C" fn(*const u8, usize)) {
+    OUTPUT_FN.with(|cell| *cell.borrow_mut() = Some(callback_function));
 }
 
 fn sprs_out(bytes: &[u8]) {
     OUTPUT_FN.with(|cell| {
         let opt = *cell.borrow();
-        if let Some(f) = opt {
+        if let Some(callback_function) = opt {
             // SAFETY: caller of `__sprs_set_output` guarantees the function
             // handles the pointer/length pair correctly.
-            unsafe { f(bytes.as_ptr(), bytes.len()) };
+            unsafe { callback_function(bytes.as_ptr(), bytes.len()) };
         } else {
             // Fallback for host builds: stderr.
             use std::io::Write;
@@ -299,12 +299,12 @@ fn sprs_out(bytes: &[u8]) {
     });
 }
 
-fn sprs_out_str(s: &str) {
-    sprs_out(s.as_bytes());
+fn sprs_out_str(output_text: &str) {
+    sprs_out(output_text.as_bytes());
 }
 
-fn sprs_out_line(s: &str) {
-    sprs_out_str(s);
+fn sprs_out_line(output_text: &str) {
+    sprs_out_str(output_text);
     sprs_out(b"\n");
 }
 
@@ -359,8 +359,8 @@ pub extern "C" fn __list_new(capacity: i64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __list_push(list_handle: u64, tag: i32, data: u64) {
-    SLOTS.with(|s| {
-        let mut slots = s.borrow_mut();
+    SLOTS.with(|slots_cell| {
+        let mut slots = slots_cell.borrow_mut();
         let idx = handle_index(list_handle) as usize;
         if idx >= slots.len() || list_handle == INVALID_HANDLE {
             return;
@@ -386,8 +386,8 @@ pub extern "C" fn __list_get(list_handle: u64, index: i64) -> SprsValue {
     if list_handle == INVALID_HANDLE {
         return sentinel;
     }
-    SLOTS.with(|s| {
-        let mut slots = s.borrow_mut();
+    SLOTS.with(|slots_cell| {
+        let mut slots = slots_cell.borrow_mut();
         let idx = handle_index(list_handle) as usize;
         if idx >= slots.len() {
             return sentinel;
@@ -429,8 +429,8 @@ pub extern "C" fn __string_new(bytes_ptr: *const u8, len: i64) -> u64 {
         return INVALID_HANDLE;
     }
     let bytes = unsafe { std::slice::from_raw_parts(bytes_ptr, len as usize) };
-    let s = String::from_utf8_lossy(bytes).into_owned();
-    slot_insert(SlotData::String(s))
+    let string_value = String::from_utf8_lossy(bytes).into_owned();
+    slot_insert(SlotData::String(string_value))
 }
 
 #[unsafe(no_mangle)]
@@ -439,8 +439,8 @@ pub extern "C" fn __string_from_cstr(cstr_ptr: *const i8) -> u64 {
         return INVALID_HANDLE;
     }
     let c_str = unsafe { CStr::from_ptr(cstr_ptr) };
-    let s = c_str.to_string_lossy().into_owned();
-    slot_insert(SlotData::String(s))
+    let string_value = c_str.to_string_lossy().into_owned();
+    slot_insert(SlotData::String(string_value))
 }
 
 /// Concatenate two String slots into a fresh String slot. Read-then-release-
@@ -450,19 +450,19 @@ pub extern "C" fn __string_from_cstr(cstr_ptr: *const i8) -> u64 {
 /// `l_len + r_len` overflow / memcpy logic into safe Rust, eliminating
 /// BUG-L02 (string concat heap buffer overflow).
 #[unsafe(no_mangle)]
-pub extern "C" fn __string_concat(l_handle: u64, r_handle: u64) -> u64 {
-    let l: Option<String> = slot_with(l_handle, None, |d| match d {
-        SlotData::String(s) => Some(s.clone()),
+pub extern "C" fn __string_concat(left_handle: u64, right_handle: u64) -> u64 {
+    let left_text: Option<String> = slot_with(left_handle, None, |slot_data| match slot_data {
+        SlotData::String(string_value) => Some(string_value.clone()),
         _ => None,
     });
-    let r: Option<String> = slot_with(r_handle, None, |d| match d {
-        SlotData::String(s) => Some(s.clone()),
+    let right_text: Option<String> = slot_with(right_handle, None, |slot_data| match slot_data {
+        SlotData::String(string_value) => Some(string_value.clone()),
         _ => None,
     });
-    match (l, r) {
-        (Some(mut l), Some(r)) => {
-            l.push_str(&r);
-            slot_insert(SlotData::String(l))
+    match (left_text, right_text) {
+        (Some(mut left_text), Some(right_text)) => {
+            left_text.push_str(&right_text);
+            slot_insert(SlotData::String(left_text))
         }
         _ => INVALID_HANDLE,
     }
@@ -487,7 +487,7 @@ pub extern "C" fn __struct_new(size: i64) -> u64 {
     }
     let size_us = size as usize;
     let layout = match std::alloc::Layout::from_size_align(size_us, 8) {
-        Ok(l) => l,
+        Ok(layout_value) => layout_value,
         Err(_) => return INVALID_HANDLE,
     };
     let ptr = unsafe { std::alloc::alloc(layout) };
@@ -508,8 +508,8 @@ pub extern "C" fn __struct_borrow(handle: u64) -> *mut u8 {
     if handle == INVALID_HANDLE {
         return std::ptr::null_mut();
     }
-    SLOTS.with(|s| {
-        let slots = s.borrow();
+    SLOTS.with(|slots_cell| {
+        let slots = slots_cell.borrow();
         let idx = handle_index(handle) as usize;
         let Some(slot) = slots.get(idx) else {
             return std::ptr::null_mut();
@@ -537,7 +537,7 @@ pub extern "C" fn __enum_new(name_ptr: *const u8, name_len: i64, variant_index: 
     }
     let name_len_us = name_len as usize;
     let layout = match std::alloc::Layout::array::<u8>(name_len_us) {
-        Ok(l) => l,
+        Ok(layout_value) => layout_value,
         Err(_) => return INVALID_HANDLE,
     };
     let name_buf = unsafe { std::alloc::alloc(layout) };
@@ -584,12 +584,12 @@ pub extern "C" fn __value_to_string(tag: i32, data: u64) -> u64 {
         return string_clone(data);
     }
     if tag == Tag::Integer as i32 {
-        let s = (data as i64).to_string();
-        return slot_insert(SlotData::String(s));
+        let formatted_text = (data as i64).to_string();
+        return slot_insert(SlotData::String(formatted_text));
     }
     if tag == Tag::Boolean as i32 {
-        let s = if data != 0 { "true" } else { "false" };
-        return slot_insert(SlotData::String(s.to_string()));
+        let formatted_text = if data != 0 { "true" } else { "false" };
+        return slot_insert(SlotData::String(formatted_text.to_string()));
     }
     INVALID_HANDLE
 }
@@ -602,8 +602,8 @@ pub extern "C" fn __label_new_from_string(
     payload_tag: i32,
     payload_data: u64,
 ) -> u64 {
-    let name: Option<String> = slot_with(name_handle, None, |d| match d {
-        SlotData::String(s) => Some(s.clone()),
+    let name: Option<String> = slot_with(name_handle, None, |slot_data| match slot_data {
+        SlotData::String(string_value) => Some(string_value.clone()),
         _ => None,
     });
     let Some(name) = name else {
@@ -625,7 +625,7 @@ pub extern "C" fn __label_name_eq(handle: u64, name_ptr: *const u8, name_len: i6
         return 0;
     }
     let expected = unsafe { std::slice::from_raw_parts(name_ptr, name_len as usize) };
-    slot_with(handle, 0i32, |d| match d {
+    slot_with(handle, 0i32, |slot_data| match slot_data {
         SlotData::Label { name, .. } => {
             if name.as_bytes() == expected {
                 1
@@ -639,17 +639,17 @@ pub extern "C" fn __label_name_eq(handle: u64, name_ptr: *const u8, name_len: i6
 
 /// Compare two label handles by name. Returns 1 on match, else 0.
 #[unsafe(no_mangle)]
-pub extern "C" fn __label_names_equal(a: u64, b: u64) -> i32 {
-    let name_a: Option<String> = slot_with(a, None, |d| match d {
+pub extern "C" fn __label_names_equal(first_value: u64, second_value: u64) -> i32 {
+    let name_a: Option<String> = slot_with(first_value, None, |slot_data| match slot_data {
         SlotData::Label { name, .. } => Some(name.clone()),
         _ => None,
     });
-    let name_b: Option<String> = slot_with(b, None, |d| match d {
+    let name_b: Option<String> = slot_with(second_value, None, |slot_data| match slot_data {
         SlotData::Label { name, .. } => Some(name.clone()),
         _ => None,
     });
     match (name_a, name_b) {
-        (Some(a), Some(b)) if a == b => 1,
+        (Some(first_value), Some(second_value)) if first_value == second_value => 1,
         _ => 0,
     }
 }
@@ -657,12 +657,12 @@ pub extern "C" fn __label_names_equal(a: u64, b: u64) -> i32 {
 /// Return a cloned payload from a label. Non-label → Unit.
 #[unsafe(no_mangle)]
 pub extern "C" fn __label_payload(handle: u64) -> SprsValue {
-    let payload: Option<SprsValue> = slot_with(handle, None, |d| match d {
+    let payload: Option<SprsValue> = slot_with(handle, None, |slot_data| match slot_data {
         SlotData::Label { payload, .. } => Some(*payload),
         _ => None,
     });
     match payload {
-        Some(p) => __clone(p.tag, p.data),
+        Some(payload_value) => __clone(payload_value.tag, payload_value.data),
         None => SprsValue {
             tag: Tag::Unit as i32,
             data: 0,
@@ -673,12 +673,12 @@ pub extern "C" fn __label_payload(handle: u64) -> SprsValue {
 /// Return the label name as a new String slot. Non-label → empty string slot.
 #[unsafe(no_mangle)]
 pub extern "C" fn __label_name(handle: u64) -> u64 {
-    let name: Option<String> = slot_with(handle, None, |d| match d {
+    let name: Option<String> = slot_with(handle, None, |slot_data| match slot_data {
         SlotData::Label { name, .. } => Some(name.clone()),
         _ => None,
     });
     match name {
-        Some(s) => slot_insert(SlotData::String(s)),
+        Some(string_value) => slot_insert(SlotData::String(string_value)),
         None => slot_insert(SlotData::String(String::new())),
     }
 }
@@ -768,27 +768,27 @@ pub extern "C" fn __clone(tag: i32, data: u64) -> SprsValue {
 /// then insert a fresh slot. Calling `slot_insert` inside `slot_with` would
 /// re-borrow SLOTS mutably while a shared borrow is live → runtime panic.
 fn string_clone(handle: u64) -> u64 {
-    let cloned: Option<String> = slot_with(handle, None, |d| match d {
-        SlotData::String(s) => Some(s.clone()),
+    let cloned: Option<String> = slot_with(handle, None, |slot_data| match slot_data {
+        SlotData::String(string_value) => Some(string_value.clone()),
         _ => None,
     });
     match cloned {
-        Some(s) => slot_insert(SlotData::String(s)),
+        Some(string_value) => slot_insert(SlotData::String(string_value)),
         None => INVALID_HANDLE,
     }
 }
 
 /// Same read-then-release-then-insert pattern as `string_clone`.
 fn range_clone(handle: u64) -> u64 {
-    let cloned: Option<SprsRange> = slot_with(handle, None, |d| match d {
-        SlotData::Range(r) => Some(SprsRange {
-            start: r.start,
-            end: r.end,
+    let cloned: Option<SprsRange> = slot_with(handle, None, |slot_data| match slot_data {
+        SlotData::Range(range_value) => Some(SprsRange {
+            start: range_value.start,
+            end: range_value.end,
         }),
         _ => None,
     });
     match cloned {
-        Some(r) => slot_insert(SlotData::Range(r)),
+        Some(range_value) => slot_insert(SlotData::Range(range_value)),
         None => INVALID_HANDLE,
     }
 }
@@ -797,8 +797,8 @@ fn list_clone(handle: u64) -> u64 {
     // Collect the source elements by cloning each one, then insert a new list
     // slot holding the cloned vector. Done in two passes because `slot_insert`
     // borrows SLOTS mutably and we can't hold a borrowed reference across it.
-    let snapshot: Vec<SprsValue> = slot_with(handle, Vec::new(), |d| match d {
-        SlotData::List(v) => v.clone(),
+    let snapshot: Vec<SprsValue> = slot_with(handle, Vec::new(), |slot_data| match slot_data {
+        SlotData::List(list_values) => list_values.clone(),
         _ => Vec::new(),
     });
     if snapshot.is_empty() && !slot_is_list(handle) {
@@ -812,7 +812,7 @@ fn list_clone(handle: u64) -> u64 {
 }
 
 fn slot_is_list(handle: u64) -> bool {
-    slot_with(handle, false, |d| matches!(d, SlotData::List(_)))
+    slot_with(handle, false, |slot_data| matches!(slot_data, SlotData::List(_)))
 }
 
 fn struct_clone(handle: u64) -> u64 {
@@ -820,7 +820,7 @@ fn struct_clone(handle: u64) -> u64 {
     let (ptr, layout, size): (*mut u8, std::alloc::Layout, usize) = slot_with(
         handle,
         (std::ptr::null_mut(), std::alloc::Layout::new::<u8>(), 0),
-        |d| match d {
+        |slot_data| match slot_data {
             SlotData::Struct { ptr, layout, .. } => (*ptr, *layout, layout.size()),
             _ => (std::ptr::null_mut(), std::alloc::Layout::new::<u8>(), 0),
         },
@@ -848,7 +848,7 @@ fn struct_clone(handle: u64) -> u64 {
 
 fn enum_clone(handle: u64) -> u64 {
     let (name_ptr, name_len, variant_index) =
-        slot_with(handle, (std::ptr::null_mut(), 0usize, 0i64), |d| match d {
+        slot_with(handle, (std::ptr::null_mut(), 0usize, 0i64), |slot_data| match slot_data {
             SlotData::Enum(info) => (info.name, info.name_len, info.variant_index),
             _ => (std::ptr::null_mut(), 0, 0),
         });
@@ -859,7 +859,7 @@ fn enum_clone(handle: u64) -> u64 {
 }
 
 fn label_clone(handle: u64) -> u64 {
-    let snapshot: Option<(String, SprsValue)> = slot_with(handle, None, |d| match d {
+    let snapshot: Option<(String, SprsValue)> = slot_with(handle, None, |slot_data| match slot_data {
         SlotData::Label { name, payload } => Some((name.clone(), *payload)),
         _ => None,
     });
@@ -913,7 +913,7 @@ pub extern "C" fn __error_message_from_label(handle: u64) -> u64 {
                 data: 0,
             },
         ),
-        |d| match d {
+        |slot_data| match slot_data {
             SlotData::Label { name, payload } => (name.clone(), *payload),
             _ => (
                 String::new(),
@@ -945,8 +945,8 @@ pub extern "C" fn __error_message_from_label(handle: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn __strlen(handle: u64) -> i64 {
-    slot_with(handle, 0i64, |d| match d {
-        SlotData::String(s) => s.len() as i64,
+    slot_with(handle, 0i64, |slot_data| match slot_data {
+        SlotData::String(string_value) => string_value.len() as i64,
         _ => 0,
     })
 }
@@ -961,7 +961,7 @@ pub extern "C" fn __malloc(size: i64) -> *mut i8 {
         return std::ptr::null_mut();
     }
     let layout = match std::alloc::Layout::from_size_align(size as usize, 8) {
-        Ok(l) => l,
+        Ok(layout_value) => layout_value,
         Err(_) => return std::ptr::null_mut(),
     };
     let ptr = unsafe { std::alloc::alloc(layout) };
@@ -980,8 +980,8 @@ pub extern "C" fn __println(list_handle: u64) {
     // Read the list elements out (clone the Vec), release the borrow, then
     // format each value. Cloning avoids holding a borrow while calling
     // `format_sprs_value`, which itself may call `slot_with`.
-    let snapshot: Vec<SprsValue> = slot_with(list_handle, Vec::new(), |d| match d {
-        SlotData::List(v) => v.clone(),
+    let snapshot: Vec<SprsValue> = slot_with(list_handle, Vec::new(), |slot_data| match slot_data {
+        SlotData::List(list_values) => list_values.clone(),
         _ => Vec::new(),
     });
     if snapshot.is_empty() && !slot_is_list(list_handle) {
@@ -989,8 +989,8 @@ pub extern "C" fn __println(list_handle: u64) {
         return;
     }
     let mut buf = String::new();
-    for (i, val) in snapshot.iter().enumerate() {
-        if i > 0 {
+    for (item_index, val) in snapshot.iter().enumerate() {
+        if item_index > 0 {
             buf.push(' ');
         }
         format_sprs_value(val, &mut buf);
@@ -1000,81 +1000,81 @@ pub extern "C" fn __println(list_handle: u64) {
 
 fn format_sprs_value(val: &SprsValue, out: &mut String) {
     match val.tag {
-        t if t == Tag::Integer as i32 => {
+        tag_value if tag_value == Tag::Integer as i32 => {
             use std::fmt::Write;
             let _ = write!(out, "{}", val.data as i64);
         }
-        t if t == Tag::Float as i32 || t == Tag::Float64 as i32 => {
+        tag_value if tag_value == Tag::Float as i32 || tag_value == Tag::Float64 as i32 => {
             use std::fmt::Write;
             let _ = write!(out, "{}", f64::from_bits(val.data));
         }
-        t if t == Tag::Float16 as i32 => {
+        tag_value if tag_value == Tag::Float16 as i32 => {
             use std::fmt::Write;
             let _ = write!(out, "{}", f16_tof32(val.data as u16));
         }
-        t if t == Tag::Float32 as i32 => {
+        tag_value if tag_value == Tag::Float32 as i32 => {
             use std::fmt::Write;
             let _ = write!(out, "{}", f32::from_bits(val.data as u32));
         }
-        t if t == Tag::String as i32 => {
-            slot_with(val.data, (), |d| match d {
-                SlotData::String(s) => out.push_str(s),
+        tag_value if tag_value == Tag::String as i32 => {
+            slot_with(val.data, (), |slot_data| match slot_data {
+                SlotData::String(string_value) => out.push_str(string_value),
                 _ => out.push_str("<invalid string>"),
             });
         }
-        t if t == Tag::Boolean as i32 => {
+        tag_value if tag_value == Tag::Boolean as i32 => {
             out.push_str(if val.data != 0 { "true" } else { "false" });
         }
-        t if t == Tag::List as i32 => {
+        tag_value if tag_value == Tag::List as i32 => {
             use std::fmt::Write;
             let _ = write!(out, "<list handle {:016x}>", val.data);
         }
-        t if t == Tag::Range as i32 => {
+        tag_value if tag_value == Tag::Range as i32 => {
             use std::fmt::Write;
-            let (start, end) = slot_with(val.data, (0i64, 0i64), |d| match d {
-                SlotData::Range(r) => (r.start, r.end),
+            let (start, end) = slot_with(val.data, (0i64, 0i64), |slot_data| match slot_data {
+                SlotData::Range(range_value) => (range_value.start, range_value.end),
                 _ => (0, 0),
             });
             let _ = write!(out, "<range {}..{}>", start, end);
         }
-        t if t == Tag::Int8 as i32 => {
+        tag_value if tag_value == Tag::Int8 as i32 => {
             use std::fmt::Write;
             let _ = write!(out, "{}", val.data as i8);
         }
-        t if t == Tag::Uint8 as i32 => {
+        tag_value if tag_value == Tag::Uint8 as i32 => {
             use std::fmt::Write;
             let _ = write!(out, "{}", val.data as u8);
         }
-        t if t == Tag::Int16 as i32 => {
+        tag_value if tag_value == Tag::Int16 as i32 => {
             use std::fmt::Write;
             let _ = write!(out, "{}", val.data as i16);
         }
-        t if t == Tag::Uint16 as i32 => {
+        tag_value if tag_value == Tag::Uint16 as i32 => {
             use std::fmt::Write;
             let _ = write!(out, "{}", val.data as u16);
         }
-        t if t == Tag::Int32 as i32 => {
+        tag_value if tag_value == Tag::Int32 as i32 => {
             use std::fmt::Write;
             let _ = write!(out, "{}", val.data as i32);
         }
-        t if t == Tag::Uint32 as i32 => {
+        tag_value if tag_value == Tag::Uint32 as i32 => {
             use std::fmt::Write;
             let _ = write!(out, "{}", val.data as u32);
         }
-        t if t == Tag::Int64 as i32 => {
+        tag_value if tag_value == Tag::Int64 as i32 => {
             use std::fmt::Write;
             let _ = write!(out, "{}", val.data as i64);
         }
-        t if t == Tag::Uint64 as i32 => {
+        tag_value if tag_value == Tag::Uint64 as i32 => {
             use std::fmt::Write;
             let _ = write!(out, "{}", val.data as u64);
         }
-        t if t == Tag::Unit as i32 => {
+        tag_value if tag_value == Tag::Unit as i32 => {
             out.push_str("()");
         }
-        t if t == Tag::Enum as i32 => {
+        tag_value if tag_value == Tag::Enum as i32 => {
             use std::fmt::Write;
-            let (name, idx) = slot_with(val.data, (String::new(), 0i64), |d| match d {
+            let (name, idx) = slot_with(val.data, (String::new(), 0i64), |slot_data| match slot_data {
                 SlotData::Enum(info) => {
                     let name = if info.name.is_null() {
                         String::new()
@@ -1088,11 +1088,11 @@ fn format_sprs_value(val: &SprsValue, out: &mut String) {
             });
             let _ = write!(out, "<enum {} variant {}>", name, idx);
         }
-        t if t == Tag::Struct as i32 => {
+        tag_value if tag_value == Tag::Struct as i32 => {
             use std::fmt::Write;
             let _ = write!(out, "<struct handle {:016x}>", val.data);
         }
-        t if t == Tag::Label as i32 => {
+        tag_value if tag_value == Tag::Label as i32 => {
             let (name, payload) = slot_with(
                 val.data,
                 (
@@ -1102,7 +1102,7 @@ fn format_sprs_value(val: &SprsValue, out: &mut String) {
                         data: 0,
                     },
                 ),
-                |d| match d {
+                |slot_data| match slot_data {
                     SlotData::Label { name, payload } => (name.clone(), *payload),
                     _ => (
                         String::new(),
@@ -1204,14 +1204,14 @@ mod tests {
 
     #[test]
     fn value_to_string_supports_int_bool_str() {
-        let s = __value_to_string(Tag::Integer as i32, 10u64);
+        let integer_string_handle = __value_to_string(Tag::Integer as i32, 10u64);
         let eq = __label_name_eq(
             // misuse: wrap via label_new_from_string to check string content indirectly
             {
-                let h = __label_new_from_string(s, Tag::Unit as i32, 0);
-                assert_eq!(__label_name_eq(h, b"10".as_ptr(), 2), 1);
-                __drop(Tag::Label as i32, h);
-                s
+                let handle_value = __label_new_from_string(integer_string_handle, Tag::Unit as i32, 0);
+                assert_eq!(__label_name_eq(handle_value, b"10".as_ptr(), 2), 1);
+                __drop(Tag::Label as i32, handle_value);
+                integer_string_handle
             },
             b"10".as_ptr(),
             2,
@@ -1219,18 +1219,26 @@ mod tests {
         // Direct string content check via __label_name path:
         let name_s = __string_new(b"hi".as_ptr(), 2);
         assert_eq!(__value_to_string(Tag::String as i32, name_s) != 0, true);
-        let t = __value_to_string(Tag::Boolean as i32, 1);
-        let f = __value_to_string(Tag::Boolean as i32, 0);
-        let th = __label_new_from_string(t, Tag::Unit as i32, 0);
-        let fh = __label_new_from_string(f, Tag::Unit as i32, 0);
-        assert_eq!(__label_name_eq(th, b"true".as_ptr(), 4), 1);
-        assert_eq!(__label_name_eq(fh, b"false".as_ptr(), 5), 1);
-        __drop(Tag::Label as i32, th);
-        __drop(Tag::Label as i32, fh);
-        __drop(Tag::String as i32, s);
+        let true_string_handle = __value_to_string(Tag::Boolean as i32, 1);
+        let false_string_handle = __value_to_string(Tag::Boolean as i32, 0);
+        let true_label_handle =
+            __label_new_from_string(true_string_handle, Tag::Unit as i32, 0);
+        let false_label_handle =
+            __label_new_from_string(false_string_handle, Tag::Unit as i32, 0);
+        assert_eq!(
+            __label_name_eq(true_label_handle, b"true".as_ptr(), 4),
+            1
+        );
+        assert_eq!(
+            __label_name_eq(false_label_handle, b"false".as_ptr(), 5),
+            1
+        );
+        __drop(Tag::Label as i32, true_label_handle);
+        __drop(Tag::Label as i32, false_label_handle);
+        __drop(Tag::String as i32, integer_string_handle);
         __drop(Tag::String as i32, name_s);
-        __drop(Tag::String as i32, t);
-        __drop(Tag::String as i32, f);
+        __drop(Tag::String as i32, true_string_handle);
+        __drop(Tag::String as i32, false_string_handle);
         let _ = eq;
     }
 
@@ -1286,8 +1294,8 @@ mod tests {
         // String payload: cloned back out.
         let str_err = __error_label_from_str(b"boom".as_ptr(), 4);
         let msg = __error_message_from_label(str_err);
-        let text = slot_with(msg, String::new(), |d| match d {
-            SlotData::String(s) => s.clone(),
+        let text = slot_with(msg, String::new(), |slot_data| match slot_data {
+            SlotData::String(string_value) => string_value.clone(),
             _ => String::new(),
         });
         assert_eq!(text, "boom");
@@ -1297,8 +1305,8 @@ mod tests {
         // Non-string payload: rendered via format_sprs_value (`:enoent`).
         let label_err = __label_new(b"error".as_ptr(), 5, Tag::Integer as i32, 42);
         let msg = __error_message_from_label(label_err);
-        let text = slot_with(msg, String::new(), |d| match d {
-            SlotData::String(s) => s.clone(),
+        let text = slot_with(msg, String::new(), |slot_data| match slot_data {
+            SlotData::String(string_value) => string_value.clone(),
             _ => String::new(),
         });
         assert_eq!(text, "42");
@@ -1309,8 +1317,8 @@ mod tests {
         let ok = __label_new(b"ok".as_ptr(), 2, Tag::Unit as i32, 0);
         let msg = __error_message_from_label(ok);
         assert_ne!(msg, INVALID_HANDLE);
-        let text = slot_with(msg, String::new(), |d| match d {
-            SlotData::String(s) => s.clone(),
+        let text = slot_with(msg, String::new(), |slot_data| match slot_data {
+            SlotData::String(string_value) => string_value.clone(),
             _ => String::new(),
         });
         assert_eq!(text, "");
@@ -1320,8 +1328,8 @@ mod tests {
         // Non-label handle: empty string as well.
         let msg = __error_message_from_label(0);
         assert_ne!(msg, INVALID_HANDLE);
-        let text = slot_with(msg, String::new(), |d| match d {
-            SlotData::String(s) => s.clone(),
+        let text = slot_with(msg, String::new(), |slot_data| match slot_data {
+            SlotData::String(string_value) => string_value.clone(),
             _ => String::new(),
         });
         assert_eq!(text, "");

@@ -1235,7 +1235,7 @@ pub fn call_builtin_macro_label_is<'ctx>(
                 .unwrap()
                 .try_as_basic_value()
             {
-                ValueKind::Basic(v) => v.into_int_value(),
+                ValueKind::Basic(basic_value) => basic_value.into_int_value(),
                 _ => {
                     return Err(SprsError::Internal {
                         message: "__label_name_eq returned void".to_string(),
@@ -1277,7 +1277,7 @@ pub fn call_builtin_macro_label_is<'ctx>(
                 .unwrap()
                 .try_as_basic_value()
             {
-                ValueKind::Basic(v) => v.into_int_value(),
+                ValueKind::Basic(basic_value) => basic_value.into_int_value(),
                 _ => {
                     return Err(SprsError::Internal {
                         message: "__label_names_equal returned void".to_string(),
