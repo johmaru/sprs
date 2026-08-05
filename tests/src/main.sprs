@@ -9,6 +9,7 @@ import data_structures;
 import types;
 import test;
 import errors;
+import labels;
 
 # === Main ===
 
@@ -171,6 +172,13 @@ fn main() {
     @println(errors.div_zero_code());
     @println(errors.mod_zero_is_error());
     @println(errors.not_an_error());
+
+    @println("=== Labels ===");
+    @println(labels.dynamic_payload());
+    @println(labels.dynamic_name());
+    @println(labels.typed_label_payload());
+    @println(labels.static_label_is());
+
 
     # XFAIL: Strings (>> str segfaults — Type::Str ptr bug)
     # XFAIL: list[index] (create_index StructValue panic)

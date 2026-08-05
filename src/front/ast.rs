@@ -1,6 +1,8 @@
 use crate::front::span::{Span, Spanned};
 use crate::front::type_helper::{Type, TypeAnnot};
 
+pub use crate::front::label_name::{LabelName, LabelNamePart, parse_dynamic_label_template};
+
 #[derive(Debug, PartialEq, Clone)]
 pub enum Expr {
     Number(i64),                                                    // Value
@@ -32,6 +34,7 @@ pub enum Expr {
     Unit(),
     Macro(String, Vec<Spanned<Expr>>), // Ident, Args e.g. @lshift(x, 4)
     StructInit(String, Vec<(String, Spanned<Expr>)>), // StructName, Fields
+    Label(LabelName, Option<Box<Spanned<Expr>>>), // Label name with an optional single payload
     Try(Box<Spanned<Expr>>),           // Error propagation: expr?
 
     // System types

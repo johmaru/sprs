@@ -47,12 +47,13 @@ For this language development environment setup is WSL2(Ubuntu) + VSCode is reco
  * Enum
  * Struct
  * Error (catchable) — annotation keyword `err`
+ * Label (tagged value) — annotation keyword `label` (also `Label(T)` application form)
  * i8 / u8 / i16 / u16 / i32 / u32 / i64 / u64 (mainly `@cast`; also usable in `>>` annotations)
  * fp16 / fp32 / fp64 (mainly `@cast`; also usable in `>>` annotations)
 
 Type *application* in annotations uses `Name(Type, …)` (for example `List(int)`,
-`Result(int, err)`). These are compile-time forms only: they are not runtime tags.
-Everyday code keeps the flat keywords (`list`, `err`). Generics / type parameters
+`Result(int, err)`, `Label(int)`). These are compile-time forms only: they are not runtime tags.
+Everyday code keeps the flat keywords (`list`, `err`, `label`). Generics / type parameters
 (`Param`) are not user-facing yet.
 
 - Variables and assignments
@@ -104,7 +105,6 @@ Fixed annotations reject incompatible reassignment. Prefix the type with `ambi`
 ```rust
 fn demo(fixed >> int, flex >> ambi int) {
   fixed = 1;      # ok
-  # fixed = "x";  # type error
   flex = 1;       # ok
   flex = "x";     # ok — becomes dynamic after reassignment
 }
@@ -116,8 +116,6 @@ fn take(xs >> List(int)) >> List(int) {
   return xs;
 }
 
-# `Result(...)` here is only an annotation shape (App), not a dedicated
-# error ABI. Catchable errors still use `err` / `@error` / `?`.
 fn parse() >> Result(int, err) {
   return 1;
 }
@@ -187,6 +185,40 @@ while x < 10 {
 }
 ```
 
+- Labels (tagged values)
+
+Labels are a core feature for tagging values (`Tag::Label`), not an error-only type.
+A label has a name plus one optional payload (Unit when omitted).
+
+```rust
+var a = :ok;
+var b = {:ok, 42};
+
+var i = 10;
+var c = {:"{i}-item", 42};   # name becomes "10-item"
+
+if @label_is(c, :"{i}-item") {
+  @println(@label_payload(c));  # 42
+  @println(@label_name(c));     # "10-item"
+}
+
+fn wrap(x >> int) >> Label(int) {
+  return {:ok, x};
+}
+fn take(v >> label) >> label {
+  return v;
+}
+
+@attach(wrap(7), :item);
+@println(:item);  # {:ok, 7}
+```
+
+Notes:
+- Dynamic templates reject `{}`, `{expr}`, and nested braces. Use `{ident}` only.
+- `@attach` currently accepts only a static label without payload (`:name`).
+- `?` still propagates `Tag::Error` only; it is not connected to labels yet.
+- There is no `match` / `case` syntax; use `@label_is` with `if`.
+
 ####  **Operators**
 * Arithmetic: `+`, `-`, `*`, `/`, `%`
 * Comparison: `==`, `!=`, `<`, `>`, `<=`, `>=`
@@ -227,6 +259,25 @@ examples:
 var a = 100; # default is i64
 var b = @cast(a, i8); # cast to i8
 @println(b); # prints 100 as i8
+```
+
+* `@attach(expr, :name)`: Capture `expr`'s value under a static label name.
+  Later `:name` (no payload) reuses the captured value. Dynamic names are not supported yet.
+```rust
+@attach(compute(), :result);
+@println(:result);
+```
+
+* `@label_is(value, expected)`: `true` when `value` is a label whose name matches
+  `expected` (`:name` or `:"{ident}-…"` without payload).
+* `@label_payload(value)`: Clone the label payload (Unit when not a label).
+* `@label_name(value)`: Return the label name as `str` (`""` when not a label).
+```rust
+var v = {:ok, 1};
+if @label_is(v, :ok) {
+  @println(@label_payload(v));
+  @println(@label_name(v));
+}
 ```
 
 **Note:** @cast macro is faster than normal int type, because it use i8 and u8 llvm type directly.
@@ -346,26 +397,24 @@ and `return`. It does **not** rewrite every expression operand (for example `a +
 deep-copies; the compiler warns when `cp` is clearly applied to `list` / `range` / `struct` / `enum`.
 
 **Move on assignment:**
-```
+```rust
 fn main() {
     var greeting = "Hello, Sprs!";
     var copy = greeting;       # ownership moves to copy; greeting is now invalid
     @println(copy);            # prints: Hello, Sprs!
-    # @println(greeting);      # would print () — greeting was moved
 }
 ```
 
 **Move into a function call:**
-```
+```rust
 fn main() {
     var greeting = "Hello, Sprs!";
     @println(greeting);        # greeting is moved into @println and becomes invalid
-    # @println(greeting);      # would print ()
 }
 ```
 
 **Keep ownership with `@clone`:**
-```
+```rust
 fn main() {
     var greeting = "Hello, Sprs!";
     @println(@clone(greeting)); # prints a copy; greeting stays valid
@@ -374,7 +423,7 @@ fn main() {
 ```
 
 **Always-clone binding with `cp var`:**
-```
+```rust
 fn main() {
     cp var greeting = "Hello, Sprs!";
     @println(greeting);         # same as @println(@clone(greeting))

@@ -1,0 +1,30 @@
+pkg labels;
+
+# Dynamic label name + payload
+pub fn dynamic_payload() >> int {
+    var i = 10;
+    var v = {:"{i}-item", 42};
+    if @label_is(v, :"{i}-item") {
+        return @label_payload(v);
+    }
+    return 0;
+}
+
+pub fn dynamic_name() >> str {
+    var i = 10;
+    var v = {:"{i}-item", 42};
+    return @label_name(v);
+}
+
+fn wrap(x >> int) >> Label(int) {
+    return {:ok, x};
+}
+
+pub fn typed_label_payload() >> int {
+    return @label_payload(wrap(7));
+}
+
+pub fn static_label_is() >> bool {
+    var v = {:ok, 1};
+    return @label_is(v, :ok);
+}

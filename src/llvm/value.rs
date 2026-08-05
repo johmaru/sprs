@@ -9,7 +9,9 @@ use inkwell::{
 use crate::llvm::variable::{clone_runtime_value, move_variable};
 use crate::{
     front::ast,
+    front::label_name::{LabelName, LabelNamePart},
     front::span::Spanned,
+    front::type_helper::Type,
     llvm::compiler::{Compiler, StoreTag, StoreValue, StrConstantResult, Tag},
     llvm::data_structures::create_unit,
 };
@@ -327,6 +329,416 @@ pub fn create_bool<'ctx>(
     );
 
     Ok(ptr.into())
+}
+
+pub fn create_label<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+    name: &LabelName,
+    payload: Option<&Spanned<ast::Expr>>,
+    module: &inkwell::module::Module<'ctx>,
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
+    let initial_payload_ptr = if let Some(payload_expr) = payload {
+        self_compiler
+            .compile_expr(payload_expr, module)?
+            .into_pointer_value()
+    } else {
+        create_unit(self_compiler)?.into_pointer_value()
+    };
+
+    let mut source_to_move: Option<(BasicValueEnum<'ctx>, String)> = None;
+    let final_payload_ptr = if let Some(payload_expr) = payload {
+        if let ast::Expr::Var(source_name) = &payload_expr.node {
+            let source = self_compiler
+                .get_variables(source_name)
+                .ok_or_else(|| format!("Undefined variable: {}", source_name))?;
+            if source.always_clone {
+                clone_runtime_value(self_compiler, source.value.into_pointer_value(), module)?
+            } else {
+                source_to_move = Some((source.value, source_name.clone()));
+                initial_payload_ptr
+            }
+        } else {
+            initial_payload_ptr
+        }
+    } else {
+        initial_payload_ptr
+    };
+
+    let tag_ptr = self_compiler
+        .builder
+        .build_struct_gep(
+            self_compiler.runtime_value_type,
+            final_payload_ptr,
+            0,
+            "label_payload_tag_ptr",
+        )
+        .unwrap();
+    let tag = self_compiler
+        .builder
+        .build_load(
+            self_compiler.context.i32_type(),
+            tag_ptr,
+            "label_payload_tag",
+        )
+        .unwrap()
+        .into_int_value();
+    let data_ptr = self_compiler
+        .builder
+        .build_struct_gep(
+            self_compiler.runtime_value_type,
+            final_payload_ptr,
+            1,
+            "label_payload_data_ptr",
+        )
+        .unwrap();
+    let data = self_compiler
+        .builder
+        .build_load(
+            self_compiler.context.i64_type(),
+            data_ptr,
+            "label_payload_data",
+        )
+        .unwrap()
+        .into_int_value();
+
+    let handle = match name {
+        LabelName::Static(static_name) => {
+            let label_index = self_compiler.string_counter;
+            self_compiler.string_counter += 1;
+            let name_ptr = self_compiler
+                .builder
+                .build_global_string_ptr(static_name, &format!("label_name_{}", label_index))
+                .unwrap()
+                .as_pointer_value();
+            let label_new = self_compiler.get_runtime_fn(module, "__label_new")?;
+            match self_compiler
+                .builder
+                .build_call(
+                    label_new,
+                    &[
+                        name_ptr.into(),
+                        self_compiler
+                            .context
+                            .i64_type()
+                            .const_int(static_name.len() as u64, false)
+                            .into(),
+                        tag.into(),
+                        data.into(),
+                    ],
+                    "label_new_call",
+                )
+                .unwrap()
+                .try_as_basic_value()
+            {
+                ValueKind::Basic(value) => value.into_int_value(),
+                ValueKind::Instruction(_) => {
+                    return Err(SprsError::Internal {
+                        message: "__label_new returned void".to_string(),
+                        location: None,
+                    });
+                }
+            }
+        }
+        LabelName::Dynamic(parts) => {
+            build_dynamic_label_handle(self_compiler, parts, tag, data, module)?
+        }
+    };
+
+    let result_ptr = create_entry_block_alloca(self_compiler, "label_res")?;
+    self_compiler.build_runtime_value_store(
+        result_ptr,
+        StoreTag::Int(Tag::Label as u64),
+        StoreValue::Int(handle),
+        "label_res_store",
+    );
+
+    if let Some((source_ptr, source_name)) = source_to_move {
+        move_variable(self_compiler, &source_ptr, &source_name);
+    }
+    Ok(result_ptr.into())
+}
+
+/// Build a dynamic label name string from template parts, then create the label.
+/// Temporary string handles are explicitly dropped after use.
+fn build_dynamic_label_handle<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+    parts: &[LabelNamePart],
+    payload_tag: IntValue<'ctx>,
+    payload_data: IntValue<'ctx>,
+    module: &inkwell::module::Module<'ctx>,
+) -> Result<IntValue<'ctx>, SprsError> {
+    let string_new = self_compiler.get_runtime_fn(module, "__string_new")?;
+    let string_concat = self_compiler.get_runtime_fn(module, "__string_concat")?;
+    let value_to_string = self_compiler.get_runtime_fn(module, "__value_to_string")?;
+    let label_new_from_string = self_compiler.get_runtime_fn(module, "__label_new_from_string")?;
+    let drop_fn = self_compiler.get_runtime_fn(module, "__drop")?;
+    let panic_fn = self_compiler.get_runtime_fn(module, "__panic")?;
+
+    // Start with empty string.
+    let empty_ptr = self_compiler
+        .builder
+        .build_global_string_ptr("", "dyn_label_empty")
+        .unwrap()
+        .as_pointer_value();
+    let mut acc = match self_compiler
+        .builder
+        .build_call(
+            string_new,
+            &[
+                empty_ptr.into(),
+                self_compiler.context.i64_type().const_int(0, false).into(),
+            ],
+            "dyn_label_empty_call",
+        )
+        .unwrap()
+        .try_as_basic_value()
+    {
+        ValueKind::Basic(v) => v.into_int_value(),
+        _ => {
+            return Err(SprsError::Internal {
+                message: "__string_new returned void".to_string(),
+                location: None,
+            });
+        }
+    };
+
+    let mut temps_to_drop: Vec<IntValue<'ctx>> = vec![acc];
+
+    for (part_idx, part) in parts.iter().enumerate() {
+        let piece = match part {
+            LabelNamePart::Lit(lit) => {
+                let idx = self_compiler.string_counter;
+                self_compiler.string_counter += 1;
+                let lit_ptr = self_compiler
+                    .builder
+                    .build_global_string_ptr(lit, &format!("dyn_label_lit_{}", idx))
+                    .unwrap()
+                    .as_pointer_value();
+                match self_compiler
+                    .builder
+                    .build_call(
+                        string_new,
+                        &[
+                            lit_ptr.into(),
+                            self_compiler
+                                .context
+                                .i64_type()
+                                .const_int(lit.len() as u64, false)
+                                .into(),
+                        ],
+                        &format!("dyn_label_lit_call_{}", part_idx),
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                {
+                    ValueKind::Basic(v) => v.into_int_value(),
+                    _ => {
+                        return Err(SprsError::Internal {
+                            message: "__string_new returned void".to_string(),
+                            location: None,
+                        });
+                    }
+                }
+            }
+            LabelNamePart::Ident(ident) => {
+                let binding = self_compiler.get_variables(ident).ok_or_else(|| {
+                    SprsError::Semantic {
+                        code: ErrorCode {
+                            category: ErrorCategory::Semantic,
+                            number: 2,
+                        },
+                        location: Location::new(String::new(), Span::DUMMY),
+                        message: format!(
+                            "Undefined variable in dynamic label name: {}",
+                            ident
+                        ),
+                        help: None,
+                    }
+                })?;
+                match &binding.ty {
+                    Type::Int
+                    | Type::Bool
+                    | Type::Str
+                    | Type::Any
+                    | Type::TypeI64 => {}
+                    other => {
+                        return Err(SprsError::Semantic {
+                            code: ErrorCode {
+                                category: ErrorCategory::Semantic,
+                                number: 3,
+                            },
+                            location: Location::new(String::new(), Span::DUMMY),
+                            message: format!(
+                                "dynamic label name part `{}` has type {:?}; only int/bool/str allowed",
+                                ident, other
+                            ),
+                            help: None,
+                        });
+                    }
+                }
+                let var_ptr = binding.value.into_pointer_value();
+                let tag_ptr = self_compiler
+                    .builder
+                    .build_struct_gep(
+                        self_compiler.runtime_value_type,
+                        var_ptr,
+                        0,
+                        &format!("dyn_label_ident_tag_ptr_{}", part_idx),
+                    )
+                    .unwrap();
+                let tag_val = self_compiler
+                    .builder
+                    .build_load(
+                        self_compiler.context.i32_type(),
+                        tag_ptr,
+                        &format!("dyn_label_ident_tag_{}", part_idx),
+                    )
+                    .unwrap()
+                    .into_int_value();
+                let data_ptr = self_compiler
+                    .builder
+                    .build_struct_gep(
+                        self_compiler.runtime_value_type,
+                        var_ptr,
+                        1,
+                        &format!("dyn_label_ident_data_ptr_{}", part_idx),
+                    )
+                    .unwrap();
+                let data_val = self_compiler
+                    .builder
+                    .build_load(
+                        self_compiler.context.i64_type(),
+                        data_ptr,
+                        &format!("dyn_label_ident_data_{}", part_idx),
+                    )
+                    .unwrap()
+                    .into_int_value();
+                let converted = match self_compiler
+                    .builder
+                    .build_call(
+                        value_to_string,
+                        &[tag_val.into(), data_val.into()],
+                        &format!("dyn_label_to_str_{}", part_idx),
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                {
+                    ValueKind::Basic(v) => v.into_int_value(),
+                    _ => {
+                        return Err(SprsError::Internal {
+                            message: "__value_to_string returned void".to_string(),
+                            location: None,
+                        });
+                    }
+                };
+
+                // Panic if conversion failed (INVALID_HANDLE == 0).
+                let is_invalid = self_compiler
+                    .builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::EQ,
+                        converted,
+                        self_compiler.context.i64_type().const_int(0, false),
+                        &format!("dyn_label_invalid_{}", part_idx),
+                    )
+                    .unwrap();
+                let parent_fn = self_compiler
+                    .builder
+                    .get_insert_block()
+                    .unwrap()
+                    .get_parent()
+                    .unwrap();
+                let panic_bb = self_compiler.context.append_basic_block(
+                    parent_fn,
+                    &format!("dyn_label_panic_{}", part_idx),
+                );
+                let ok_bb = self_compiler.context.append_basic_block(
+                    parent_fn,
+                    &format!("dyn_label_ok_{}", part_idx),
+                );
+                self_compiler
+                    .builder
+                    .build_conditional_branch(is_invalid, panic_bb, ok_bb)
+                    .unwrap();
+                self_compiler.builder.position_at_end(panic_bb);
+                let msg = self_compiler
+                    .builder
+                    .build_global_string_ptr(
+                        "dynamic label name part is not int/bool/str",
+                        &format!("dyn_label_panic_msg_{}", part_idx),
+                    )
+                    .unwrap()
+                    .as_pointer_value();
+                self_compiler
+                    .builder
+                    .build_call(panic_fn, &[msg.into()], &format!("dyn_label_panic_call_{}", part_idx))
+                    .unwrap();
+                self_compiler.builder.build_unreachable().unwrap();
+                self_compiler.builder.position_at_end(ok_bb);
+
+                converted
+            }
+        };
+
+        temps_to_drop.push(piece);
+        let concatenated = match self_compiler
+            .builder
+            .build_call(
+                string_concat,
+                &[acc.into(), piece.into()],
+                &format!("dyn_label_concat_{}", part_idx),
+            )
+            .unwrap()
+            .try_as_basic_value()
+        {
+            ValueKind::Basic(v) => v.into_int_value(),
+            _ => {
+                return Err(SprsError::Internal {
+                    message: "__string_concat returned void".to_string(),
+                    location: None,
+                });
+            }
+        };
+        temps_to_drop.push(concatenated);
+        acc = concatenated;
+    }
+
+    let handle = match self_compiler
+        .builder
+        .build_call(
+            label_new_from_string,
+            &[acc.into(), payload_tag.into(), payload_data.into()],
+            "label_new_from_string_call",
+        )
+        .unwrap()
+        .try_as_basic_value()
+    {
+        ValueKind::Basic(v) => v.into_int_value(),
+        _ => {
+            return Err(SprsError::Internal {
+                message: "__label_new_from_string returned void".to_string(),
+                location: None,
+            });
+        }
+    };
+
+    // Drop all temporary string handles (label cloned the final name).
+    let string_tag = self_compiler
+        .context
+        .i32_type()
+        .const_int(Tag::String as u64, false);
+    for (i, temp) in temps_to_drop.into_iter().enumerate() {
+        self_compiler
+            .builder
+            .build_call(
+                drop_fn,
+                &[string_tag.into(), temp.into()],
+                &format!("dyn_label_drop_tmp_{}", i),
+            )
+            .unwrap();
+    }
+
+    Ok(handle)
 }
 
 pub fn create_typed_zero<'ctx>(

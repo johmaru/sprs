@@ -18,6 +18,7 @@
 /// | Enum            | Enum         | 7            |
 /// | Struct(_)       | Struct       | 8            |
 /// | Error           | Error        | 9            |
+/// | Label           | Label        | 10           |
 /// | TypeI8          | Int8         | 100          |
 /// | TypeU8          | Uint8        | 101          |
 /// | TypeI16         | Int16        | 102          |
@@ -36,9 +37,9 @@
 /// `App` / `Param` are compile-time only: inputs to checking and (later)
 /// monomorphization (#29). They are not LLVM types and not runtime tags.
 ///
-/// Flat `List` / `Range` / `Error` coexist with parametric forms such as
+/// Flat `List` / `Range` / `Error` / `Label` coexist with parametric forms such as
 /// `App("List", [Int])`. Everyday annotations keep the keywords (`list`,
-/// `err`); `App` is for explicit constructor application in annotations.
+/// `err`, `label`); `App` is for explicit constructor application in annotations.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Type {
     Any,
@@ -52,6 +53,7 @@ pub enum Type {
     Enum(String),
     Struct(String),
     Error,
+    Label,
 
     App(String, Vec<Type>),
     Param(String),
@@ -98,6 +100,7 @@ impl Type {
             Type::Enum(_) => Some(7),
             Type::Struct(_) => Some(8),
             Type::Error => Some(9),
+            Type::Label => Some(10),
             Type::App(_, _) => None,
             Type::Param(_) => None,
             Type::TypeI8 => Some(100),
@@ -131,6 +134,7 @@ impl Type {
             7 => Some(Type::Enum(String::new())),
             8 => Some(Type::Struct(String::new())),
             9 => Some(Type::Error),
+            10 => Some(Type::Label),
             100 => Some(Type::TypeI8),
             101 => Some(Type::TypeU8),
             102 => Some(Type::TypeI16),
@@ -161,6 +165,7 @@ impl Type {
 ///   - `List` ≡ `App("List", [])` ≡ `App("List", [Any])`
 ///   - `Range` ≡ `App("Range", [])` ≡ `App("Range", [Any])`
 ///   - `Error` ≡ `App("Error", [])`
+///   - `Label` ≡ `App("Label", [])` ≡ `App("Label", [Any])`
 ///   `App("List", [Int])` is not compatible with bare `List`
 /// - otherwise exact equality
 pub fn types_compatible(expected: &Type, actual: &Type) -> bool {
@@ -195,6 +200,9 @@ pub fn types_compatible(expected: &Type, actual: &Type) -> bool {
         }
         (Type::Error, Type::App(n, args)) | (Type::App(n, args), Type::Error) => {
             n == "Error" && args.is_empty()
+        }
+        (Type::Label, Type::App(n, args)) | (Type::App(n, args), Type::Label) => {
+            n == "Label" && is_untyped_collection_args(args)
         }
         _ => false,
     }
@@ -243,6 +251,7 @@ pub fn not_int_type_in_llvm() -> Vec<Type> {
         Type::Unit,
         Type::Bool,
         Type::Error,
+        Type::Label,
         Type::App(String::new(), Vec::new()),
         Type::Param(String::new()),
     ]
@@ -262,12 +271,13 @@ mod tests {
         assert_eq!(Type::List.tag_discriminant(), Some(4));
         assert_eq!(Type::Range.tag_discriminant(), Some(5));
         assert_eq!(Type::Error.tag_discriminant(), Some(9));
+        assert_eq!(Type::Label.tag_discriminant(), Some(10));
         assert_eq!(Type::Any.tag_discriminant(), None);
         assert_eq!(Type::App("List".into(), vec![Type::Int]).tag_discriminant(), None);
         assert_eq!(Type::Param("T".into()).tag_discriminant(), None);
         assert_eq!(Type::from_tag_discriminant(4), Some(Type::List));
         assert_eq!(Type::from_tag_discriminant(9), Some(Type::Error));
-        assert_eq!(Type::from_tag_discriminant(10), None);
+        assert_eq!(Type::from_tag_discriminant(10), Some(Type::Label));
         assert_eq!(Type::from_tag_discriminant(11), None);
     }
 
@@ -328,6 +338,18 @@ mod tests {
         assert!(!types_compatible(
             &Type::Error,
             &Type::App("Error".into(), vec![Type::Int])
+        ));
+        assert!(types_compatible(
+            &Type::Label,
+            &Type::App("Label".into(), vec![])
+        ));
+        assert!(types_compatible(
+            &Type::App("Label".into(), vec![Type::Any]),
+            &Type::Label
+        ));
+        assert!(!types_compatible(
+            &Type::Label,
+            &Type::App("Label".into(), vec![Type::Int])
         ));
     }
 

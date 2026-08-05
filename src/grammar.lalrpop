@@ -12,6 +12,8 @@ use crate::front::ast::{
     Struct,
     StructField,
     Suffix,
+    LabelName,
+    parse_dynamic_label_template,
 };
 use crate::front::span::{Span, Spanned};
 use crate::front::lexer::Token;
@@ -60,6 +62,7 @@ extern {
         TRUE  => Token::Bool(true),
         FALSE => Token::Bool(false),
         Comma  => Token::Comma,
+        Colon  => Token::Colon,
         Function => Token::Function,
         Return => Token::Return,
         Preprocessor => Token::Preprocessor,
@@ -81,6 +84,7 @@ extern {
         TypeRange => Token::TypeRange,
         TypeUnit => Token::TypeUnit,
         TypeError => Token::TypeError,
+        TypeLabel => Token::TypeLabel,
 
         TypeI8 => Token::TypeI8,
         TypeU8 => Token::TypeU8,
@@ -242,6 +246,7 @@ Type: Type = {
     TypeRange => Type::Range,
     TypeUnit => Type::Unit,
     TypeError => Type::Error,
+    TypeLabel => Type::Label,
 
     TypeI8 => Type::TypeI8,
     TypeU8 => Type::TypeU8,
@@ -469,6 +474,20 @@ Atom: Spanned<Expr> = {
         let mut args = vec![first];
         args.extend(rest);
         Spanned::new(Expr::Call(id, args), Span::new(start, end))
+    },
+    <start:@L> Colon <id:Ident> <end:@R> => Spanned::new(Expr::Label(LabelName::Static(id), None), Span::new(start, end)),
+    <start:@L> Colon <s:StringLiteral> <end:@R> =>? {
+        match parse_dynamic_label_template(&s) {
+            Ok(parts) => Ok(Spanned::new(Expr::Label(LabelName::Dynamic(parts), None), Span::new(start, end))),
+            Err(msg) => Err(ParseError::User { error: msg }),
+        }
+    },
+    <start:@L> LBrace Colon <id:Ident> Comma <payload:Expr> RBrace <end:@R> => Spanned::new(Expr::Label(LabelName::Static(id), Some(Box::new(payload))), Span::new(start, end)),
+    <start:@L> LBrace Colon <s:StringLiteral> Comma <payload:Expr> RBrace <end:@R> =>? {
+        match parse_dynamic_label_template(&s) {
+            Ok(parts) => Ok(Spanned::new(Expr::Label(LabelName::Dynamic(parts), Some(Box::new(payload))), Span::new(start, end))),
+            Err(msg) => Err(ParseError::User { error: msg }),
+        }
     },
     <start:@L> <id:Ident> <end:@R> => Spanned::new(Expr::Var(id), Span::new(start, end)),
     <start:@L> <n:Num> <end:@R> => Spanned::new(Expr::Number(n), Span::new(start, end)),

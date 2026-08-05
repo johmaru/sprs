@@ -9,6 +9,7 @@ use crate::llvm::builder_helper::Comparison;
 use crate::llvm::builder_helper::EqNeq;
 use crate::llvm::builder_helper::UpDown;
 use crate::llvm::compiler::{Compiler, OS, Tag};
+use crate::llvm::value::create_label;
 use crate::naming;
 use inkwell::AddressSpace;
 use inkwell::module::Module;
@@ -175,6 +176,9 @@ impl<'ctx> Compiler<'ctx> {
                 }
                 "not" => Type::Bool,
                 "error" => Type::Error,
+                "label_is" => Type::Bool,
+                "label_name" => Type::Str,
+                "label_payload" => Type::Any,
                 "init" => Type::Any,
                 _ => Type::Any,
             },
@@ -184,6 +188,15 @@ impl<'ctx> Compiler<'ctx> {
             // Error propagates by returning from the function.
             ast::Expr::Try(inner) => self.infer_type(inner),
             ast::Expr::StructInit(name, _) => Type::Struct(name.clone()),
+            ast::Expr::Label(_, None) => Type::Label,
+            ast::Expr::Label(_, Some(payload)) => {
+                let payload_ty = self.infer_type(payload);
+                if matches!(payload_ty, Type::Unit) {
+                    Type::Label
+                } else {
+                    Type::App("Label".into(), vec![payload_ty])
+                }
+            }
             _ => Type::Any,
         }
     }
@@ -215,6 +228,7 @@ impl<'ctx> Compiler<'ctx> {
         self.function_signatures = Some(fn_val);
 
         self.enter_scope();
+        self.attachments.clear();
 
         let fn_sig = self.fn_types.get(func_name).cloned();
         self.current_fn_ret_ty = func.ret_ty.clone();
@@ -258,15 +272,16 @@ impl<'ctx> Compiler<'ctx> {
         }
 
         self.compile_block(&func.blk, module)?;
-
         let current_block = self.builder.get_insert_block().unwrap();
         if current_block.get_terminator().is_none() {
             // Inter compile_block will execute exit_scope, so need scope of function args end here
+            self.emit_drop_for_attachments(module)?;
             self.exit_scope(module)?;
             builder_helper::create_dummy_for_no_return(self);
         } else {
             self.scopes.pop();
         }
+        self.attachments.clear();
 
         self.current_fn_ret_ty = None;
         if fn_val.verify(true) {
@@ -757,6 +772,10 @@ impl<'ctx> Compiler<'ctx> {
                     "is_error" => Ok(builder_helper::call_builtin_macro_is_error(self, args, module)?),
                     "error_code" => Ok(builder_helper::call_builtin_macro_error_code(self, args, module)?),
                     "error_message" => Ok(builder_helper::call_builtin_macro_error_message(self, args, module)?),
+                    "attach" => Ok(builder_helper::call_builtin_macro_attach(self, args, module)?),
+                    "label_is" => Ok(builder_helper::call_builtin_macro_label_is(self, args, module)?),
+                    "label_payload" => Ok(builder_helper::call_builtin_macro_label_payload(self, args, module)?),
+                    "label_name" => Ok(builder_helper::call_builtin_macro_label_name(self, args, module)?),
                     "error" => Ok(builder_helper::call_builtin_macro_error(self, args, module)?),
                     "init" => Err(SprsError::Semantic {
                         code: ErrorCode { category: ErrorCategory::Semantic, number: 5 },
@@ -932,6 +951,16 @@ impl<'ctx> Compiler<'ctx> {
                 )?)
             }
             ast::Expr::Unit() => Ok(builder_helper::create_unit(self)?),
+            ast::Expr::Label(name, payload) => {
+                if payload.is_none() {
+                    if let crate::front::label_name::LabelName::Static(static_name) = name {
+                        if let Some(attached) = self.attachments.get(static_name).copied() {
+                            return Ok(builder_helper::clone_runtime_value(self, attached, module)?.into());
+                        }
+                    }
+                }
+                Ok(create_label(self, name, payload.as_deref(), module)?)
+            }
             ast::Expr::StructInit(struct_name, fields) => Ok(builder_helper::create_struct_init(self, struct_name, fields, module)?),
             ast::Expr::Try(inner_expr) => {
                 let inner_ptr = self.compile_expr(inner_expr, module)?.into_pointer_value();

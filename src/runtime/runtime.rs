@@ -47,6 +47,7 @@ pub enum Tag {
     Enum = 7,
     Struct = 8,
     Error = 9,
+    Label = 10,
 
     // System types
     Int8 = 100,
@@ -73,6 +74,7 @@ const fn is_heap_tag(tag: i32) -> bool {
             || t == Tag::Struct as i32
             || t == Tag::Enum as i32
             || t == Tag::Error as i32
+            || t == Tag::Label as i32
     )
 }
 
@@ -115,6 +117,10 @@ enum SlotData {
         code: u32,
         message: Option<String>,
     },
+    Label {
+        name: String,
+        payload: SprsValue,
+    },
     Empty,
 }
 
@@ -124,6 +130,7 @@ impl Drop for SlotData {
             // Vec / String / SprsRange / Error drop themselves.
             SlotData::List(_) | SlotData::String(_) | SlotData::Range(_)
             | SlotData::Error { .. } => {}
+            SlotData::Label { payload, .. } => __drop(payload.tag, payload.data),
             SlotData::Struct { ptr, layout, owned } => {
                 if *owned && !ptr.is_null() {
                     unsafe { std::alloc::dealloc(*ptr as *mut u8, *layout) };
@@ -223,26 +230,31 @@ fn slot_release(handle: u64) {
     if handle == INVALID_HANDLE {
         return;
     }
-    FREE_LIST.with(|fl| {
-        SLOTS.with(|s| {
-            let mut slots = s.borrow_mut();
-            let idx = handle_index(handle) as usize;
-            if idx >= slots.len() {
-                return;
-            }
-            let slot = &mut slots[idx];
-            if slot.generation != handle_gen(handle) {
-                return; // stale handle, not a live slot
-            }
-            // Drop the payload by replacing with Empty, then bump generation.
-            slot.data = SlotData::Empty;
-            slot.generation = slot.generation.wrapping_add(1);
-            if slot.generation == 0 {
-                slot.generation = 1;
-            }
-            fl.borrow_mut().push(idx as u32);
-        })
+
+    let released = SLOTS.with(|s| {
+        let mut slots = s.borrow_mut();
+        let idx = handle_index(handle) as usize;
+        if idx >= slots.len() {
+            return None;
+        }
+        let slot = &mut slots[idx];
+        if slot.generation != handle_gen(handle) {
+            return None; // stale handle, not a live slot
+        }
+        // Move the payload out while SLOTS is borrowed, then drop it after
+        // the borrow ends so nested heap payloads may release their slots.
+        let data = std::mem::replace(&mut slot.data, SlotData::Empty);
+        slot.generation = slot.generation.wrapping_add(1);
+        if slot.generation == 0 {
+            slot.generation = 1;
+        }
+        Some((idx as u32, data))
     });
+
+    if let Some((idx, data)) = released {
+        drop(data);
+        FREE_LIST.with(|fl| fl.borrow_mut().push(idx));
+    }
 }
 
 /// Read-only lookup that runs `f` with a reference to the payload if the
@@ -547,6 +559,135 @@ pub extern "C" fn __enum_new(name_ptr: *const u8, name_len: i64, variant_index: 
         variant_index,
     }))
 }
+/// Create a label slot containing a copied name and one runtime payload.
+#[unsafe(no_mangle)]
+pub extern "C" fn __label_new(
+    name_ptr: *const u8,
+    name_len: i64,
+    payload_tag: i32,
+    payload_data: u64,
+) -> u64 {
+    if name_ptr.is_null() || name_len < 0 {
+        return INVALID_HANDLE;
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(name_ptr, name_len as usize) };
+    let name = String::from_utf8_lossy(bytes).into_owned();
+    slot_insert(SlotData::Label {
+        name,
+        payload: SprsValue {
+            tag: payload_tag,
+            data: payload_data,
+        },
+    })
+}
+
+/// Convert a runtime value to a String slot for dynamic label interpolation.
+/// Supported: String (clone), Integer (decimal), Boolean ("true"/"false").
+/// Other tags return INVALID_HANDLE.
+#[unsafe(no_mangle)]
+pub extern "C" fn __value_to_string(tag: i32, data: u64) -> u64 {
+    if tag == Tag::String as i32 {
+        return string_clone(data);
+    }
+    if tag == Tag::Integer as i32 {
+        let s = (data as i64).to_string();
+        return slot_insert(SlotData::String(s));
+    }
+    if tag == Tag::Boolean as i32 {
+        let s = if data != 0 { "true" } else { "false" };
+        return slot_insert(SlotData::String(s.to_string()));
+    }
+    INVALID_HANDLE
+}
+
+/// Create a label whose name comes from an existing String slot handle.
+/// The name string is cloned; `name_handle` itself is not consumed.
+#[unsafe(no_mangle)]
+pub extern "C" fn __label_new_from_string(
+    name_handle: u64,
+    payload_tag: i32,
+    payload_data: u64,
+) -> u64 {
+    let name: Option<String> = slot_with(name_handle, None, |d| match d {
+        SlotData::String(s) => Some(s.clone()),
+        _ => None,
+    });
+    let Some(name) = name else {
+        return INVALID_HANDLE;
+    };
+    slot_insert(SlotData::Label {
+        name,
+        payload: SprsValue {
+            tag: payload_tag,
+            data: payload_data,
+        },
+    })
+}
+
+/// Compare a label's name to a static byte string. Returns 1 on match, else 0.
+#[unsafe(no_mangle)]
+pub extern "C" fn __label_name_eq(handle: u64, name_ptr: *const u8, name_len: i64) -> i32 {
+    if name_ptr.is_null() || name_len < 0 {
+        return 0;
+    }
+    let expected = unsafe { std::slice::from_raw_parts(name_ptr, name_len as usize) };
+    slot_with(handle, 0i32, |d| match d {
+        SlotData::Label { name, .. } => {
+            if name.as_bytes() == expected {
+                1
+            } else {
+                0
+            }
+        }
+        _ => 0,
+    })
+}
+
+/// Compare two label handles by name. Returns 1 on match, else 0.
+#[unsafe(no_mangle)]
+pub extern "C" fn __label_names_equal(a: u64, b: u64) -> i32 {
+    let name_a: Option<String> = slot_with(a, None, |d| match d {
+        SlotData::Label { name, .. } => Some(name.clone()),
+        _ => None,
+    });
+    let name_b: Option<String> = slot_with(b, None, |d| match d {
+        SlotData::Label { name, .. } => Some(name.clone()),
+        _ => None,
+    });
+    match (name_a, name_b) {
+        (Some(a), Some(b)) if a == b => 1,
+        _ => 0,
+    }
+}
+
+/// Return a cloned payload from a label. Non-label → Unit.
+#[unsafe(no_mangle)]
+pub extern "C" fn __label_payload(handle: u64) -> SprsValue {
+    let payload: Option<SprsValue> = slot_with(handle, None, |d| match d {
+        SlotData::Label { payload, .. } => Some(*payload),
+        _ => None,
+    });
+    match payload {
+        Some(p) => __clone(p.tag, p.data),
+        None => SprsValue {
+            tag: Tag::Unit as i32,
+            data: 0,
+        },
+    }
+}
+
+/// Return the label name as a new String slot. Non-label → empty string slot.
+#[unsafe(no_mangle)]
+pub extern "C" fn __label_name(handle: u64) -> u64 {
+    let name: Option<String> = slot_with(handle, None, |d| match d {
+        SlotData::Label { name, .. } => Some(name.clone()),
+        _ => None,
+    });
+    match name {
+        Some(s) => slot_insert(SlotData::String(s)),
+        None => slot_insert(SlotData::String(String::new())),
+    }
+}
 
 // ---------------------------------------------------------------------------
 // C ABI: Drop
@@ -616,6 +757,13 @@ pub extern "C" fn __clone(tag: i32, data: u64) -> SprsValue {
 
     if tag == Tag::Error as i32 {
         let new_handle = error_clone(data);
+        return SprsValue {
+            tag,
+            data: new_handle,
+        };
+    }
+    if tag == Tag::Label as i32 {
+        let new_handle = label_clone(data);
         return SprsValue {
             tag,
             data: new_handle,
@@ -729,6 +877,19 @@ fn error_clone(handle: u64) -> u64 {
         _ => (0, None),
     });
     slot_insert(SlotData::Error { code, message })
+}
+fn label_clone(handle: u64) -> u64 {
+    let snapshot: Option<(String, SprsValue)> = slot_with(handle, None, |d| match d {
+        SlotData::Label { name, payload } => Some((name.clone(), *payload)),
+        _ => None,
+    });
+    let Some((name, payload)) = snapshot else {
+        return INVALID_HANDLE;
+    };
+    slot_insert(SlotData::Label {
+        name,
+        payload: __clone(payload.tag, payload.data),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -936,6 +1097,38 @@ fn format_sprs_value(val: &SprsValue, out: &mut String) {
             use std::fmt::Write;
             let _ = write!(out, "<struct handle {:016x}>", val.data);
         }
+        t if t == Tag::Label as i32 => {
+            let (name, payload) = slot_with(
+                val.data,
+                (
+                    String::new(),
+                    SprsValue {
+                        tag: Tag::Unit as i32,
+                        data: 0,
+                    },
+                ),
+                |d| match d {
+                    SlotData::Label { name, payload } => (name.clone(), *payload),
+                    _ => (
+                        String::new(),
+                        SprsValue {
+                            tag: Tag::Unit as i32,
+                            data: 0,
+                        },
+                    ),
+                },
+            );
+            if payload.tag == Tag::Unit as i32 {
+                out.push(':');
+                out.push_str(&name);
+            } else {
+                out.push_str("{:");
+                out.push_str(&name);
+                out.push_str(", ");
+                format_sprs_value(&payload, out);
+                out.push('}');
+            }
+        }
         t if t == Tag::Error as i32 => {
             let (code, msg) = slot_with(val.data, (0u32, String::new()), |d| match d {
                 SlotData::Error { code, message } => {
@@ -972,4 +1165,111 @@ pub extern "C" fn __panic(message_ptr: *const i8) {
         sprs_out_line(&buf);
     }
     std::process::exit(1);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        __clone, __drop, __label_name, __label_name_eq, __label_new, __label_new_from_string,
+        __label_payload, __string_new, __value_to_string, format_sprs_value, SprsValue, Tag,
+    };
+
+    #[test]
+    fn label_round_trips_and_clones_payload() {
+        let name = b"ok";
+        let handle = __label_new(name.as_ptr(), name.len() as i64, Tag::Integer as i32, 42);
+        let value = SprsValue { tag: Tag::Label as i32, data: handle };
+        let mut output = String::new();
+        format_sprs_value(&value, &mut output);
+        assert_eq!(output, "{:ok, 42}");
+
+        let cloned = __clone(value.tag, value.data);
+        let mut cloned_output = String::new();
+        format_sprs_value(&cloned, &mut cloned_output);
+        assert_eq!(cloned_output, "{:ok, 42}");
+
+        __drop(value.tag, value.data);
+        __drop(cloned.tag, cloned.data);
+    }
+
+    #[test]
+    fn label_without_payload_prints_name_only() {
+        let name = b"ok";
+        let handle = __label_new(name.as_ptr(), name.len() as i64, Tag::Unit as i32, 0);
+        let value = SprsValue { tag: Tag::Label as i32, data: handle };
+        let mut output = String::new();
+        format_sprs_value(&value, &mut output);
+        assert_eq!(output, ":ok");
+        __drop(value.tag, value.data);
+    }
+    #[test]
+    fn dropping_label_releases_heap_payload() {
+        let payload = b"payload";
+        let string_handle = __string_new(payload.as_ptr(), payload.len() as i64);
+        let name = b"value";
+        let label_handle = __label_new(
+            name.as_ptr(),
+            name.len() as i64,
+            Tag::String as i32,
+            string_handle,
+        );
+        __drop(Tag::Label as i32, label_handle);
+        let replacement = __string_new(payload.as_ptr(), payload.len() as i64);
+        assert_ne!(replacement, string_handle);
+        __drop(Tag::String as i32, replacement);
+    }
+
+    #[test]
+    fn value_to_string_supports_int_bool_str() {
+        let s = __value_to_string(Tag::Integer as i32, 10u64);
+        let eq = __label_name_eq(
+            // misuse: wrap via label_new_from_string to check string content indirectly
+            {
+                let h = __label_new_from_string(s, Tag::Unit as i32, 0);
+                assert_eq!(__label_name_eq(h, b"10".as_ptr(), 2), 1);
+                __drop(Tag::Label as i32, h);
+                s
+            },
+            b"10".as_ptr(),
+            2,
+        );
+        // Direct string content check via __label_name path:
+        let name_s = __string_new(b"hi".as_ptr(), 2);
+        assert_eq!(__value_to_string(Tag::String as i32, name_s) != 0, true);
+        let t = __value_to_string(Tag::Boolean as i32, 1);
+        let f = __value_to_string(Tag::Boolean as i32, 0);
+        let th = __label_new_from_string(t, Tag::Unit as i32, 0);
+        let fh = __label_new_from_string(f, Tag::Unit as i32, 0);
+        assert_eq!(__label_name_eq(th, b"true".as_ptr(), 4), 1);
+        assert_eq!(__label_name_eq(fh, b"false".as_ptr(), 5), 1);
+        __drop(Tag::Label as i32, th);
+        __drop(Tag::Label as i32, fh);
+        __drop(Tag::String as i32, s);
+        __drop(Tag::String as i32, name_s);
+        __drop(Tag::String as i32, t);
+        __drop(Tag::String as i32, f);
+        let _ = eq;
+    }
+
+    #[test]
+    fn label_query_helpers_work() {
+        let name = b"ok";
+        let handle = __label_new(name.as_ptr(), name.len() as i64, Tag::Integer as i32, 42);
+        assert_eq!(__label_name_eq(handle, name.as_ptr(), name.len() as i64), 1);
+        assert_eq!(__label_name_eq(handle, b"no".as_ptr(), 2), 0);
+        let payload = __label_payload(handle);
+        assert_eq!(payload.tag, Tag::Integer as i32);
+        assert_eq!(payload.data, 42);
+        let name_handle = __label_name(handle);
+        let named = __label_new_from_string(name_handle, Tag::Unit as i32, 0);
+        assert_eq!(__label_name_eq(named, name.as_ptr(), name.len() as i64), 1);
+        __drop(Tag::Label as i32, named);
+        __drop(Tag::String as i32, name_handle);
+        __drop(Tag::Label as i32, handle);
+        let empty_name = __label_name(0);
+        let empty_label = __label_new_from_string(empty_name, Tag::Unit as i32, 0);
+        assert_eq!(__label_name_eq(empty_label, b"".as_ptr(), 0), 1);
+        __drop(Tag::Label as i32, empty_label);
+        __drop(Tag::String as i32, empty_name);
+    }
 }

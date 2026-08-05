@@ -8,7 +8,9 @@ use crate::{
     front::span::{Span, Spanned},
     llvm::compiler::{Compiler, StoreTag, StoreValue, Tag},
 };
-use crate::llvm::value::{create_error_value, create_entry_block_alloca, ErrorValueSettings};
+use crate::llvm::data_structures::create_unit;
+use crate::llvm::value::{create_error_value, create_entry_block_alloca, create_label, ErrorValueSettings};
+use crate::front::label_name::LabelName;
 use crate::llvm::variable::{clone_runtime_value, move_variable, var_load_at_init_variable};
 
 pub fn call_builtin_macro_println<'ctx>(
@@ -1239,6 +1241,266 @@ pub fn call_builtin_macro_error_message<'ctx>(
         StoreTag::Int(Tag::String as u64),
         StoreValue::Int(string_handle),
         "error_msg_res_store",
+    );
+    Ok(res_ptr.into())
+}
+/// @attach(expr, :name) captures a cloned value for later `:name` uses.
+pub fn call_builtin_macro_attach<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+    args: &[Spanned<ast::Expr>],
+    module: &inkwell::module::Module<'ctx>,
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
+    if args.len() != 2 {
+        return Err(SprsError::Semantic { code: ErrorCode { category: ErrorCategory::Semantic, number: 3 }, location: Location::new(String::new(), Span::DUMMY), message: "@attach expects exactly 2 arguments: expression and label".to_string(), help: None });
+    }
+    let label_name = match &args[1].node {
+        ast::Expr::Label(crate::front::label_name::LabelName::Static(name), None) => name.clone(),
+        _ => {
+            return Err(SprsError::Semantic { code: ErrorCode { category: ErrorCategory::Semantic, number: 3 }, location: Location::new(String::new(), args[1].span), message: "@attach second argument must be a label such as :name".to_string(), help: None });
+        }
+    };
+
+    let value_ptr = self_compiler.compile_expr(&args[0], module)?.into_pointer_value();
+    let captured_ptr = clone_runtime_value(self_compiler, value_ptr, module)?;
+    if let Some(previous) = self_compiler.attachments.insert(label_name.clone(), captured_ptr) {
+        let drop_fn = self_compiler.get_runtime_fn(module, "__drop")?;
+        crate::llvm::variable::drop_var(self_compiler, previous, drop_fn, &format!("attach_{}", label_name));
+    }
+    create_unit(self_compiler)
+}
+
+/// @label_is(value, expected) — true if value is a label whose name matches expected.
+/// `expected` must be a payload-less label (`:name` or `:"{i}-item"`).
+pub fn call_builtin_macro_label_is<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+    args: &[Spanned<ast::Expr>],
+    module: &inkwell::module::Module<'ctx>,
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
+    if args.len() != 2 {
+        return Err(SprsError::Semantic {
+            code: ErrorCode { category: ErrorCategory::Semantic, number: 3 },
+            location: Location::new(String::new(), Span::DUMMY),
+            message: "@label_is expects exactly 2 arguments: value and label".to_string(),
+            help: None,
+        });
+    }
+
+    let expected_name = match &args[1].node {
+        ast::Expr::Label(name, None) => name,
+        _ => {
+            return Err(SprsError::Semantic {
+                code: ErrorCode { category: ErrorCategory::Semantic, number: 3 },
+                location: Location::new(String::new(), args[1].span),
+                message: "@label_is second argument must be a label such as :name or :\"{i}-item\"".to_string(),
+                help: None,
+            });
+        }
+    };
+
+    let val_ptr = self_compiler.compile_expr(&args[0], module)?.into_pointer_value();
+    let data_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, val_ptr, 1, "label_is_data_ptr")
+        .unwrap();
+    let data_val = self_compiler
+        .builder
+        .build_load(self_compiler.context.i64_type(), data_ptr, "label_is_data")
+        .unwrap()
+        .into_int_value();
+
+    let cmp_i32 = match expected_name {
+        LabelName::Static(static_name) => {
+            let idx = self_compiler.string_counter;
+            self_compiler.string_counter += 1;
+            let name_ptr = self_compiler
+                .builder
+                .build_global_string_ptr(static_name, &format!("label_is_name_{}", idx))
+                .unwrap()
+                .as_pointer_value();
+            let name_eq = self_compiler.get_runtime_fn(module, "__label_name_eq")?;
+            match self_compiler
+                .builder
+                .build_call(
+                    name_eq,
+                    &[
+                        data_val.into(),
+                        name_ptr.into(),
+                        self_compiler
+                            .context
+                            .i64_type()
+                            .const_int(static_name.len() as u64, false)
+                            .into(),
+                    ],
+                    "label_is_name_eq",
+                )
+                .unwrap()
+                .try_as_basic_value()
+            {
+                ValueKind::Basic(v) => v.into_int_value(),
+                _ => {
+                    return Err(SprsError::Internal {
+                        message: "__label_name_eq returned void".to_string(),
+                        location: None,
+                    });
+                }
+            }
+        }
+        LabelName::Dynamic(_) => {
+            // Evaluate expected dynamic label, compare names, then drop the temp label.
+            let expected_ptr = create_label(self_compiler, expected_name, None, module)?
+                .into_pointer_value();
+            let expected_data_ptr = self_compiler
+                .builder
+                .build_struct_gep(
+                    self_compiler.runtime_value_type,
+                    expected_ptr,
+                    1,
+                    "label_is_expected_data_ptr",
+                )
+                .unwrap();
+            let expected_data = self_compiler
+                .builder
+                .build_load(
+                    self_compiler.context.i64_type(),
+                    expected_data_ptr,
+                    "label_is_expected_data",
+                )
+                .unwrap()
+                .into_int_value();
+            let names_equal = self_compiler.get_runtime_fn(module, "__label_names_equal")?;
+            let cmp = match self_compiler
+                .builder
+                .build_call(
+                    names_equal,
+                    &[data_val.into(), expected_data.into()],
+                    "label_is_names_equal",
+                )
+                .unwrap()
+                .try_as_basic_value()
+            {
+                ValueKind::Basic(v) => v.into_int_value(),
+                _ => {
+                    return Err(SprsError::Internal {
+                        message: "__label_names_equal returned void".to_string(),
+                        location: None,
+                    });
+                }
+            };
+            let drop_fn = self_compiler.get_runtime_fn(module, "__drop")?;
+            crate::llvm::variable::drop_var(self_compiler, expected_ptr, drop_fn, "label_is_expected");
+            cmp
+        }
+    };
+
+    let res_ptr = create_entry_block_alloca(self_compiler, "label_is_res")?;
+    self_compiler.build_runtime_value_store(
+        res_ptr,
+        StoreTag::Int(Tag::Boolean as u64),
+        StoreValue::Int(
+            self_compiler
+                .builder
+                .build_int_z_extend(cmp_i32, self_compiler.context.i64_type(), "label_is_zext")
+                .unwrap(),
+        ),
+        "label_is_res_store",
+    );
+    Ok(res_ptr.into())
+}
+
+/// @label_payload(value) — clone the label payload. Non-label → Unit.
+pub fn call_builtin_macro_label_payload<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+    args: &[Spanned<ast::Expr>],
+    module: &inkwell::module::Module<'ctx>,
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
+    if args.len() != 1 {
+        return Err(SprsError::Semantic {
+            code: ErrorCode { category: ErrorCategory::Semantic, number: 3 },
+            location: Location::new(String::new(), Span::DUMMY),
+            message: "@label_payload expects exactly 1 argument".to_string(),
+            help: None,
+        });
+    }
+
+    let val_ptr = self_compiler.compile_expr(&args[0], module)?.into_pointer_value();
+    let data_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, val_ptr, 1, "label_payload_data_ptr")
+        .unwrap();
+    let data_val = self_compiler
+        .builder
+        .build_load(self_compiler.context.i64_type(), data_ptr, "label_payload_data")
+        .unwrap()
+        .into_int_value();
+
+    let payload_fn = self_compiler.get_runtime_fn(module, "__label_payload")?;
+    let call_site = self_compiler
+        .builder
+        .build_call(payload_fn, &[data_val.into()], "label_payload_call")
+        .unwrap();
+    let result_val = match call_site.try_as_basic_value() {
+        ValueKind::Basic(val) => val,
+        ValueKind::Instruction(_) => {
+            return Err(SprsError::Internal {
+                message: "__label_payload returned void".to_string(),
+                location: None,
+            });
+        }
+    };
+
+    let res_ptr = create_entry_block_alloca(self_compiler, "label_payload_res")?;
+    self_compiler.builder.build_store(res_ptr, result_val).unwrap();
+    Ok(res_ptr.into())
+}
+
+/// @label_name(value) — return the label name as String. Non-label → "".
+pub fn call_builtin_macro_label_name<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+    args: &[Spanned<ast::Expr>],
+    module: &inkwell::module::Module<'ctx>,
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
+    if args.len() != 1 {
+        return Err(SprsError::Semantic {
+            code: ErrorCode { category: ErrorCategory::Semantic, number: 3 },
+            location: Location::new(String::new(), Span::DUMMY),
+            message: "@label_name expects exactly 1 argument".to_string(),
+            help: None,
+        });
+    }
+
+    let val_ptr = self_compiler.compile_expr(&args[0], module)?.into_pointer_value();
+    let data_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, val_ptr, 1, "label_name_data_ptr")
+        .unwrap();
+    let data_val = self_compiler
+        .builder
+        .build_load(self_compiler.context.i64_type(), data_ptr, "label_name_data")
+        .unwrap()
+        .into_int_value();
+
+    let name_fn = self_compiler.get_runtime_fn(module, "__label_name")?;
+    let string_handle = match self_compiler
+        .builder
+        .build_call(name_fn, &[data_val.into()], "label_name_call")
+        .unwrap()
+        .try_as_basic_value()
+    {
+        ValueKind::Basic(val) => val.into_int_value(),
+        ValueKind::Instruction(_) => {
+            return Err(SprsError::Internal {
+                message: "__label_name returned void".to_string(),
+                location: None,
+            });
+        }
+    };
+
+    let res_ptr = create_entry_block_alloca(self_compiler, "label_name_res")?;
+    self_compiler.build_runtime_value_store(
+        res_ptr,
+        StoreTag::Int(Tag::String as u64),
+        StoreValue::Int(string_handle),
+        "label_name_res_store",
     );
     Ok(res_ptr.into())
 }

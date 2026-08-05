@@ -159,4 +159,113 @@ fn h(xs >> List()) >> list { return xs; }
             other => panic!("expected main, got {:?}", other),
         }
     }
+    #[test]
+    fn parses_label_literals() {
+        let src = "fn main() { var a = :ok; var b = {:value, 42}; }\n";
+        let items = parse_only(src, "label.sprs").expect("parse");
+        let crate::front::ast::Item::FunctionItem(function) = &items[0] else {
+            panic!("expected function");
+        };
+        let crate::front::ast::Stmt::Var(first) = &function.blk[0].node else {
+            panic!("expected first variable");
+        };
+        assert!(matches!(
+            first.expr.as_ref().map(|expr| &expr.node),
+            Some(crate::front::ast::Expr::Label(
+                crate::front::label_name::LabelName::Static(name),
+                None
+            )) if name == "ok"
+        ));
+        let crate::front::ast::Stmt::Var(second) = &function.blk[1].node else {
+            panic!("expected second variable");
+        };
+        assert!(matches!(
+            second.expr.as_ref().map(|expr| &expr.node),
+            Some(crate::front::ast::Expr::Label(
+                crate::front::label_name::LabelName::Static(name),
+                Some(payload)
+            )) if name == "value" && matches!(payload.node, crate::front::ast::Expr::Number(42))
+        ));
+    }
+
+    #[test]
+    fn parses_dynamic_label_literals() {
+        let src = r#"fn main() { var a = :"{i}-item"; var b = {:"{i}-item", 1}; }"#;
+        let items = parse_only(src, "dyn_label.sprs").expect("parse");
+        let crate::front::ast::Item::FunctionItem(function) = &items[0] else {
+            panic!("expected function");
+        };
+        let crate::front::ast::Stmt::Var(first) = &function.blk[0].node else {
+            panic!("expected first variable");
+        };
+        match first.expr.as_ref().map(|expr| &expr.node) {
+            Some(crate::front::ast::Expr::Label(
+                crate::front::label_name::LabelName::Dynamic(parts),
+                None,
+            )) => {
+                assert_eq!(
+                    parts,
+                    &vec![
+                        crate::front::label_name::LabelNamePart::Ident("i".into()),
+                        crate::front::label_name::LabelNamePart::Lit("-item".into()),
+                    ]
+                );
+            }
+            other => panic!("expected dynamic label, got {:?}", other),
+        }
+        let crate::front::ast::Stmt::Var(second) = &function.blk[1].node else {
+            panic!("expected second variable");
+        };
+        match second.expr.as_ref().map(|expr| &expr.node) {
+            Some(crate::front::ast::Expr::Label(
+                crate::front::label_name::LabelName::Dynamic(parts),
+                Some(payload),
+            )) => {
+                assert_eq!(
+                    parts,
+                    &vec![
+                        crate::front::label_name::LabelNamePart::Ident("i".into()),
+                        crate::front::label_name::LabelNamePart::Lit("-item".into()),
+                    ]
+                );
+                assert!(matches!(payload.node, crate::front::ast::Expr::Number(1)));
+            }
+            other => panic!("expected dynamic label with payload, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_dynamic_label_templates() {
+        assert!(parse_only(r#"fn main() { var a = :"{i+1}"; }"#, "bad1.sprs").is_err());
+        assert!(parse_only(r#"fn main() { var a = :"{}"; }"#, "bad2.sprs").is_err());
+    }
+
+    #[test]
+    fn parses_label_type_annotations() {
+        let src = r#"
+fn f(x >> label) >> label { return x; }
+fn g(x >> Label(int)) >> Label(int) { return x; }
+"#;
+        let items = parse_only(src, "label_ty.sprs").expect("parse");
+        match &items[0] {
+            Item::FunctionItem(f) => {
+                assert_eq!(f.ret_ty.as_ref(), Some(&Type::Label));
+                assert_eq!(
+                    f.params[0].ty.as_ref(),
+                    Some(&TypeAnnot {
+                        ty: Type::Label,
+                        ambi: false
+                    })
+                );
+            }
+            other => panic!("expected f, got {:?}", other),
+        }
+        match &items[1] {
+            Item::FunctionItem(f) => {
+                let expected = Type::App("Label".into(), vec![Type::Int]);
+                assert_eq!(f.ret_ty.as_ref(), Some(&expected));
+            }
+            other => panic!("expected g, got {:?}", other),
+        }
+    }
 }

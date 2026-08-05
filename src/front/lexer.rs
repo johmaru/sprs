@@ -28,6 +28,7 @@ pub enum Token {
     DotDot,
     Semi,
     Comma,
+    Colon,
     Macro(String),
     StrLiteral(String),
     Bool(bool),
@@ -59,6 +60,7 @@ pub enum Token {
     TypeRange,
     TypeUnit,
     TypeError,
+    TypeLabel,
 
     TypeI8,
     TypeU8,
@@ -124,6 +126,8 @@ enum RawTok {
     Semi,
     #[token(",")]
     Comma,
+    #[token(":")]
+    Colon,
     #[regex(r#""(\\.|[^"\\])*""#, |lex| {
         let slice = lex.slice();
         // Strip the surrounding quotes, then unescape the content.
@@ -197,6 +201,8 @@ enum RawTok {
     TypeUnit,
     #[token("err")]
     TypeError,
+    #[token("label")]
+    TypeLabel,
 
     #[token("i8")]
     TypeI8,
@@ -279,6 +285,7 @@ impl<'input> Iterator for Lexer<'input> {
             RawTok::DotDot => Token::DotDot,
             RawTok::Semi => Token::Semi,
             RawTok::Comma => Token::Comma,
+            RawTok::Colon => Token::Colon,
             RawTok::StrLiteral(s) => Token::StrLiteral(s),
             RawTok::If => Token::If,
             RawTok::Else => Token::Else,
@@ -318,6 +325,7 @@ impl<'input> Iterator for Lexer<'input> {
             RawTok::TypeRange => Token::TypeRange,
             RawTok::TypeUnit => Token::TypeUnit,
             RawTok::TypeError => Token::TypeError,
+            RawTok::TypeLabel => Token::TypeLabel,
 
             RawTok::TypeI8 => Token::TypeI8,
             RawTok::TypeU8 => Token::TypeU8,

@@ -43,12 +43,13 @@
 //!  * Enum
 //!  * Struct
 //!  * Error (catchable) — annotation keyword `err`
+//!  * Label (tagged value) — annotation keyword `label` (also `Label(T)` application form)
 //!  * i8 / u8 / i16 / u16 / i32 / u32 / i64 / u64 (mainly `@cast`; also usable in `>>` annotations)
 //!  * fp16 / fp32 / fp64 (mainly `@cast`; also usable in `>>` annotations)
 //!
 //! Type *application* in annotations uses `Name(Type, …)` (for example `List(int)`,
-//! `Result(int, err)`). These are compile-time forms only: they are not runtime tags.
-//! Everyday code keeps the flat keywords (`list`, `err`). Generics / type parameters
+//! `Result(int, err)`, `Label(int)`). These are compile-time forms only: they are not runtime tags.
+//! Everyday code keeps the flat keywords (`list`, `err`, `label`). Generics / type parameters
 //! (`Param`) are not user-facing yet.
 //!
 //! - Variables and assignments
@@ -185,6 +186,45 @@
 //! }
 //! ```
 //!
+//! - Labels (tagged values)
+//!
+//! Labels are a core feature for tagging values (`Tag::Label`), not an error-only type.
+//! A label has a name plus one optional payload (Unit when omitted).
+//!
+//! ```
+//! # static name only / name + payload
+//! var a = :ok;
+//! var b = {:ok, 42};
+//!
+//! # dynamic name: only `{ident}` interpolations (int / bool / str)
+//! var i = 10;
+//! var c = {:"{i}-item", 42};   # name becomes "10-item"
+//!
+//! # branch with macros + existing if (no match/case yet)
+//! if @label_is(c, :"{i}-item") {
+//!   @println(@label_payload(c));  # 42
+//!   @println(@label_name(c));     # "10-item"
+//! }
+//!
+//! # type annotations (params / returns)
+//! fn wrap(x >> int) >> Label(int) {
+//!   return {:ok, x};
+//! }
+//! fn take(v >> label) >> label {
+//!   return v;
+//! }
+//!
+//! # @attach captures a value under a *static* label name for later :name use
+//! @attach(wrap(7), :item);
+//! @println(:item);  # {:ok, 7}
+//! ```
+//!
+//! Notes:
+//! - Dynamic templates reject `{}`, `{expr}`, and nested braces. Use `{ident}` only.
+//! - `@attach` currently accepts only a static label without payload (`:name`).
+//! - `?` still propagates `Tag::Error` only; it is not connected to labels yet.
+//! - There is no `match` / `case` syntax; use `@label_is` with `if`.
+//!
 //! ###  **Operators**
 //! * Arithmetic: `+`, `-`, `*`, `/`, `%`
 //! * Comparison: `==`, `!=`, `<`, `>`, `<=`, `>=`
@@ -225,6 +265,25 @@
 //! var a = 100; # default is i64
 //! var b = @cast(a, i8); # cast to i8
 //! @println(b); # prints 100 as i8
+//! ```
+//!
+//! * `@attach(expr, :name)`: Capture `expr`'s value under a static label name.
+//!   Later `:name` (no payload) reuses the captured value. Dynamic names are not supported yet.
+//! ```
+//! @attach(compute(), :result);
+//! @println(:result);
+//! ```
+//!
+//! * `@label_is(value, expected)`: `true` when `value` is a label whose name matches
+//!   `expected` (`:name` or `:"{ident}-…"` without payload).
+//! * `@label_payload(value)`: Clone the label payload (Unit when not a label).
+//! * `@label_name(value)`: Return the label name as `str` (`""` when not a label).
+//! ```
+//! var v = {:ok, 1};
+//! if @label_is(v, :ok) {
+//!   @println(@label_payload(v));
+//!   @println(@label_name(v));
+//! }
 //! ```
 //!
 //! **Note:** @cast macro is faster than normal int type, because it use i8 and u8 llvm type directly.

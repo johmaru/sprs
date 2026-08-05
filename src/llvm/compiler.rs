@@ -66,6 +66,8 @@ pub struct Compiler<'ctx> {
     pub struct_defs: HashMap<String, StructDef<'ctx>>, // struct name -> struct definition
     pub enum_names: HashSet<String>,
     pub sources: HashMap<String, String>, // module name → source text
+    /// Values captured by @attach within the current function.
+    pub attachments: HashMap<String, PointerValue<'ctx>>,
 }
 
 pub enum StoreTag<'ctx> {
@@ -274,6 +276,7 @@ pub enum Tag {
     Enum = 7,
     Struct = 8,
     Error = 9,
+    Label = 10,
 
     // System types
     Int8 = 100,
@@ -311,6 +314,7 @@ impl Tag {
             7 => Some(Tag::Enum),
             8 => Some(Tag::Struct),
             9 => Some(Tag::Error),
+            10 => Some(Tag::Label),
             100 => Some(Tag::Int8),
             101 => Some(Tag::Uint8),
             102 => Some(Tag::Int16),
@@ -375,6 +379,7 @@ impl<'ctx> Compiler<'ctx> {
             struct_defs: HashMap::new(),
             enum_names: HashSet::new(),
             sources: HashMap::new(),
+            attachments: HashMap::new(),
         }
     }
 
@@ -477,6 +482,23 @@ impl<'ctx> Compiler<'ctx> {
         for (ptr, var_name) in vars_to_drop.into_iter() {
             builder_helper::drop_var(self, ptr, drop_fn, &var_name);
         }
+        self.emit_drop_for_attachments(module)?;
+        Ok(())
+    }
+
+    pub(crate) fn emit_drop_for_attachments(
+        &mut self,
+        module: &Module<'ctx>,
+    ) -> Result<(), SprsError> {
+        let drop_fn = self.get_runtime_fn(module, "__drop")?;
+        let attachments: Vec<(String, PointerValue<'ctx>)> = self
+            .attachments
+            .iter()
+            .map(|(name, ptr)| (name.clone(), *ptr))
+            .collect();
+        for (name, ptr) in attachments {
+            builder_helper::drop_var(self, ptr, drop_fn, &format!("attach_{}", name));
+        }
         Ok(())
     }
 
@@ -493,7 +515,8 @@ impl<'ctx> Compiler<'ctx> {
                     | Type::List
                     | Type::Range
                     | Type::Struct(_)
-                    | Type::Error => self.runtime_value_type.into(),
+                    | Type::Error
+                    | Type::Label => self.runtime_value_type.into(),
                     Type::Int => self.context.i64_type().into(),
                     Type::Str => self.context.ptr_type(AddressSpace::default()).into(),
                     Type::Float => self.context.f64_type().into(),
@@ -617,6 +640,53 @@ impl<'ctx> Compiler<'ctx> {
                 ],
                 false,
             ),
+            "__label_new" => i64_type.fn_type(
+                &[
+                    i8_ptr_type.into(), // label name bytes
+                    i64_type.into(),    // label name length
+                    i32_type.into(),    // payload tag
+                    i64_type.into(),    // payload data
+                ],
+                false,
+            ),
+            "__value_to_string" => i64_type.fn_type(
+                &[
+                    i32_type.into(), // value tag
+                    i64_type.into(), // value data
+                ],
+                false,
+            ),
+            "__label_new_from_string" => i64_type.fn_type(
+                &[
+                    i64_type.into(), // name string handle
+                    i32_type.into(), // payload tag
+                    i64_type.into(), // payload data
+                ],
+                false,
+            ),
+            "__label_name_eq" => i32_type.fn_type(
+                &[
+                    i64_type.into(),    // label handle
+                    i8_ptr_type.into(), // expected name bytes
+                    i64_type.into(),    // expected name length
+                ],
+                false,
+            ),
+            "__label_names_equal" => i32_type.fn_type(
+                &[
+                    i64_type.into(), // label handle a
+                    i64_type.into(), // label handle b
+                ],
+                false,
+            ),
+            "__label_payload" => self.runtime_value_type.fn_type(
+                &[i64_type.into()], // label handle
+                false,
+            ),
+            "__label_name" => i64_type.fn_type(
+                &[i64_type.into()], // label handle
+                false,
+            ),
             "__error_new" => i64_type.fn_type(
                 &[
                     i32_type.into(),    // error code
@@ -702,6 +772,7 @@ mod tag_type_sync_tests {
             (Type::Enum("Point".into()), Tag::Enum),
             (Type::Struct("Point".into()), Tag::Struct),
             (Type::Error, Tag::Error),
+            (Type::Label, Tag::Label),
             (Type::TypeI8, Tag::Int8),
             (Type::TypeU8, Tag::Uint8),
             (Type::TypeI16, Tag::Int16),
