@@ -2,28 +2,29 @@ pkg types;
 
 # === Cast ===
 
+# Narrow @cast results must be widened before `>> i64` (SPRS-TYP-005).
 pub fn cast_i8() >> i64 {
-    return @cast(100, i8);
+    return @cast(@cast(100, i8), i64);
 }
 
 pub fn cast_u8() >> i64 {
-    return @cast(200, u8);
+    return @cast(@cast(200, u8), i64);
 }
 
 pub fn cast_i16() >> i64 {
-    return @cast(1000, i16);
+    return @cast(@cast(1000, i16), i64);
 }
 
 pub fn cast_u16() >> i64 {
-    return @cast(50000, u16);
+    return @cast(@cast(50000, u16), i64);
 }
 
 pub fn cast_i32() >> i64 {
-    return @cast(100000, i32);
+    return @cast(@cast(100000, i32), i64);
 }
 
 pub fn cast_u32() >> i64 {
-    return @cast(3000000000, u32);
+    return @cast(@cast(3000000000, u32), i64);
 }
 
 pub fn cast_i64() >> i64 {
@@ -31,11 +32,11 @@ pub fn cast_i64() >> i64 {
 }
 
 pub fn cast_u64() >> i64 {
-    return @cast(99999999999, u64);
+    return @cast(@cast(99999999999, u64), i64);
 }
 
 pub fn cast_arithmetic() >> i64 {
-    return @cast(10, i32) + @cast(5, i32);
+    return @cast(@cast(10, i32) + @cast(5, i32), i64);
 }
 
 pub fn cast_loop() >> i64 {

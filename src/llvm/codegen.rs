@@ -1,3 +1,5 @@
+use std::unreachable;
+
 use crate::front::ast;
 use crate::front::error::{ErrorCategory, ErrorCode, Location, SprsError};
 use crate::front::label_name::LabelName;
@@ -6,16 +8,18 @@ use crate::front::span::Spanned;
 use crate::front::type_helper;
 use crate::front::type_helper::{Type, is_error_label_type, types_compatible};
 use crate::llvm::builder_helper;
+use crate::llvm::builder_helper::BuilderExt;
 use crate::llvm::builder_helper::Comparison;
+use crate::llvm::builder_helper::ContextExt;
 use crate::llvm::builder_helper::EqNeq;
 use crate::llvm::builder_helper::UpDown;
-use crate::llvm::compiler::Compiler;
+use crate::llvm::compiler::{Compiler, Tag};
 use crate::llvm::value::{build_label_is_error, create_label};
 use crate::naming;
 use inkwell::AddressSpace;
 use inkwell::module::Module;
 use inkwell::types::{BasicMetadataTypeEnum, BasicTypeEnum};
-use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
+use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue, ValueKind};
 
 impl<'ctx> Compiler<'ctx> {
     pub fn get_known_type_from_expr(&self, expr: &Spanned<ast::Expr>) -> Result<String, SprsError> {
@@ -39,7 +43,7 @@ impl<'ctx> Compiler<'ctx> {
                     category: ErrorCategory::Semantic,
                     number: 1,
                 },
-                location: Location::new(String::new(), expr.span),
+                location: self.location(expr.span),
                 message: format!("Unknown type expression for known type: {:?}", expr),
                 help: None,
             }),
@@ -66,13 +70,16 @@ impl<'ctx> Compiler<'ctx> {
         let expected = sig.params.len();
         let actual = args.len();
         if expected != actual {
-            let span = args.first().map(|argument| argument.span).unwrap_or(Span::DUMMY);
+            let span = args
+                .first()
+                .map(|argument| argument.span)
+                .unwrap_or(Span::DUMMY);
             return Err(SprsError::Semantic {
                 code: ErrorCode {
                     category: ErrorCategory::Semantic,
                     number: 16,
                 },
-                location: Location::new(String::new(), span),
+                location: self.location(span),
                 message: format!(
                     "Argument count mismatch: function `{}` expects {} argument(s), found {}",
                     fn_name, expected, actual
@@ -92,7 +99,7 @@ impl<'ctx> Compiler<'ctx> {
                         category: ErrorCategory::Type,
                         number: 7,
                     },
-                    location: Location::new(String::new(), arg.span),
+                    location: self.location(arg.span),
                     message: format!(
                         "Type mismatch: argument {} of `{}` expects {:?}, found {:?}",
                         idx + 1,
@@ -116,7 +123,10 @@ impl<'ctx> Compiler<'ctx> {
             ast::Expr::Str(_) => Type::Str,
             ast::Expr::Bool(_) => Type::Bool,
             ast::Expr::Unit() => Type::Unit,
-            ast::Expr::Var(name) => self.get_variables(name).map(|binding| binding.ty).unwrap_or(Type::Any),
+            ast::Expr::Var(name) => self
+                .get_variables(name)
+                .map(|binding| binding.ty)
+                .unwrap_or(Type::Any),
             ast::Expr::TypeI8 => Type::TypeI8,
             ast::Expr::TypeU8 => Type::TypeU8,
             ast::Expr::TypeI16 => Type::TypeI16,
@@ -176,6 +186,8 @@ impl<'ctx> Compiler<'ctx> {
                     }
                 }
                 "not" => Type::Bool,
+                "raw" => Type::RawPtr,
+                "free" => Type::Unit,
                 "error" => {
                     if args.is_empty() {
                         Type::App("Label".into(), vec![Type::Atom("error".into())])
@@ -198,6 +210,9 @@ impl<'ctx> Compiler<'ctx> {
             // Error propagates by returning from the function.
             ast::Expr::Try(inner) => self.infer_type(inner),
             ast::Expr::StructInit(name, _) => Type::Struct(name.clone()),
+            ast::Expr::HeapAlloc(_) => Type::Buffer,
+            ast::Expr::Destroy(_) => Type::Unit,
+            ast::Expr::Exist(_) => Type::Bool,
             ast::Expr::Label(name, None) => match name {
                 LabelName::Static(static_name) => {
                     Type::App("Label".into(), vec![Type::Atom(static_name.clone())])
@@ -303,7 +318,7 @@ impl<'ctx> Compiler<'ctx> {
         self.compile_block(&func.blk, module)?;
         let current_block = self.builder.get_insert_block().unwrap();
         if current_block.get_terminator().is_none() {
-            // Inter compile_block will execute exit_scope, so need scope of function args end here
+            // Body's compile_block already exited its scopes; drop the remaining arg scope here.
             self.emit_drop_for_attachments(module)?;
             self.exit_scope(module)?;
             builder_helper::create_dummy_for_no_return(self);
@@ -398,7 +413,7 @@ impl<'ctx> Compiler<'ctx> {
                 category: ErrorCategory::Type,
                 number: 5,
             },
-            location: Location::new(String::new(), expr.span),
+            location: self.location(expr.span),
             message: format!(
                 "Type mismatch: Function declares >> {:?} but return expression has {:?}",
                 expected_ty, actual
@@ -430,7 +445,7 @@ impl<'ctx> Compiler<'ctx> {
                             category: ErrorCategory::Type,
                             number: 1,
                         },
-                        location: Location::new(String::new(), expr.span),
+                        location: self.location(expr.span),
                         message: format!(
                             "Type mismatch: Function expects pointer type (e.g. str) but got {:?} from expression {:?}",
                             expr_type, expr
@@ -449,7 +464,7 @@ impl<'ctx> Compiler<'ctx> {
                                 category: ErrorCategory::Type,
                                 number: 2,
                             },
-                            location: Location::new(String::new(), expr.span),
+                            location: self.location(expr.span),
                             message: format!(
                                 "Type mismatch: Function expects Bool but got {:?} from expression {:?}",
                                 expr_type, expr
@@ -467,7 +482,7 @@ impl<'ctx> Compiler<'ctx> {
                                 category: ErrorCategory::Type,
                                 number: 3,
                             },
-                            location: Location::new(String::new(), expr.span),
+                            location: self.location(expr.span),
                             message: format!(
                                 "Type mismatch: Function expects Int type but got {:?} from expression {:?}",
                                 expr_type, expr
@@ -486,7 +501,7 @@ impl<'ctx> Compiler<'ctx> {
                             category: ErrorCategory::Type,
                             number: 4,
                         },
-                        location: Location::new(String::new(), expr.span),
+                        location: self.location(expr.span),
                         message: format!(
                             "Type mismatch: Function expects Float type but got {:?} from expression {:?}",
                             expr_type, expr
@@ -656,12 +671,23 @@ impl<'ctx> Compiler<'ctx> {
                     then_blk,
                     else_blk,
                 } => {
-                    builder_helper::create_if_condition(self, cond, then_blk, else_blk, module)
-                        .map_err(|compile_error| compile_error.to_string())?;
+                    builder_helper::create_if_condition(self, cond, then_blk, else_blk, module)?;
                 }
                 ast::Stmt::While { cond, body } => {
-                    builder_helper::create_while_condition(self, cond, body, module)
-                        .map_err(|compile_error| compile_error.to_string())?;
+                    builder_helper::create_while_condition(self, cond, body, module)?;
+                }
+                ast::Stmt::Unsafe { body, .. } => {
+                    // Always restore depth, including when compile_block returns Err.
+                    self.unsafe_depth += 1;
+                    let result = self.compile_block(body, module);
+                    self.unsafe_depth -= 1;
+                    result?;
+                }
+                ast::Stmt::Defer { expr, .. } => {
+                    // Queue only; exit_scope / emit_drop_for_return execute LIFO later.
+                    if let Some(scope) = self.scopes.last_mut() {
+                        scope.deferred.push(expr.clone());
+                    }
                 }
                 ast::Stmt::Expr(expr) => {
                     self.compile_expr(expr, module)?;
@@ -713,7 +739,7 @@ impl<'ctx> Compiler<'ctx> {
                                     category: ErrorCategory::Type,
                                     number: 6,
                                 },
-                                location: Location::new(String::new(), assign_stmt.span),
+                                location: self.location(assign_stmt.span),
                                 message: format!(
                                     "Type mismatch: cannot assign {:?} to fixed binding `{}` of type {:?}",
                                     rhs_ty, assign_stmt.name, target.ty
@@ -737,9 +763,7 @@ impl<'ctx> Compiler<'ctx> {
                         .builder
                         .build_load(self.runtime_value_type, val_ptr, "assign_load")
                         .unwrap();
-                    self.builder
-                        .build_store(target_ptr, new_val)
-                        .map_err(|compile_error| compile_error.to_string())?;
+                    self.builder.build_store(target_ptr, new_val).unwrap();
 
                     if let Some((val, src_name)) = source_to_move {
                         builder_helper::move_variable(self, &val, &src_name);
@@ -749,6 +773,54 @@ impl<'ctx> Compiler<'ctx> {
                     if !target.is_annotated || target.is_ambi {
                         self.set_variable_type(&assign_stmt.name, rhs_ty);
                     }
+                }
+                ast::Stmt::IndexAssign {
+                    collection,
+                    index,
+                    expr,
+                    ..
+                } => {
+                    let buf_ptr = self.compile_expr(collection, module)?.into_pointer_value();
+                    let buf_data_ptr = self
+                        .builder
+                        .build_struct_gep(self.runtime_value_type, buf_ptr, 1, "ia_buf_data_ptr")
+                        .unwrap();
+                    let buf_handle = self
+                        .builder
+                        .build_load(self.context.i64_type(), buf_data_ptr, "ia_buf_handle")
+                        .unwrap()
+                        .into_int_value();
+
+                    let idx_ptr = self.compile_expr(index, module)?.into_pointer_value();
+                    let idx_data_ptr = self
+                        .builder
+                        .build_struct_gep(self.runtime_value_type, idx_ptr, 1, "ia_idx_data_ptr")
+                        .unwrap();
+                    let idx_val = self
+                        .builder
+                        .build_load(self.context.i64_type(), idx_data_ptr, "ia_idx")
+                        .unwrap()
+                        .into_int_value();
+
+                    let v_ptr = self.compile_expr(expr, module)?.into_pointer_value();
+                    let v_data_ptr = self
+                        .builder
+                        .build_struct_gep(self.runtime_value_type, v_ptr, 1, "ia_v_data_ptr")
+                        .unwrap();
+                    let v_val = self
+                        .builder
+                        .build_load(self.context.i64_type(), v_data_ptr, "ia_v")
+                        .unwrap()
+                        .into_int_value();
+
+                    let set_fn = self.get_runtime_fn(module, "__buffer_set")?;
+                    self.builder
+                        .build_call(
+                            set_fn,
+                            &[buf_handle.into(), idx_val.into(), v_val.into()],
+                            "buffer_set_call",
+                        )
+                        .unwrap();
                 }
             }
         }
@@ -785,7 +857,7 @@ impl<'ctx> Compiler<'ctx> {
                 } else {
                     Err(SprsError::Semantic {
                         code: ErrorCode { category: ErrorCategory::Semantic, number: 2 },
-                        location: Location::new(String::new(), expr.span),
+                        location: self.location(expr.span),
                         message: format!("Undefined variable: {}", ident),
                         help: None,
                     })
@@ -796,8 +868,13 @@ impl<'ctx> Compiler<'ctx> {
                 match ident.as_str() {
                     "println" => Ok(builder_helper::call_builtin_macro_println(self, args, module)?),
                     "list_push" => Ok(builder_helper::call_builtin_macro_list_push(self, args, module)?),
+                    "bufLen" => Ok(builder_helper::call_builtin_macro_buf_len(self, args, module)?),
+                    "bufGet" => Ok(builder_helper::call_builtin_macro_buf_get(self, args, module)?),
+                    "bufSet" => Ok(builder_helper::call_builtin_macro_buf_set(self, args, module)?),
                     "clone" => Ok(builder_helper::call_builtin_macro_clone(self, args, module)?),
                     "move" => Ok(builder_helper::call_builtin_macro_move(self, args, module)?),
+                    "raw" => Ok(builder_helper::call_builtin_macro_raw(self, args, module)?),
+                    "free" => Ok(builder_helper::call_builtin_macro_free(self, args, module)?),
                     "cast" => Ok(builder_helper::call_builtin_macro_cast(self, args, module)?),
                     "lshift" => Ok(builder_helper::call_builtin_macro_lshift(self, args, module)?),
                     "rshift" => Ok(builder_helper::call_builtin_macro_rshift(self, args, module)?),
@@ -811,13 +888,13 @@ impl<'ctx> Compiler<'ctx> {
                     "error" => Ok(builder_helper::call_builtin_macro_error(self, args, module)?),
                     "init" => Err(SprsError::Semantic {
                         code: ErrorCode { category: ErrorCategory::Semantic, number: 5 },
-                        location: Location::new(String::new(), expr.span),
+                        location: self.location(expr.span),
                         message: "struct initialization requires @init(TypeName { field: value, ... }) syntax".to_string(),
                         help: None,
                     }),
                     _ => Err(SprsError::Semantic {
                         code: ErrorCode { category: ErrorCategory::Semantic, number: 3 },
-                        location: Location::new(String::new(), expr.span),
+                        location: self.location(expr.span),
                         message: format!("Unknown macro: {}", ident),
                         help: None,
                     }),
@@ -832,7 +909,7 @@ impl<'ctx> Compiler<'ctx> {
                         } else {
                             return Err(SprsError::Semantic {
                                 code: ErrorCode { category: ErrorCategory::Semantic, number: 4 },
-                                location: Location::new(String::new(), expr.span),
+                                location: self.location(expr.span),
                                 message: format!("Undefined enum variant: {}", full_name),
                                 help: None,
                             });
@@ -847,7 +924,7 @@ impl<'ctx> Compiler<'ctx> {
                     _ => {
                         return Err(SprsError::Semantic {
                             code: ErrorCode { category: ErrorCategory::Semantic, number: 2 },
-                            location: Location::new(String::new(), lhs.span),
+                            location: self.location(lhs.span),
                             message: format!(
                                 "Undefined variable: {}",
                                 self.get_expr_name(lhs).unwrap_or_default()
@@ -1028,7 +1105,6 @@ impl<'ctx> Compiler<'ctx> {
                     .builder
                     .build_conditional_branch(is_error, propagate_bb, continue_bb);
 
-                // Propagate: emit drops and return the error value.
                 self.builder.position_at_end(propagate_bb);
                 self.emit_drop_for_return(module)?;
                 let return_type = current_fn.get_type().get_return_type();
@@ -1039,9 +1115,210 @@ impl<'ctx> Compiler<'ctx> {
                     self.builder.build_return(None).unwrap();
                 }
 
-                // Continue: the inner value is not an error, use it.
                 self.builder.position_at_end(continue_bb);
                 Ok(inner_ptr.into())
+            }
+            ast::Expr::HeapAlloc(size_expr) => {
+                let size_ptr = self.compile_expr(size_expr, module)?.into_pointer_value();
+                let size_data_ptr = self
+                    .builder
+                    .build_struct_gep(self.runtime_value_type, size_ptr, 1, "buf_size_data_ptr")
+                    .unwrap();
+                let size_val = self
+                    .builder
+                    .build_load(self.context.i64_type(), size_data_ptr, "buf_size")
+                    .unwrap()
+                    .into_int_value();
+
+                let buffer_new_fn = self.get_runtime_fn(module, "__buffer_new")?;
+                let handle = match self
+                    .builder
+                    .build_call(buffer_new_fn, &[size_val.into()], "buffer_new_call")
+                    .unwrap()
+                    .try_as_basic_value()
+                {
+                    ValueKind::Basic(val) => val.into_int_value(),
+                    ValueKind::Instruction(_) => {
+                        return Err(SprsError::Internal {
+                            message: "__buffer_new returned void".to_string(),
+                            location: None,
+                        });
+                    }
+                };
+
+                let res_ptr = builder_helper::create_entry_block_alloca(self, "heap_alloc_res")?;
+                let res_tag_ptr = self
+                    .builder
+                    .build_struct_gep(self.runtime_value_type, res_ptr, 0, "res_tag_ptr")
+                    .unwrap();
+                self.builder
+                    .build_store(
+                        res_tag_ptr,
+                        self.context
+                            .i32_type()
+                            .const_int(Tag::Buffer as u64, false),
+                    )
+                    .unwrap();
+                let res_data_ptr = self
+                    .builder
+                    .build_struct_gep(self.runtime_value_type, res_ptr, 1, "res_data_ptr")
+                    .unwrap();
+                self.builder.build_store(res_data_ptr, handle).unwrap();
+
+                Ok(res_ptr.into())
+            }
+            ast::Expr::Destroy(inner_expr) => {
+                let val_ptr = self.compile_expr(inner_expr, module)?.into_pointer_value();
+
+                let tag_ptr = self
+                    .builder
+                    .build_struct_gep(self.runtime_value_type, val_ptr, 0, "destroy_tag_ptr")
+                    .unwrap();
+                let tag_val = self
+                    .builder
+                    .build_load(self.context.i32_type(), tag_ptr, "destroy_tag")
+                    .unwrap()
+                    .into_int_value();
+                let data_ptr = self
+                    .builder
+                    .build_struct_gep(self.runtime_value_type, val_ptr, 1, "destroy_data_ptr")
+                    .unwrap();
+                let data_val = self
+                    .builder
+                    .build_load(self.context.i64_type(), data_ptr, "destroy_data")
+                    .unwrap()
+                    .into_int_value();
+
+                let drop_fn = self.get_runtime_fn(module, "__drop")?;
+                self.builder
+                    .build_call(
+                        drop_fn,
+                        &[tag_val.into(), data_val.into()],
+                        "destroy_drop_call",
+                    )
+                    .unwrap();
+
+                // Cut ownership so a later auto-drop is a no-op.
+                self.builder
+                    .build_store(
+                        tag_ptr,
+                        self.context
+                            .i32_type()
+                            .const_int(Tag::Unit as u64, false),
+                    )
+                    .unwrap();
+
+                let res_ptr = builder_helper::create_entry_block_alloca(self, "destroy_res_alloc")?;
+                self.tag_only_runtime_value_store(res_ptr, Tag::Unit as u64, "destroy_unit");
+                Ok(res_ptr.into())
+            }
+            ast::Expr::Exist(inner_expr) => {
+                let val_ptr = self.compile_expr(inner_expr, module)?.into_pointer_value();
+
+                let tag_ptr = self
+                    .builder
+                    .build_struct_gep(self.runtime_value_type, val_ptr, 0, "exist_tag_ptr")
+                    .unwrap();
+                let tag_val = self
+                    .builder
+                    .build_load(self.context.i32_type(), tag_ptr, "exist_tag")
+                    .unwrap()
+                    .into_int_value();
+                let data_ptr = self
+                    .builder
+                    .build_struct_gep(self.runtime_value_type, val_ptr, 1, "exist_data_ptr")
+                    .unwrap();
+                let data_val = self
+                    .builder
+                    .build_load(self.context.i64_type(), data_ptr, "exist_data")
+                    .unwrap()
+                    .into_int_value();
+
+                let tag_buffer = self.get_tag_from_tag_enum(Tag::Buffer);
+                let is_buffer = self.tag_cmp(
+                    inkwell::IntPredicate::EQ,
+                    tag_val,
+                    tag_buffer,
+                    "exist_is_buffer",
+                );
+
+                let current_fn = self.get_current_function();
+                let check_bb = self
+                    .context
+                    .append_basic_block(current_fn, "exist_check_bb");
+                let false_bb = self
+                    .context
+                    .append_basic_block(current_fn, "exist_false_bb");
+                let cont_bb = self
+                    .context
+                    .append_basic_block(current_fn, "exist_cont_bb");
+
+                let res_ptr =
+                    builder_helper::create_entry_block_alloca(self, "exist_res_alloc")?;
+
+                let _ = self
+                    .builder
+                    .build_conditional_branch(is_buffer, check_bb, false_bb);
+
+                self.builder.position_at_end(check_bb);
+                let exist_fn = self.get_runtime_fn(module, "__buffer_exist")?;
+                let exist_res = match self
+                    .builder
+                    .build_call(exist_fn, &[data_val.into()], "buffer_exist_call")
+                    .unwrap()
+                    .try_as_basic_value()
+                {
+                    ValueKind::Basic(val) => val.into_int_value(),
+                    ValueKind::Instruction(_) => {
+                        return Err(SprsError::Internal {
+                            message: "__buffer_exist returned void".to_string(),
+                            location: None,
+                        });
+                    }
+                };
+                let exist_ext = self
+                    .builder
+                    .build_int_z_extend(exist_res, self.context.i64_type(), "exist_data")
+                    .unwrap();
+                let check_tag_ptr = self
+                    .builder
+                    .build_struct_gep(self.runtime_value_type, res_ptr, 0, "exist_res_tag_ptr")
+                    .unwrap();
+                self.builder
+                    .build_store(
+                        check_tag_ptr,
+                        self.context
+                            .i32_type()
+                            .const_int(Tag::Boolean as u64, false),
+                    )
+                    .unwrap();
+                let check_data_ptr = self
+                    .builder
+                    .build_struct_gep(self.runtime_value_type, res_ptr, 1, "exist_res_data_ptr")
+                    .unwrap();
+                self.builder.build_store(check_data_ptr, exist_ext).unwrap();
+                self.builder
+                    .build_unconditional_branch(cont_bb)
+                    .unwrap();
+
+                self.builder.position_at_end(false_bb);
+                self.tag_only_runtime_value_store(res_ptr, Tag::Boolean as u64, "exist_false_unit");
+                let false_data_ptr = self
+                    .builder
+                    .build_struct_gep(self.runtime_value_type, res_ptr, 1, "exist_res_data_ptr")
+                    .unwrap();
+                self.builder
+                    .build_store(
+                        false_data_ptr,
+                        self.context.i64_type().const_int(0, false),
+                    )
+                    .unwrap();
+                self.builder
+                    .build_unconditional_branch(cont_bb)
+                    .unwrap();
+
+                self.builder.position_at_end(cont_bb);
+                Ok(res_ptr.into())
             }
         }
     }

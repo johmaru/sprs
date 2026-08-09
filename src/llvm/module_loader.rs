@@ -44,6 +44,7 @@ impl<'ctx> Compiler<'ctx> {
         })?;
 
         self.sources.insert(module_name.to_string(), source.clone());
+        self.current_file = path.clone();
 
         let items = parse_only(&source, &path)?;
 

@@ -22,6 +22,7 @@
 //! the function bodies are unchanged.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::ffi::CStr;
 
 // ---------------------------------------------------------------------------
@@ -48,6 +49,8 @@ pub enum Tag {
     Struct = 8,
     // 9 was the legacy Error tag; removed in Phase 3 Step 3 (left unused).
     Label = 10,
+    Buffer = 11,
+    RawPtr = 12, // bare address in `data`; not a slab handle
 
     // System types
     Int8 = 100,
@@ -65,6 +68,7 @@ pub enum Tag {
 }
 
 /// Return true for tags whose `data` field is a slab handle (needs `__drop`).
+/// RawPtr is intentionally omitted: `data` is a bare address, not a slab handle.
 const fn is_heap_tag(tag: i32) -> bool {
     matches!(
         tag,
@@ -74,6 +78,7 @@ const fn is_heap_tag(tag: i32) -> bool {
             || tag_value == Tag::Struct as i32
             || tag_value == Tag::Enum as i32
             || tag_value == Tag::Label as i32
+            || tag_value == Tag::Buffer as i32
     )
 }
 
@@ -116,14 +121,16 @@ enum SlotData {
         name: String,
         payload: SprsValue,
     },
+    /// Fixed-size zero-initialized byte array (`new(n)`). `Vec` drops itself.
+    Buffer(Vec<u8>),
     Empty,
 }
 
 impl Drop for SlotData {
     fn drop(&mut self) {
         match self {
-            // Vec / String / SprsRange drop themselves.
-            SlotData::List(_) | SlotData::String(_) | SlotData::Range(_) => {}
+            // Vec / String / SprsRange / Buffer drop themselves.
+            SlotData::List(_) | SlotData::String(_) | SlotData::Range(_) | SlotData::Buffer(_) => {}
             SlotData::Label { payload, .. } => __drop(payload.tag, payload.data),
             SlotData::Struct { ptr, layout, owned } => {
                 if *owned && !ptr.is_null() {
@@ -161,6 +168,10 @@ thread_local! {
     static FREE_LIST: RefCell<Vec<u32>> = RefCell::new(Vec::new());
     static OUTPUT_FN: RefCell<Option<unsafe extern "C" fn(*const u8, usize)>> =
         RefCell::new(None);
+    /// Address → Layout for allocations taken by `__buffer_into_raw`.
+    /// Not generation tracking; RawPtr is a bare address.
+    static RAW_LAYOUTS: RefCell<HashMap<usize, std::alloc::Layout>> =
+        RefCell::new(HashMap::new());
 }
 
 // ---------------------------------------------------------------------------
@@ -253,7 +264,11 @@ fn slot_release(handle: u64) {
 
 /// Read-only lookup that runs `f` with a reference to the payload if the
 /// handle is live. Returns `f`'s result, or `default` on stale/invalid handle.
-fn slot_with<ResultType, Callback>(handle: u64, default: ResultType, callback_function: Callback) -> ResultType
+fn slot_with<ResultType, Callback>(
+    handle: u64,
+    default: ResultType,
+    callback_function: Callback,
+) -> ResultType
 where
     Callback: FnOnce(&SlotData) -> ResultType,
 {
@@ -404,6 +419,154 @@ pub extern "C" fn __list_get(list_handle: u64, index: i64) -> SprsValue {
         }
         vec[index as usize]
     })
+}
+
+// ---------------------------------------------------------------------------
+// C ABI: Buffer
+// ---------------------------------------------------------------------------
+
+/// Allocate a zero-initialized Buffer of `size` bytes. Negative size →
+/// INVALID_HANDLE. Size 0 → a valid handle to an empty buffer.
+#[unsafe(no_mangle)]
+pub extern "C" fn __buffer_new(size: i64) -> u64 {
+    if size < 0 {
+        return INVALID_HANDLE;
+    }
+    let bytes = if size == 0 {
+        Vec::new()
+    } else {
+        vec![0u8; size as usize]
+    };
+    slot_insert(SlotData::Buffer(bytes))
+}
+
+/// Length of a live Buffer as i64; stale / non-Buffer handle → 0.
+#[unsafe(no_mangle)]
+pub extern "C" fn __buffer_len(handle: u64) -> i64 {
+    slot_with(handle, 0, |slot_data| match slot_data {
+        SlotData::Buffer(bytes) => bytes.len() as i64,
+        _ => 0,
+    })
+}
+
+/// Read one byte as an Integer value. OOB / stale / non-Buffer → Unit sentinel.
+#[unsafe(no_mangle)]
+pub extern "C" fn __buffer_get(handle: u64, index: i64) -> SprsValue {
+    let sentinel = SprsValue {
+        tag: Tag::Unit as i32,
+        data: 0,
+    };
+    slot_with(handle, sentinel, |slot_data| match slot_data {
+        SlotData::Buffer(bytes) => {
+            if index < 0 || (index as usize) >= bytes.len() {
+                sentinel
+            } else {
+                SprsValue {
+                    tag: Tag::Integer as i32,
+                    data: bytes[index as usize] as u64,
+                }
+            }
+        }
+        _ => sentinel,
+    })
+}
+
+/// Write one byte (low 8 bits of `value`). OOB / stale / non-Buffer → no-op.
+#[unsafe(no_mangle)]
+pub extern "C" fn __buffer_set(handle: u64, index: i64, value: i64) {
+    SLOTS.with(|slots_cell| {
+        let mut slots = slots_cell.borrow_mut();
+        let idx = handle_index(handle) as usize;
+        if idx >= slots.len() || handle == INVALID_HANDLE {
+            return;
+        }
+        let slot = &mut slots[idx];
+        if slot.generation != handle_gen(handle) {
+            return;
+        }
+        if let SlotData::Buffer(bytes) = &mut slot.data {
+            if index >= 0 && (index as usize) < bytes.len() {
+                bytes[index as usize] = value as u8;
+            }
+        }
+    });
+}
+
+/// Returns 1 if `handle` refers to a live Buffer slot, 0 otherwise.
+#[unsafe(no_mangle)]
+pub extern "C" fn __buffer_exist(handle: u64) -> i32 {
+    slot_with(handle, 0, |slot_data| match slot_data {
+        SlotData::Buffer(_) => 1,
+        _ => 0,
+    })
+}
+
+/// Take ownership of a live Buffer's byte allocation and return it as a raw
+/// address (the `data` of a `Tag::RawPtr` value). The slot is emptied and
+/// released, so the Buffer handle becomes stale; the caller owns the memory
+/// and must release it with `__raw_free`.
+///
+/// Returns 0 for stale / non-Buffer handles and for empty (len 0) buffers.
+#[unsafe(no_mangle)]
+pub extern "C" fn __buffer_into_raw(handle: u64) -> u64 {
+    if handle == INVALID_HANDLE {
+        return 0;
+    }
+    let taken = SLOTS.with(|slots_cell| {
+        let mut slots = slots_cell.borrow_mut();
+        let idx = handle_index(handle) as usize;
+        if idx >= slots.len() {
+            return None;
+        }
+        let slot = &mut slots[idx];
+        if slot.generation != handle_gen(handle) {
+            return None;
+        }
+        let SlotData::Buffer(bytes) = &mut slot.data else {
+            return None;
+        };
+        if bytes.is_empty() {
+            return None;
+        }
+        // Forget the Vec so Drop won't free it; caller owns the allocation via RAW_LAYOUTS.
+        let mut vec = std::mem::replace(bytes, Vec::new());
+        let addr = vec.as_mut_ptr() as usize;
+        let cap = vec.capacity();
+        std::mem::forget(vec);
+        slot.data = SlotData::Empty;
+        slot.generation = slot.generation.wrapping_add(1);
+        if slot.generation == 0 {
+            slot.generation = 1;
+        }
+        Some((addr, cap))
+    });
+    match taken {
+        Some((addr, cap)) => {
+            let layout = std::alloc::Layout::from_size_align(cap, 1)
+                .unwrap_or_else(|_| std::alloc::Layout::from_size_align(cap.max(1), 1).unwrap());
+            RAW_LAYOUTS.with(|layouts| {
+                layouts.borrow_mut().insert(addr, layout);
+            });
+            addr as u64
+        }
+        None => 0,
+    }
+}
+
+/// Release a raw pointer previously returned by `__buffer_into_raw`.
+/// Null / unknown pointers are silently ignored (C-equivalent double-free
+/// policy; no panic). Freeing a pointer this runtime did not allocate is a
+/// user error.
+#[unsafe(no_mangle)]
+pub extern "C" fn __raw_free(ptr: u64) {
+    if ptr == 0 {
+        return;
+    }
+    let addr = ptr as usize;
+    let layout = RAW_LAYOUTS.with(|layouts| layouts.borrow_mut().remove(&addr));
+    if let Some(layout) = layout {
+        unsafe { std::alloc::dealloc(addr as *mut u8, layout) };
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -695,6 +858,9 @@ pub extern "C" fn __drop(tag: i32, data: u64) {
     if !is_heap_tag(tag) {
         return;
     }
+    if SLOTS.try_with(|_| {}).is_err() {
+        return;
+    }
     slot_release(data);
 }
 
@@ -757,6 +923,14 @@ pub extern "C" fn __clone(tag: i32, data: u64) -> SprsValue {
         };
     }
 
+    if tag == Tag::Buffer as i32 {
+        let new_handle = buffer_clone(data);
+        return SprsValue {
+            tag,
+            data: new_handle,
+        };
+    }
+
     // Unknown heap tag: return Unit.
     SprsValue {
         tag: Tag::Unit as i32,
@@ -812,7 +986,9 @@ fn list_clone(handle: u64) -> u64 {
 }
 
 fn slot_is_list(handle: u64) -> bool {
-    slot_with(handle, false, |slot_data| matches!(slot_data, SlotData::List(_)))
+    slot_with(handle, false, |slot_data| {
+        matches!(slot_data, SlotData::List(_))
+    })
 }
 
 fn struct_clone(handle: u64) -> u64 {
@@ -847,11 +1023,14 @@ fn struct_clone(handle: u64) -> u64 {
 }
 
 fn enum_clone(handle: u64) -> u64 {
-    let (name_ptr, name_len, variant_index) =
-        slot_with(handle, (std::ptr::null_mut(), 0usize, 0i64), |slot_data| match slot_data {
+    let (name_ptr, name_len, variant_index) = slot_with(
+        handle,
+        (std::ptr::null_mut(), 0usize, 0i64),
+        |slot_data| match slot_data {
             SlotData::Enum(info) => (info.name, info.name_len, info.variant_index),
             _ => (std::ptr::null_mut(), 0, 0),
-        });
+        },
+    );
     if name_ptr.is_null() {
         return INVALID_HANDLE;
     }
@@ -859,10 +1038,11 @@ fn enum_clone(handle: u64) -> u64 {
 }
 
 fn label_clone(handle: u64) -> u64 {
-    let snapshot: Option<(String, SprsValue)> = slot_with(handle, None, |slot_data| match slot_data {
-        SlotData::Label { name, payload } => Some((name.clone(), *payload)),
-        _ => None,
-    });
+    let snapshot: Option<(String, SprsValue)> =
+        slot_with(handle, None, |slot_data| match slot_data {
+            SlotData::Label { name, payload } => Some((name.clone(), *payload)),
+            _ => None,
+        });
     let Some((name, payload)) = snapshot else {
         return INVALID_HANDLE;
     };
@@ -870,6 +1050,19 @@ fn label_clone(handle: u64) -> u64 {
         name,
         payload: __clone(payload.tag, payload.data),
     })
+}
+
+/// Same read-then-release-then-insert pattern as the other clone helpers:
+/// deep-copy the byte vector into a fresh slot.
+fn buffer_clone(handle: u64) -> u64 {
+    let cloned: Option<Vec<u8>> = slot_with(handle, None, |slot_data| match slot_data {
+        SlotData::Buffer(bytes) => Some(bytes.clone()),
+        _ => None,
+    });
+    match cloned {
+        Some(bytes) => slot_insert(SlotData::Buffer(bytes)),
+        None => INVALID_HANDLE,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -980,10 +1173,11 @@ pub extern "C" fn __println(list_handle: u64) {
     // Read the list elements out (clone the Vec), release the borrow, then
     // format each value. Cloning avoids holding a borrow while calling
     // `format_sprs_value`, which itself may call `slot_with`.
-    let snapshot: Vec<SprsValue> = slot_with(list_handle, Vec::new(), |slot_data| match slot_data {
-        SlotData::List(list_values) => list_values.clone(),
-        _ => Vec::new(),
-    });
+    let snapshot: Vec<SprsValue> =
+        slot_with(list_handle, Vec::new(), |slot_data| match slot_data {
+            SlotData::List(list_values) => list_values.clone(),
+            _ => Vec::new(),
+        });
     if snapshot.is_empty() && !slot_is_list(list_handle) {
         // Invalid handle: print nothing.
         return;
@@ -1074,23 +1268,36 @@ fn format_sprs_value(val: &SprsValue, out: &mut String) {
         }
         tag_value if tag_value == Tag::Enum as i32 => {
             use std::fmt::Write;
-            let (name, idx) = slot_with(val.data, (String::new(), 0i64), |slot_data| match slot_data {
-                SlotData::Enum(info) => {
-                    let name = if info.name.is_null() {
-                        String::new()
-                    } else {
-                        let slice = unsafe { std::slice::from_raw_parts(info.name, info.name_len) };
-                        String::from_utf8_lossy(slice).into_owned()
-                    };
-                    (name, info.variant_index)
-                }
-                _ => (String::new(), 0),
-            });
+            let (name, idx) = slot_with(
+                val.data,
+                (String::new(), 0i64),
+                |slot_data| match slot_data {
+                    SlotData::Enum(info) => {
+                        let name = if info.name.is_null() {
+                            String::new()
+                        } else {
+                            let slice =
+                                unsafe { std::slice::from_raw_parts(info.name, info.name_len) };
+                            String::from_utf8_lossy(slice).into_owned()
+                        };
+                        (name, info.variant_index)
+                    }
+                    _ => (String::new(), 0),
+                },
+            );
             let _ = write!(out, "<enum {} variant {}>", name, idx);
         }
         tag_value if tag_value == Tag::Struct as i32 => {
             use std::fmt::Write;
             let _ = write!(out, "<struct handle {:016x}>", val.data);
+        }
+        tag_value if tag_value == Tag::Buffer as i32 => {
+            use std::fmt::Write;
+            let _ = write!(out, "Buffer({})", __buffer_len(val.data));
+        }
+        tag_value if tag_value == Tag::RawPtr as i32 => {
+            use std::fmt::Write;
+            let _ = write!(out, "RawPtr(0x{:x})", val.data);
         }
         tag_value if tag_value == Tag::Label as i32 => {
             let (name, payload) = slot_with(
@@ -1151,17 +1358,21 @@ pub extern "C" fn __panic(message_ptr: *const i8) {
 #[cfg(test)]
 mod tests {
     use super::{
+        __buffer_exist, __buffer_get, __buffer_into_raw, __buffer_len, __buffer_new, __buffer_set,
         __clone, __drop, __error_label_from_str, __error_message_from_label, __label_is_error,
         __label_name, __label_name_eq, __label_new, __label_new_from_string, __label_payload,
-        __string_new, __value_to_string, format_sprs_value, slot_with, INVALID_HANDLE, SlotData,
-        SprsValue, Tag,
+        __raw_free, __string_new, __value_to_string, INVALID_HANDLE, RAW_LAYOUTS, SlotData,
+        SprsValue, Tag, format_sprs_value, slot_with,
     };
 
     #[test]
     fn label_round_trips_and_clones_payload() {
         let name = b"ok";
         let handle = __label_new(name.as_ptr(), name.len() as i64, Tag::Integer as i32, 42);
-        let value = SprsValue { tag: Tag::Label as i32, data: handle };
+        let value = SprsValue {
+            tag: Tag::Label as i32,
+            data: handle,
+        };
         let mut output = String::new();
         format_sprs_value(&value, &mut output);
         assert_eq!(output, "{:ok, 42}");
@@ -1179,7 +1390,10 @@ mod tests {
     fn label_without_payload_prints_name_only() {
         let name = b"ok";
         let handle = __label_new(name.as_ptr(), name.len() as i64, Tag::Unit as i32, 0);
-        let value = SprsValue { tag: Tag::Label as i32, data: handle };
+        let value = SprsValue {
+            tag: Tag::Label as i32,
+            data: handle,
+        };
         let mut output = String::new();
         format_sprs_value(&value, &mut output);
         assert_eq!(output, ":ok");
@@ -1208,7 +1422,8 @@ mod tests {
         let eq = __label_name_eq(
             // misuse: wrap via label_new_from_string to check string content indirectly
             {
-                let handle_value = __label_new_from_string(integer_string_handle, Tag::Unit as i32, 0);
+                let handle_value =
+                    __label_new_from_string(integer_string_handle, Tag::Unit as i32, 0);
                 assert_eq!(__label_name_eq(handle_value, b"10".as_ptr(), 2), 1);
                 __drop(Tag::Label as i32, handle_value);
                 integer_string_handle
@@ -1221,18 +1436,10 @@ mod tests {
         assert_eq!(__value_to_string(Tag::String as i32, name_s) != 0, true);
         let true_string_handle = __value_to_string(Tag::Boolean as i32, 1);
         let false_string_handle = __value_to_string(Tag::Boolean as i32, 0);
-        let true_label_handle =
-            __label_new_from_string(true_string_handle, Tag::Unit as i32, 0);
-        let false_label_handle =
-            __label_new_from_string(false_string_handle, Tag::Unit as i32, 0);
-        assert_eq!(
-            __label_name_eq(true_label_handle, b"true".as_ptr(), 4),
-            1
-        );
-        assert_eq!(
-            __label_name_eq(false_label_handle, b"false".as_ptr(), 5),
-            1
-        );
+        let true_label_handle = __label_new_from_string(true_string_handle, Tag::Unit as i32, 0);
+        let false_label_handle = __label_new_from_string(false_string_handle, Tag::Unit as i32, 0);
+        assert_eq!(__label_name_eq(true_label_handle, b"true".as_ptr(), 4), 1);
+        assert_eq!(__label_name_eq(false_label_handle, b"false".as_ptr(), 5), 1);
         __drop(Tag::Label as i32, true_label_handle);
         __drop(Tag::Label as i32, false_label_handle);
         __drop(Tag::String as i32, integer_string_handle);
@@ -1334,5 +1541,111 @@ mod tests {
         });
         assert_eq!(text, "");
         __drop(Tag::String as i32, msg);
+    }
+
+    #[test]
+    fn buffer_new_set_get_len_drop() {
+        let handle = __buffer_new(4);
+        assert_ne!(handle, INVALID_HANDLE);
+        assert_eq!(__buffer_len(handle), 4);
+
+        // New buffers are zero-initialized.
+        let zero = __buffer_get(handle, 0);
+        assert_eq!(zero.tag, Tag::Integer as i32);
+        assert_eq!(zero.data, 0);
+
+        __buffer_set(handle, 0, 10);
+        __buffer_set(handle, 1, 20);
+        let v0 = __buffer_get(handle, 0);
+        assert_eq!(v0.tag, Tag::Integer as i32);
+        assert_eq!(v0.data, 10);
+        let v1 = __buffer_get(handle, 1);
+        assert_eq!(v1.data, 20);
+        assert_eq!(__buffer_len(handle), 4);
+
+        // Byte values wrap at 8 bits.
+        __buffer_set(handle, 2, 256);
+        assert_eq!(__buffer_get(handle, 2).data, 0);
+        __buffer_set(handle, 3, 300);
+        assert_eq!(__buffer_get(handle, 3).data, 44);
+
+        // OOB read → Unit sentinel; OOB write is a no-op (no panic).
+        let oob = __buffer_get(handle, 4);
+        assert_eq!(oob.tag, Tag::Unit as i32);
+        __buffer_set(handle, 99, 1);
+        assert_eq!(__buffer_get(handle, -1).tag, Tag::Unit as i32);
+
+        // Non-buffer / stale handles report 0 / Unit.
+        assert_eq!(__buffer_exist(handle), 1);
+        assert_eq!(__buffer_exist(INVALID_HANDLE), 0);
+        assert_eq!(__buffer_len(INVALID_HANDLE), 0);
+
+        // Drop makes the handle stale; double drop must not panic.
+        __drop(Tag::Buffer as i32, handle);
+        assert_eq!(__buffer_exist(handle), 0);
+        assert_eq!(__buffer_len(handle), 0);
+        __drop(Tag::Buffer as i32, handle);
+    }
+
+    #[test]
+    fn buffer_zero_size_and_clone() {
+        let empty = __buffer_new(0);
+        assert_ne!(empty, INVALID_HANDLE);
+        assert_eq!(__buffer_len(empty), 0);
+        __drop(Tag::Buffer as i32, empty);
+
+        let handle = __buffer_new(2);
+        __buffer_set(handle, 0, 7);
+        __buffer_set(handle, 1, 8);
+        let cloned = __clone(Tag::Buffer as i32, handle);
+        assert_eq!(cloned.tag, Tag::Buffer as i32);
+        assert_ne!(cloned.data, handle);
+        assert_eq!(__buffer_len(cloned.data), 2);
+        assert_eq!(__buffer_get(cloned.data, 0).data, 7);
+        assert_eq!(__buffer_get(cloned.data, 1).data, 8);
+
+        // Mutating the original does not affect the deep copy.
+        __buffer_set(handle, 0, 99);
+        assert_eq!(__buffer_get(cloned.data, 0).data, 7);
+
+        // Negative size → INVALID_HANDLE.
+        assert_eq!(__buffer_new(-1), INVALID_HANDLE);
+
+        __drop(Tag::Buffer as i32, handle);
+        __drop(Tag::Buffer as i32, cloned.data);
+    }
+
+    #[test]
+    fn raw_ptr_roundtrip_frees_and_empties_layouts() {
+        let handle = __buffer_new(2);
+        __buffer_set(handle, 0, 7);
+        let ptr = __buffer_into_raw(handle);
+        assert_ne!(ptr, 0);
+        assert_eq!(__buffer_exist(handle), 0);
+        assert_eq!(__buffer_into_raw(handle), 0);
+        __raw_free(ptr);
+        RAW_LAYOUTS.with(|layouts| assert!(layouts.borrow().is_empty()));
+    }
+
+    #[test]
+    fn raw_free_double_and_unknown_are_noops() {
+        let handle = __buffer_new(2);
+        let ptr = __buffer_into_raw(handle);
+        assert_ne!(ptr, 0);
+        __raw_free(ptr);
+        __raw_free(ptr);
+        __raw_free(0);
+        __raw_free(0xDEAD_BEEF);
+    }
+
+    #[test]
+    fn buffer_into_raw_rejects_non_buffer_and_empty() {
+        assert_eq!(__buffer_into_raw(INVALID_HANDLE), 0);
+        let string_handle = __string_new(b"abc".as_ptr(), 3);
+        assert_eq!(__buffer_into_raw(string_handle), 0);
+        __drop(Tag::String as i32, string_handle);
+        let empty = __buffer_new(0);
+        assert_eq!(__buffer_into_raw(empty), 0);
+        __drop(Tag::Buffer as i32, empty);
     }
 }

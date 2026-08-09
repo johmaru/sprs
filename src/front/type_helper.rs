@@ -18,6 +18,8 @@
 /// | Enum            | Enum         | 7            |
 /// | Struct(_)       | Struct       | 8            |
 /// | Label           | Label        | 10           |
+/// | Buffer          | Buffer       | 11           |
+/// | RawPtr          | RawPtr       | 12           |
 /// | TypeI8          | Int8         | 100          |
 /// | TypeU8          | Uint8        | 101          |
 /// | TypeI16         | Int16        | 102          |
@@ -58,6 +60,8 @@ pub enum Type {
     Enum(String),
     Struct(String),
     Label,
+    Buffer,
+    RawPtr,
 
     App(String, Vec<Type>),
     Param(String),
@@ -105,6 +109,8 @@ impl Type {
             Type::Enum(_) => Some(7),
             Type::Struct(_) => Some(8),
             Type::Label => Some(10),
+            Type::Buffer => Some(11),
+            Type::RawPtr => Some(12),
             Type::App(_, _) => None,
             Type::Param(_) => None,
             Type::Atom(_) => None,
@@ -140,6 +146,8 @@ impl Type {
             8 => Some(Type::Struct(String::new())),
             // 9 is the legacy Error tag (removed in Phase 3 Step 3); no Type maps to it.
             10 => Some(Type::Label),
+            11 => Some(Type::Buffer),
+            12 => Some(Type::RawPtr),
             100 => Some(Type::TypeI8),
             101 => Some(Type::TypeU8),
             102 => Some(Type::TypeI16),
@@ -315,6 +323,7 @@ mod tests {
     fn tag_discriminants_match_known_tag_values() {
         assert_eq!(Type::Int.tag_discriminant(), Some(0));
         assert_eq!(Type::List.tag_discriminant(), Some(4));
+        assert_eq!(Type::Buffer.tag_discriminant(), Some(11));
         assert_eq!(Type::Range.tag_discriminant(), Some(5));
         assert_eq!(Type::Label.tag_discriminant(), Some(10));
         assert_eq!(Type::Any.tag_discriminant(), None);
@@ -325,7 +334,9 @@ mod tests {
         // 9 is the legacy Error tag (removed); no Type maps to it.
         assert_eq!(Type::from_tag_discriminant(9), None);
         assert_eq!(Type::from_tag_discriminant(10), Some(Type::Label));
-        assert_eq!(Type::from_tag_discriminant(11), None);
+        assert_eq!(Type::from_tag_discriminant(11), Some(Type::Buffer));
+        assert_eq!(Type::RawPtr.tag_discriminant(), Some(12));
+        assert_eq!(Type::from_tag_discriminant(12), Some(Type::RawPtr));
     }
 
     #[test]

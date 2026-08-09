@@ -26,20 +26,23 @@ pub fn move_variable<'ctx>(
     let tag_struct = self_compiler.get_tag_from_tag_enum(Tag::Struct);
     let tag_enum = self_compiler.get_tag_from_tag_enum(Tag::Enum);
     let tag_label = self_compiler.get_tag_from_tag_enum(Tag::Label);
+    let tag_buffer = self_compiler.get_tag_from_tag_enum(Tag::Buffer);
     let is_string = self_compiler.tag_cmp(inkwell::IntPredicate::EQ, current_tag, tag_string, name);
     let is_list = self_compiler.tag_cmp(inkwell::IntPredicate::EQ, current_tag, tag_list, name);
     let is_range = self_compiler.tag_cmp(inkwell::IntPredicate::EQ, current_tag, tag_range, name);
     let is_struct = self_compiler.tag_cmp(inkwell::IntPredicate::EQ, current_tag, tag_struct, name);
     let is_enum = self_compiler.tag_cmp(inkwell::IntPredicate::EQ, current_tag, tag_enum, name);
     let is_label = self_compiler.tag_cmp(inkwell::IntPredicate::EQ, current_tag, tag_label, name);
-    // With slab, all heap tags (String/List/Range/Struct/Enum/Label) carry a slot
-    // handle in `data` and must be moved (tag reset to Unit) so the original
-    // binding doesn't release the slot a second time on scope exit.
+    let is_buffer = self_compiler.tag_cmp(inkwell::IntPredicate::EQ, current_tag, tag_buffer, name);
+    // With slab, all heap tags (String/List/Range/Struct/Enum/Label/Buffer)
+    // carry a slot handle in `data` and must be moved (tag reset to Unit) so
+    // the original binding doesn't release the slot a second time on scope exit.
     let is_heap_1 = self_compiler.or(is_string, is_list, name);
     let is_heap_2 = self_compiler.or(is_heap_1, is_range, name);
     let is_heap_3 = self_compiler.or(is_heap_2, is_struct, name);
     let is_heap_4 = self_compiler.or(is_heap_3, is_enum, name);
-    let should_move = self_compiler.or(is_heap_4, is_label, name);
+    let is_heap_5 = self_compiler.or(is_heap_4, is_label, name);
+    let should_move = self_compiler.or(is_heap_5, is_buffer, name);
     let parent_bb = self_compiler.get_current_function();
     let move_bb = self_compiler
         .context

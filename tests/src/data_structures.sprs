@@ -34,6 +34,21 @@ pub fn list_empty() >> i64 {
     return 1;
 }
 
+# create_index List branch (former XFAIL: StructValue panic)
+pub fn list_index_read() >> i64 {
+    var y = [];
+    @list_push(y, 10);
+    @list_push(y, 20);
+    var first = y[0];
+    if first != 10 {
+        return 0;
+    }
+    if y[1] != 20 {
+        return 0;
+    }
+    return 1;
+}
+
 # === Struct ===
 
 struct Point {

@@ -50,6 +50,11 @@ pub enum Token {
     Copy,
 
     Ambi,
+    InstanceCreate,
+    Destroy,
+    Exist,
+    Unsafe,
+    Defer,
 
     // System types
     TypeInt,
@@ -57,6 +62,8 @@ pub enum Token {
     TypeBool,
     TypeStr,
     TypeList,
+    TypeBuffer,
+    TypeRawPtr,
     TypeRange,
     TypeUnit,
     TypeError,
@@ -184,6 +191,16 @@ enum RawTok {
     Copy,
     #[token("ambi")]
     Ambi,
+    #[token("new")]
+    InstanceCreate,
+    #[token("destroy")]
+    Destroy,
+    #[token("exist")]
+    Exist,
+    #[token("unsafe")]
+    Unsafe,
+    #[token("defer")]
+    Defer,
     // System types
     #[token("int")]
     TypeInt,
@@ -195,6 +212,10 @@ enum RawTok {
     TypeStr,
     #[token("list")]
     TypeList,
+    #[token("buffer")]
+    TypeBuffer,
+    #[token("rawptr")]
+    TypeRawPtr,
     #[token("range")]
     TypeRange,
     #[token("unit")]
@@ -254,7 +275,12 @@ impl<'input> Iterator for Lexer<'input> {
 
         let tok = match res {
             Ok(token_value) => token_value,
-            Err(()) => return Some(Err(format!("invalid token at {}..{}", span_start, span_end))),
+            Err(()) => {
+                return Some(Err(format!(
+                    "invalid token at {}..{}",
+                    span_start, span_end
+                )));
+            }
         };
 
         let text = &self.input[span_start..span_end];
@@ -294,11 +320,21 @@ impl<'input> Iterator for Lexer<'input> {
             RawTok::MacroIdent(name) => Token::Macro(name),
             RawTok::Num => match text.parse::<i64>() {
                 Ok(integer_value) => Token::Num(integer_value),
-                Err(span_end) => return Some(Err(format!("invalid integer literal '{}': {}", text, span_end))),
+                Err(span_end) => {
+                    return Some(Err(format!(
+                        "invalid integer literal '{}': {}",
+                        text, span_end
+                    )));
+                }
             },
             RawTok::Float => match text.parse::<f64>() {
                 Ok(float_value) => Token::Float(float_value),
-                Err(span_end) => return Some(Err(format!("invalid float literal '{}': {}", text, span_end))),
+                Err(span_end) => {
+                    return Some(Err(format!(
+                        "invalid float literal '{}': {}",
+                        text, span_end
+                    )));
+                }
             },
             RawTok::True => Token::Bool(true),
             RawTok::False => Token::Bool(false),
@@ -315,13 +351,19 @@ impl<'input> Iterator for Lexer<'input> {
             RawTok::Comment => return self.next(),
             RawTok::Copy => Token::Copy,
             RawTok::Ambi => Token::Ambi,
-
+            RawTok::InstanceCreate => Token::InstanceCreate,
+            RawTok::Destroy => Token::Destroy,
+            RawTok::Exist => Token::Exist,
+            RawTok::Unsafe => Token::Unsafe,
+            RawTok::Defer => Token::Defer,
             // System types
             RawTok::TypeInt => Token::TypeInt,
             RawTok::TypeFloat => Token::TypeFloat,
             RawTok::TypeBool => Token::TypeBool,
             RawTok::TypeStr => Token::TypeStr,
             RawTok::TypeList => Token::TypeList,
+            RawTok::TypeBuffer => Token::TypeBuffer,
+            RawTok::TypeRawPtr => Token::TypeRawPtr,
             RawTok::TypeRange => Token::TypeRange,
             RawTok::TypeUnit => Token::TypeUnit,
             RawTok::TypeError => Token::TypeError,

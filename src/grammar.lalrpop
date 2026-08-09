@@ -74,6 +74,11 @@ extern {
         Struct => Token::Struct,
         Copy => Token::Copy,
         Ambi => Token::Ambi,
+        InstanceCreate => Token::InstanceCreate,
+        Destroy => Token::Destroy,
+        Exist => Token::Exist,
+        Unsafe => Token::Unsafe,
+        Defer => Token::Defer,
 
         // System types
         TypeInt => Token::TypeInt,
@@ -81,6 +86,8 @@ extern {
         TypeBool => Token::TypeBool,
         TypeStr => Token::TypeStr,
         TypeList => Token::TypeList,
+        TypeBuffer => Token::TypeBuffer,
+        TypeRawPtr => Token::TypeRawPtr,
         TypeRange => Token::TypeRange,
         TypeUnit => Token::TypeUnit,
         TypeError => Token::TypeError,
@@ -243,6 +250,8 @@ Type: Type = {
     TypeBool => Type::Bool,
     TypeStr => Type::Str,
     TypeList => Type::List,
+    TypeBuffer => Type::Buffer,
+    TypeRawPtr => Type::RawPtr,
     TypeRange => Type::Range,
     TypeUnit => Type::Unit,
     // `err` sugar: `{:error, reason}` label. `Type::Error` is removed in Phase 3 Step 3.
@@ -321,6 +330,8 @@ Stmt: Spanned<Stmt> = {
             Some(val) => {
                 if let Expr::Var(id) = e.node {
                     Ok(Spanned::new(Stmt::Assign(AssignStmt { name: id, expr: val, span: Span::new(start, end) }), Span::new(start, end)))
+                } else if let Expr::Index(collection, index) = e.node {
+                    Ok(Spanned::new(Stmt::IndexAssign { collection: *collection, index: *index, expr: val, span: Span::new(start, end) }, Span::new(start, end)))
                 } else {
                     Err(ParseError::User { error: "Invalid assignment target".to_string() })
                 }
@@ -332,6 +343,16 @@ Stmt: Spanned<Stmt> = {
         Spanned::new(Stmt::While {
             cond: c,
             body: body,
+        }, Span::new(start, end)),
+    <start:@L> Unsafe <body:Block> <end:@R> =>
+        Spanned::new(Stmt::Unsafe {
+            body: body,
+            span: Span::new(start, end),
+        }, Span::new(start, end)),
+    <start:@L> Defer <e:Expr> Semi <end:@R> =>
+        Spanned::new(Stmt::Defer {
+            expr: e,
+            span: Span::new(start, end),
         }, Span::new(start, end)),
     <start:@L> Return <e:Expr> Semi <end:@R> => Spanned::new(Stmt::Return(Some(e)), Span::new(start, end)),
     <start:@L> Return Semi <end:@R> => Spanned::new(Stmt::Return(None), Span::new(start, end)),
@@ -466,6 +487,12 @@ Atom: Spanned<Expr> = {
         args.extend(rest);
         Spanned::new(Expr::Macro(m, args), Span::new(start, end))
     },
+    <start:@L> InstanceCreate LParen <size:Expr> RParen <end:@R> =>
+        Spanned::new(Expr::HeapAlloc(Box::new(size)), Span::new(start, end)),
+    <start:@L> Destroy LParen <e:Expr> RParen <end:@R> =>
+        Spanned::new(Expr::Destroy(Box::new(e)), Span::new(start, end)),
+    <start:@L> Exist LParen <e:Expr> RParen <end:@R> =>
+        Spanned::new(Expr::Exist(Box::new(e)), Span::new(start, end)),
     <start:@L> <m:MacroName> LParen <name:Ident> LBrace <fields:StructInitFields> RBrace RParen <end:@R> =>? {
         if m == "init" {
             Ok(Spanned::new(Expr::StructInit(name, fields), Span::new(start, end)))

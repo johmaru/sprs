@@ -10,6 +10,8 @@ import types;
 import test;
 import errors;
 import labels;
+import buffers;
+import unsafe_mem;
 
 # === Main ===
 
@@ -84,6 +86,7 @@ fn main() {
     @println(data_structures.list_with_vars());
     @println(data_structures.list_build_loop());
     @println(data_structures.list_empty());
+    @println(data_structures.list_index_read());
 
     @println("=== Cast ===");
     @println(types.cast_i8());
@@ -172,6 +175,7 @@ fn main() {
     @println(errors.div_zero_message());
     @println(errors.mod_zero_is_error());
     @println(errors.not_an_error());
+    @println(errors.question_keeps_ok());
 
     @println("=== Labels ===");
     @println(labels.dynamic_payload());
@@ -179,9 +183,22 @@ fn main() {
     @println(labels.typed_label_payload());
     @println(labels.static_label_is());
 
+    @println("=== Buffer ===");
+    @println(buffers.buf_macro_roundtrip());
+    @println(buffers.buf_index_sugar());
+    @println(buffers.buf_destroy_exist());
+    @println(buffers.buf_scope_exit_no_destroy());
+    @println(buffers.buf_oob_get());
+    @println(buffers.buf_demo_output());
+
+    @println("=== Unsafe/Defer ===");
+    @println(unsafe_mem.raw_free_roundtrip());
+    @println(unsafe_mem.defer_destroy_ok());
+    @println(unsafe_mem.defer_with_raw_free());
+    @println(unsafe_mem.raw_ptr_print());
+    @println(unsafe_mem.raw_exist_demo());
 
     # XFAIL: Strings (>> str segfaults — Type::Str ptr bug)
-    # XFAIL: list[index] (create_index StructValue panic)
     # XFAIL: return var (move semantics resets tag to Unit)
 
     @println("=== All Tests Done ===");

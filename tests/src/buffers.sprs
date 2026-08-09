@@ -1,0 +1,101 @@
+# Package name avoids the `buffer` type keyword (the lexer maps `buffer` to
+# the TypeBuffer token, so it cannot be used as an identifier).
+pkg buffers;
+
+# Buffer tests: new / @bufLen / @bufGet / @bufSet / buf[i] sugar / destroy / exist.
+# Functions return i64 flags (same convention as the rest of the suite).
+
+# 1. new + @bufSet/@bufGet/@bufLen agree.
+pub fn buf_macro_roundtrip() >> i64 {
+    var a = new(4);
+    @bufSet(a, 0, 10);
+    @bufSet(a, 1, 20);
+    var sum = @bufGet(a, 0) + @bufGet(a, 1);
+    if @bufLen(a) != 4 {
+        destroy(a);
+        return 0;
+    }
+    if sum != 30 {
+        destroy(a);
+        return 0;
+    }
+    destroy(a);
+    return 1;
+}
+
+# 2. buf[i] sugar matches @bufGet/@bufSet.
+pub fn buf_index_sugar() >> i64 {
+    var b = new(2);
+    b[0] = 7;
+    b[1] = 8;
+    var total = b[0] + @bufGet(b, 1);
+    if total != 15 {
+        destroy(b);
+        return 0;
+    }
+    @bufSet(b, 0, 1);
+    if b[0] != 1 {
+        destroy(b);
+        return 0;
+    }
+    # writes truncate to low 8 bits
+    b[1] = 256;
+    if b[1] != 0 {
+        destroy(b);
+        return 0;
+    }
+    destroy(b);
+    return 1;
+}
+
+# 3. destroy makes exist false; double destroy is a runtime no-op.
+pub fn buf_destroy_exist() >> i64 {
+    var a = new(1);
+    if exist(a) {
+        # ok
+    } else {
+        return 0;
+    }
+    destroy(a);
+    if exist(a) {
+        return 0;
+    }
+    destroy(a);   # double destroy is a runtime no-op
+    return 1;
+}
+
+# 4. Scope exit without destroy must not leak (__drop path smoke test).
+pub fn buf_scope_exit_no_destroy() >> i64 {
+    var c = new(3);
+    @bufSet(c, 0, 5);
+    if @bufGet(c, 0) != 5 {
+        return 0;
+    }
+    # no destroy before return — exit_scope __drop frees the Buffer
+    return 1;
+}
+
+# 5. OOB @bufGet returns the Unit sentinel → false in an if condition.
+pub fn buf_oob_get() >> i64 {
+    var a = new(1);
+    @bufSet(a, 0, 42);
+    if @bufGet(a, 99) {
+        destroy(a);
+        return 0;
+    }
+    destroy(a);
+    return 1;
+}
+
+# Demo prints: len, sum, exist before/after destroy.
+pub fn buf_demo_output() >> i64 {
+    var a = new(2);
+    a[0] = 7;
+    @bufSet(a, 1, 8);
+    @println(@bufLen(a));                # expect: 2
+    @println(a[0] + @bufGet(a, 1));      # expect: 15
+    @println(exist(a));                  # expect: true
+    destroy(a);
+    @println(exist(a));                  # expect: false
+    return 1;
+}

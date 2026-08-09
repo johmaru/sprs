@@ -13,10 +13,11 @@ pub fn test() >> str {
                 return c;
             }
 
+            # Keep >> str: int branches return a string marker instead of a++ / a+2.
             if a != 4 {
-                return a++;
+                return "neq";
             } else {
-                return a + 2;
+                return "eq-else";
             }
 
             return c;

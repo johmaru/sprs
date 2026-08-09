@@ -36,6 +36,9 @@ pub enum Expr {
     StructInit(String, Vec<(String, Spanned<Expr>)>), // StructName, Fields
     Label(LabelName, Option<Box<Spanned<Expr>>>), // Label name with an optional single payload
     Try(Box<Spanned<Expr>>),           // Error propagation: expr?
+    HeapAlloc(Box<Spanned<Expr>>),     // new(n) — Buffer allocation
+    Destroy(Box<Spanned<Expr>>),       // destroy(expr) — explicit Buffer release
+    Exist(Box<Spanned<Expr>>),         // exist(expr) — Buffer liveness check
 
     // System types
     TypeI8,
@@ -68,6 +71,7 @@ pub enum Item {
     Preprocessor(String),
     EnumItem(Enum),
     StructItem(Struct),
+    HeapAllocItem(HeapAlloc),
 }
 
 #[derive(Debug, PartialEq)]
@@ -89,6 +93,13 @@ pub struct VarDecl {
     pub always_clone: bool,
     pub span: Span,
 }
+
+#[derive(Debug, PartialEq)]
+pub struct HeapAlloc {
+    pub size: Box<Spanned<Expr>>,
+    pub span: Span,
+}
+
 #[derive(Debug, PartialEq)]
 pub struct AssignStmt {
     pub name: String,
@@ -130,6 +141,12 @@ pub enum Suffix {
 pub enum Stmt {
     Var(VarDecl),
     Assign(AssignStmt),
+    IndexAssign {
+        collection: Spanned<Expr>,
+        index: Spanned<Expr>,
+        expr: Spanned<Expr>,
+        span: Span,
+    },
     Expr(Spanned<Expr>),
     If {
         cond: Spanned<Expr>,
@@ -140,6 +157,14 @@ pub enum Stmt {
         cond: Spanned<Expr>,
         body: Vec<Spanned<Stmt>>,
     },
+    Unsafe {
+        body: Vec<Spanned<Stmt>>,
+        span: Span,
+    }, // body runs with `unsafe_depth > 0` (`@raw` / `@free`)
+    Defer {
+        expr: Spanned<Expr>,
+        span: Span,
+    }, // queue `expr`; LIFO at scope exit before auto `__drop`
     Return(Option<Spanned<Expr>>),
     EnumItem(Enum),
 }

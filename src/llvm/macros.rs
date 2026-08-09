@@ -1,19 +1,19 @@
-use inkwell::{
-    AddressSpace,
-    values::{BasicValueEnum, PointerValue, ValueKind},
-};
-use crate::{
-    front::ast,
-    front::error::{SprsError, ErrorCode, ErrorCategory, Location},
-    front::span::{Span, Spanned},
-    llvm::compiler::{Compiler, StoreTag, StoreValue, Tag},
-};
+use crate::front::label_name::LabelName;
 use crate::llvm::data_structures::create_unit;
 use crate::llvm::value::{
     build_label_is_error, create_entry_block_alloca, create_error_label_from_str, create_label,
 };
-use crate::front::label_name::LabelName;
 use crate::llvm::variable::{clone_runtime_value, move_variable, var_load_at_init_variable};
+use crate::{
+    front::ast,
+    front::error::{ErrorCategory, ErrorCode, Location, SprsError},
+    front::span::{Span, Spanned},
+    llvm::compiler::{Compiler, StoreTag, StoreValue, Tag},
+};
+use inkwell::{
+    AddressSpace,
+    values::{BasicValueEnum, PointerValue, ValueKind},
+};
 
 pub fn call_builtin_macro_println<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
@@ -41,7 +41,15 @@ pub fn call_builtin_macro_list_push<'ctx>(
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
     if args.len() != 2 {
-        return Err(SprsError::Semantic { code: ErrorCode { category: ErrorCategory::Semantic, number: 13 }, location: Location::new(String::new(), Span::DUMMY), message: "list_push expects 2 arguments".to_string(), help: None });
+        return Err(SprsError::Semantic {
+            code: ErrorCode {
+                category: ErrorCategory::Semantic,
+                number: 13,
+            },
+            location: Location::new(String::new(), Span::DUMMY),
+            message: "list_push expects 2 arguments".to_string(),
+            help: None,
+        });
     }
     let list_ptr = self_compiler
         .compile_expr(&args[0], module)?
@@ -56,11 +64,7 @@ pub fn call_builtin_macro_list_push<'ctx>(
 
         if src.always_clone {
             (
-                clone_runtime_value(
-                    self_compiler,
-                    src.value.into_pointer_value(),
-                    module,
-                )?,
+                clone_runtime_value(self_compiler, src.value.into_pointer_value(), module)?,
                 None,
             )
         } else {
@@ -132,13 +136,424 @@ pub fn call_builtin_macro_list_push<'ctx>(
     return Ok(res_ptr.into());
 }
 
+/// @bufLen(buf) — length of a Buffer as Integer (0 for stale / non-Buffer).
+pub fn call_builtin_macro_buf_len<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+    args: &[Spanned<ast::Expr>],
+    module: &inkwell::module::Module<'ctx>,
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
+    if args.len() != 1 {
+        return Err(SprsError::Semantic {
+            code: ErrorCode {
+                category: ErrorCategory::Semantic,
+                number: 13,
+            },
+            location: Location::new(String::new(), Span::DUMMY),
+            message: "bufLen expects 1 argument".to_string(),
+            help: None,
+        });
+    }
+    let buf_ptr = self_compiler
+        .compile_expr(&args[0], module)?
+        .into_pointer_value();
+    let buf_data_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, buf_ptr, 1, "buf_data_ptr")
+        .unwrap();
+    let buf_handle = self_compiler
+        .builder
+        .build_load(self_compiler.context.i64_type(), buf_data_ptr, "buf_handle")
+        .unwrap()
+        .into_int_value();
+
+    let len_fn = self_compiler.get_runtime_fn(module, "__buffer_len")?;
+    let len_val = match self_compiler
+        .builder
+        .build_call(len_fn, &[buf_handle.into()], "buffer_len_call")
+        .unwrap()
+        .try_as_basic_value()
+    {
+        ValueKind::Basic(val) => val.into_int_value(),
+        ValueKind::Instruction(_) => {
+            return Err(SprsError::Internal {
+                message: "__buffer_len returned void".to_string(),
+                location: None,
+            });
+        }
+    };
+
+    let res_ptr = create_entry_block_alloca(self_compiler, "buf_len_res_alloc")?;
+    let res_tag_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, res_ptr, 0, "res_tag_ptr")
+        .unwrap();
+    self_compiler
+        .builder
+        .build_store(
+            res_tag_ptr,
+            self_compiler
+                .context
+                .i32_type()
+                .const_int(Tag::Integer as u64, false),
+        )
+        .unwrap();
+    let res_data_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, res_ptr, 1, "res_data_ptr")
+        .unwrap();
+    self_compiler
+        .builder
+        .build_store(res_data_ptr, len_val)
+        .unwrap();
+
+    Ok(res_ptr.into())
+}
+
+/// @bufGet(buf, i) — read one byte as Integer; OOB / stale → Unit sentinel.
+pub fn call_builtin_macro_buf_get<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+    args: &[Spanned<ast::Expr>],
+    module: &inkwell::module::Module<'ctx>,
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
+    if args.len() != 2 {
+        return Err(SprsError::Semantic {
+            code: ErrorCode {
+                category: ErrorCategory::Semantic,
+                number: 13,
+            },
+            location: Location::new(String::new(), Span::DUMMY),
+            message: "bufGet expects 2 arguments".to_string(),
+            help: None,
+        });
+    }
+    let buf_ptr = self_compiler
+        .compile_expr(&args[0], module)?
+        .into_pointer_value();
+    let buf_data_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, buf_ptr, 1, "buf_data_ptr")
+        .unwrap();
+    let buf_handle = self_compiler
+        .builder
+        .build_load(self_compiler.context.i64_type(), buf_data_ptr, "buf_handle")
+        .unwrap()
+        .into_int_value();
+
+    let idx_ptr = self_compiler
+        .compile_expr(&args[1], module)?
+        .into_pointer_value();
+    let idx_data_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, idx_ptr, 1, "idx_data_ptr")
+        .unwrap();
+    let index_int = self_compiler
+        .builder
+        .build_load(self_compiler.context.i64_type(), idx_data_ptr, "idx_int")
+        .unwrap()
+        .into_int_value();
+
+    let get_fn = self_compiler.get_runtime_fn(module, "__buffer_get")?;
+    let get_call = self_compiler
+        .builder
+        .build_call(
+            get_fn,
+            &[buf_handle.into(), index_int.into()],
+            "buffer_get_call",
+        )
+        .unwrap();
+
+    match get_call.try_as_basic_value() {
+        ValueKind::Basic(val) => {
+            let res_ptr = create_entry_block_alloca(self_compiler, "buf_get_res_alloc")?;
+            self_compiler.builder.build_store(res_ptr, val).unwrap();
+            Ok(res_ptr.into())
+        }
+        ValueKind::Instruction(_) => Err(SprsError::Internal {
+            message: "Expected basic value from __buffer_get".to_string(),
+            location: None,
+        }),
+    }
+}
+
+/// @bufSet(buf, i, v) — write byte `v` (low 8 bits) at index `i`. OOB → no-op.
+pub fn call_builtin_macro_buf_set<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+    args: &[Spanned<ast::Expr>],
+    module: &inkwell::module::Module<'ctx>,
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
+    if args.len() != 3 {
+        return Err(SprsError::Semantic {
+            code: ErrorCode {
+                category: ErrorCategory::Semantic,
+                number: 13,
+            },
+            location: Location::new(String::new(), Span::DUMMY),
+            message: "bufSet expects 3 arguments".to_string(),
+            help: None,
+        });
+    }
+    let buf_ptr = self_compiler
+        .compile_expr(&args[0], module)?
+        .into_pointer_value();
+    let buf_data_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, buf_ptr, 1, "buf_data_ptr")
+        .unwrap();
+    let buf_handle = self_compiler
+        .builder
+        .build_load(self_compiler.context.i64_type(), buf_data_ptr, "buf_handle")
+        .unwrap()
+        .into_int_value();
+
+    let idx_ptr = self_compiler
+        .compile_expr(&args[1], module)?
+        .into_pointer_value();
+    let idx_data_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, idx_ptr, 1, "idx_data_ptr")
+        .unwrap();
+    let index_int = self_compiler
+        .builder
+        .build_load(self_compiler.context.i64_type(), idx_data_ptr, "idx_int")
+        .unwrap()
+        .into_int_value();
+
+    let v_ptr = self_compiler
+        .compile_expr(&args[2], module)?
+        .into_pointer_value();
+    let v_data_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, v_ptr, 1, "v_data_ptr")
+        .unwrap();
+    let v_val = self_compiler
+        .builder
+        .build_load(self_compiler.context.i64_type(), v_data_ptr, "v_int")
+        .unwrap()
+        .into_int_value();
+
+    let set_fn = self_compiler.get_runtime_fn(module, "__buffer_set")?;
+    self_compiler
+        .builder
+        .build_call(
+            set_fn,
+            &[buf_handle.into(), index_int.into(), v_val.into()],
+            "buffer_set_call",
+        )
+        .unwrap();
+
+    let res_ptr = create_entry_block_alloca(self_compiler, "buf_set_res_alloc")?;
+    self_compiler.tag_only_runtime_value_store(res_ptr, Tag::Unit as u64, "unit_res");
+    Ok(res_ptr.into())
+}
+
+/// `@raw(buf)` — move Buffer ownership to a RawPtr. Requires `unsafe`.
+/// Source binding becomes Unit; caller must `@free` the result.
+pub fn call_builtin_macro_raw<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+    args: &[Spanned<ast::Expr>],
+    module: &inkwell::module::Module<'ctx>,
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
+    if self_compiler.unsafe_depth == 0 {
+        return Err(SprsError::Semantic {
+            code: ErrorCode {
+                category: ErrorCategory::Semantic,
+                number: 15,
+            },
+            location: Location::new(
+                String::new(),
+                args.first().map(|a| a.span).unwrap_or(Span::DUMMY),
+            ),
+            message: "`@raw` requires an unsafe block".to_string(),
+            help: Some("wrap the call in `unsafe { ... }`".to_string()),
+        });
+    }
+    if args.len() != 1 {
+        return Err(SprsError::Semantic {
+            code: ErrorCode {
+                category: ErrorCategory::Semantic,
+                number: 13,
+            },
+            location: Location::new(String::new(), Span::DUMMY),
+            message: "@raw expects 1 argument".to_string(),
+            help: None,
+        });
+    }
+    let buf_ptr = self_compiler
+        .compile_expr(&args[0], module)?
+        .into_pointer_value();
+    let buf_data_ptr = self_compiler
+        .builder
+        .build_struct_gep(
+            self_compiler.runtime_value_type,
+            buf_ptr,
+            1,
+            "raw_buf_data_ptr",
+        )
+        .unwrap();
+    let buf_handle = self_compiler
+        .builder
+        .build_load(
+            self_compiler.context.i64_type(),
+            buf_data_ptr,
+            "raw_buf_handle",
+        )
+        .unwrap()
+        .into_int_value();
+
+    let into_raw_fn = self_compiler.get_runtime_fn(module, "__buffer_into_raw")?;
+    let ptr = match self_compiler
+        .builder
+        .build_call(into_raw_fn, &[buf_handle.into()], "buffer_into_raw_call")
+        .unwrap()
+        .try_as_basic_value()
+    {
+        ValueKind::Basic(val) => val.into_int_value(),
+        ValueKind::Instruction(_) => {
+            return Err(SprsError::Internal {
+                message: "__buffer_into_raw returned void".to_string(),
+                location: None,
+            });
+        }
+    };
+
+    if let ast::Expr::Var(name) = &args[0].node {
+        if let Some(binding) = self_compiler.get_variables(name) {
+            let src_ptr = binding.value.into_pointer_value();
+            let tag_ptr = self_compiler
+                .builder
+                .build_struct_gep(
+                    self_compiler.runtime_value_type,
+                    src_ptr,
+                    0,
+                    "raw_src_tag_ptr",
+                )
+                .unwrap();
+            // Invalidate the source binding so auto-drop / destroy cannot double-free.
+            self_compiler
+                .builder
+                .build_store(
+                    tag_ptr,
+                    self_compiler
+                        .context
+                        .i32_type()
+                        .const_int(Tag::Unit as u64, false),
+                )
+                .unwrap();
+        }
+    }
+
+    let res_ptr = create_entry_block_alloca(self_compiler, "raw_ptr_res_alloc")?;
+    self_compiler.build_runtime_value_store(
+        res_ptr,
+        StoreTag::Int(Tag::RawPtr as u64),
+        StoreValue::Int(ptr),
+        "raw_ptr_res_store",
+    );
+    Ok(res_ptr.into())
+}
+
+/// `@free(p)` — release a RawPtr from `@raw`. Requires `unsafe`.
+/// Null/unknown are no-ops; source binding becomes Unit.
+pub fn call_builtin_macro_free<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+    args: &[Spanned<ast::Expr>],
+    module: &inkwell::module::Module<'ctx>,
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
+    if self_compiler.unsafe_depth == 0 {
+        return Err(SprsError::Semantic {
+            code: ErrorCode {
+                category: ErrorCategory::Semantic,
+                number: 15,
+            },
+            location: Location::new(
+                String::new(),
+                args.first().map(|a| a.span).unwrap_or(Span::DUMMY),
+            ),
+            message: "`@free` requires an unsafe block".to_string(),
+            help: Some("wrap the call in `unsafe { ... }`".to_string()),
+        });
+    }
+    if args.len() != 1 {
+        return Err(SprsError::Semantic {
+            code: ErrorCode {
+                category: ErrorCategory::Semantic,
+                number: 13,
+            },
+            location: Location::new(String::new(), Span::DUMMY),
+            message: "@free expects 1 argument".to_string(),
+            help: None,
+        });
+    }
+    let p_ptr = self_compiler
+        .compile_expr(&args[0], module)?
+        .into_pointer_value();
+    let p_data_ptr = self_compiler
+        .builder
+        .build_struct_gep(
+            self_compiler.runtime_value_type,
+            p_ptr,
+            1,
+            "free_p_data_ptr",
+        )
+        .unwrap();
+    let p_val = self_compiler
+        .builder
+        .build_load(self_compiler.context.i64_type(), p_data_ptr, "free_p")
+        .unwrap()
+        .into_int_value();
+
+    let free_fn = self_compiler.get_runtime_fn(module, "__raw_free")?;
+    self_compiler
+        .builder
+        .build_call(free_fn, &[p_val.into()], "raw_free_call")
+        .unwrap();
+
+    if let ast::Expr::Var(name) = &args[0].node {
+        if let Some(binding) = self_compiler.get_variables(name) {
+            let src_ptr = binding.value.into_pointer_value();
+            let tag_ptr = self_compiler
+                .builder
+                .build_struct_gep(
+                    self_compiler.runtime_value_type,
+                    src_ptr,
+                    0,
+                    "free_src_tag_ptr",
+                )
+                .unwrap();
+            // Prevent reuse of a freed RawPtr binding.
+            self_compiler
+                .builder
+                .build_store(
+                    tag_ptr,
+                    self_compiler
+                        .context
+                        .i32_type()
+                        .const_int(Tag::Unit as u64, false),
+                )
+                .unwrap();
+        }
+    }
+
+    let res_ptr = create_entry_block_alloca(self_compiler, "free_res_alloc")?;
+    self_compiler.tag_only_runtime_value_store(res_ptr, Tag::Unit as u64, "free_unit");
+    Ok(res_ptr.into())
+}
+
 pub fn call_builtin_macro_clone<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
     args: &Vec<Spanned<ast::Expr>>,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
     if args.len() != 1 {
-        return Err(SprsError::Semantic { code: ErrorCode { category: ErrorCategory::Semantic, number: 13 }, location: Location::new(String::new(), Span::DUMMY), message: "@clone expects 1 argument".to_string(), help: None });
+        return Err(SprsError::Semantic {
+            code: ErrorCode {
+                category: ErrorCategory::Semantic,
+                number: 13,
+            },
+            location: Location::new(String::new(), Span::DUMMY),
+            message: "@clone expects 1 argument".to_string(),
+            help: None,
+        });
     }
     let arg_ptr = self_compiler
         .compile_expr(&args[0], module)?
@@ -216,7 +631,15 @@ pub fn call_builtin_macro_cast<'ctx>(
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
     if args.len() != 2 {
-        return Err(SprsError::Semantic { code: ErrorCode { category: ErrorCategory::Semantic, number: 13 }, location: Location::new(String::new(), Span::DUMMY), message: "@cast expects 2 arguments".to_string(), help: None });
+        return Err(SprsError::Semantic {
+            code: ErrorCode {
+                category: ErrorCategory::Semantic,
+                number: 13,
+            },
+            location: Location::new(String::new(), Span::DUMMY),
+            message: "@cast expects 2 arguments".to_string(),
+            help: None,
+        });
     }
 
     let value_ptr = self_compiler
@@ -239,7 +662,18 @@ pub fn call_builtin_macro_cast<'ctx>(
         ast::Expr::TypeF32 => "fp32",
         ast::Expr::TypeF64 => "fp64",
         _ => {
-            return Err(SprsError::Semantic { code: ErrorCode { category: ErrorCategory::Semantic, number: 8 }, location: Location::new(String::new(), target_type_expr.span), message: format!("@cast second argument must be a type identifier : {:?}", target_type_expr), help: None });
+            return Err(SprsError::Semantic {
+                code: ErrorCode {
+                    category: ErrorCategory::Semantic,
+                    number: 8,
+                },
+                location: Location::new(String::new(), target_type_expr.span),
+                message: format!(
+                    "@cast second argument must be a type identifier : {:?}",
+                    target_type_expr
+                ),
+                help: None,
+            });
         }
     };
 
@@ -327,7 +761,9 @@ pub fn call_builtin_macro_cast<'ctx>(
     );
 
     self_compiler.builder.position_at_end(input_error_bb);
-    let _ = self_compiler.builder.build_unconditional_branch(final_merge);
+    let _ = self_compiler
+        .builder
+        .build_unconditional_branch(final_merge);
 
     self_compiler.builder.position_at_end(cast_normal_bb);
 
@@ -357,12 +793,11 @@ pub fn call_builtin_macro_cast<'ctx>(
 
     // error branch: unknown tag → error label
     self_compiler.builder.position_at_end(error_bb);
-    let error_ptr = create_error_label_from_str(
-        self_compiler,
-        "TypeError: unexpected tag in @cast",
-        module,
-    )?;
-    let _ = self_compiler.builder.build_unconditional_branch(final_merge);
+    let error_ptr =
+        create_error_label_from_str(self_compiler, "TypeError: unexpected tag in @cast", module)?;
+    let _ = self_compiler
+        .builder
+        .build_unconditional_branch(final_merge);
 
     // Integer -> f64
     self_compiler.builder.position_at_end(bb_int);
@@ -696,7 +1131,15 @@ pub fn call_builtin_macro_cast<'ctx>(
             (new_tag, new_data)
         }
         _ => {
-            return Err(SprsError::Semantic { code: ErrorCode { category: ErrorCategory::Semantic, number: 9 }, location: Location::new(String::new(), Span::DUMMY), message: format!("Unsupported target type for @cast: {:?}", target_type), help: None });
+            return Err(SprsError::Semantic {
+                code: ErrorCode {
+                    category: ErrorCategory::Semantic,
+                    number: 9,
+                },
+                location: Location::new(String::new(), Span::DUMMY),
+                message: format!("Unsupported target type for @cast: {:?}", target_type),
+                help: None,
+            });
         }
     };
 
@@ -708,7 +1151,9 @@ pub fn call_builtin_macro_cast<'ctx>(
         "cast_res",
     );
     let success_end_bb = self_compiler.builder.get_insert_block().unwrap();
-    let _ = self_compiler.builder.build_unconditional_branch(final_merge);
+    let _ = self_compiler
+        .builder
+        .build_unconditional_branch(final_merge);
 
     self_compiler.builder.position_at_end(final_merge);
     let final_phi = self_compiler
@@ -732,7 +1177,15 @@ pub fn call_builtin_macro_lshift<'ctx>(
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
     if args.len() != 2 {
-        return Err(SprsError::Semantic { code: ErrorCode { category: ErrorCategory::Semantic, number: 13 }, location: Location::new(String::new(), Span::DUMMY), message: "@lshift expects 2 arguments (value, shift_amount)".to_string(), help: None });
+        return Err(SprsError::Semantic {
+            code: ErrorCode {
+                category: ErrorCategory::Semantic,
+                number: 13,
+            },
+            location: Location::new(String::new(), Span::DUMMY),
+            message: "@lshift expects 2 arguments (value, shift_amount)".to_string(),
+            help: None,
+        });
     }
     shift_impl(self_compiler, args, module, ShiftDir::Left)
 }
@@ -743,7 +1196,15 @@ pub fn call_builtin_macro_rshift<'ctx>(
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
     if args.len() != 2 {
-        return Err(SprsError::Semantic { code: ErrorCode { category: ErrorCategory::Semantic, number: 13 }, location: Location::new(String::new(), Span::DUMMY), message: "@rshift expects 2 arguments (value, shift_amount)".to_string(), help: None });
+        return Err(SprsError::Semantic {
+            code: ErrorCode {
+                category: ErrorCategory::Semantic,
+                number: 13,
+            },
+            location: Location::new(String::new(), Span::DUMMY),
+            message: "@rshift expects 2 arguments (value, shift_amount)".to_string(),
+            help: None,
+        });
     }
     shift_impl(self_compiler, args, module, ShiftDir::Right)
 }
@@ -776,7 +1237,11 @@ fn shift_impl<'ctx>(
         .unwrap();
     let value_tag = self_compiler
         .builder
-        .build_load(self_compiler.context.i32_type(), value_tag_ptr, "lshift_val_tag")
+        .build_load(
+            self_compiler.context.i32_type(),
+            value_tag_ptr,
+            "lshift_val_tag",
+        )
         .unwrap()
         .into_int_value();
     let value_data_ptr = self_compiler
@@ -796,7 +1261,11 @@ fn shift_impl<'ctx>(
         .unwrap();
     let shift_tag = self_compiler
         .builder
-        .build_load(self_compiler.context.i32_type(), shift_tag_ptr, "shift_amt_tag")
+        .build_load(
+            self_compiler.context.i32_type(),
+            shift_tag_ptr,
+            "shift_amt_tag",
+        )
         .unwrap()
         .into_int_value();
     let shift_data_ptr = self_compiler
@@ -848,7 +1317,9 @@ fn shift_impl<'ctx>(
     );
 
     self_compiler.builder.position_at_end(val_error_bb);
-    let _ = self_compiler.builder.build_unconditional_branch(final_merge);
+    let _ = self_compiler
+        .builder
+        .build_unconditional_branch(final_merge);
 
     self_compiler.builder.position_at_end(check_shift_error_bb);
     let shift_is_error = build_label_is_error(self_compiler, shift_tag, shift_amt, module)?;
@@ -865,7 +1336,9 @@ fn shift_impl<'ctx>(
     );
 
     self_compiler.builder.position_at_end(shift_error_bb);
-    let _ = self_compiler.builder.build_unconditional_branch(final_merge);
+    let _ = self_compiler
+        .builder
+        .build_unconditional_branch(final_merge);
 
     self_compiler.builder.position_at_end(shift_normal_bb);
 
@@ -944,10 +1417,7 @@ fn shift_impl<'ctx>(
         .builder
         .build_phi(i64_type, "shift_phi")
         .unwrap();
-    phi.add_incoming(&[
-        (&signed_result, bb_signed),
-        (&unsigned_result, bb_unsigned),
-    ]);
+    phi.add_incoming(&[(&signed_result, bb_signed), (&unsigned_result, bb_unsigned)]);
     let shifted = phi.as_basic_value().into_int_value();
 
     let result_ptr = create_entry_block_alloca(self_compiler, "shift_res")?;
@@ -986,7 +1456,15 @@ pub fn call_builtin_macro_not<'ctx>(
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
     if args.len() != 1 {
-        return Err(SprsError::Semantic { code: ErrorCode { category: ErrorCategory::Semantic, number: 13 }, location: Location::new(String::new(), Span::DUMMY), message: "@not expects 1 argument".to_string(), help: None });
+        return Err(SprsError::Semantic {
+            code: ErrorCode {
+                category: ErrorCategory::Semantic,
+                number: 13,
+            },
+            location: Location::new(String::new(), Span::DUMMY),
+            message: "@not expects 1 argument".to_string(),
+            help: None,
+        });
     }
 
     let value_ptr = self_compiler
@@ -1009,12 +1487,7 @@ pub fn call_builtin_macro_not<'ctx>(
     let zero = i64_type.const_int(0, false);
     let negated = self_compiler
         .builder
-        .build_int_compare(
-            inkwell::IntPredicate::EQ,
-            data,
-            zero,
-            "not_result",
-        )
+        .build_int_compare(inkwell::IntPredicate::EQ, data, zero, "not_result")
         .unwrap();
 
     let result_ptr = create_entry_block_alloca(self_compiler, "not_res")?;
@@ -1040,20 +1513,30 @@ pub fn call_builtin_macro_is_error<'ctx>(
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
     if args.len() != 1 {
         return Err(SprsError::Semantic {
-            code: ErrorCode { category: ErrorCategory::Semantic, number: 3 },
+            code: ErrorCode {
+                category: ErrorCategory::Semantic,
+                number: 3,
+            },
             location: Location::new(String::new(), Span::DUMMY),
             message: "@is_error expects exactly 1 argument".to_string(),
             help: None,
         });
     }
 
-    let val_ptr = self_compiler.compile_expr(&args[0], module)?.into_pointer_value();
+    let val_ptr = self_compiler
+        .compile_expr(&args[0], module)?
+        .into_pointer_value();
 
     // Delegate to `__label_is_error(tag, data)`: the data handle alone can
     // false-positive on immediate integers, so both fields are loaded.
     let tag_ptr = self_compiler
         .builder
-        .build_struct_gep(self_compiler.runtime_value_type, val_ptr, 0, "is_error_tag_ptr")
+        .build_struct_gep(
+            self_compiler.runtime_value_type,
+            val_ptr,
+            0,
+            "is_error_tag_ptr",
+        )
         .unwrap();
     let tag_val = self_compiler
         .builder
@@ -1062,7 +1545,12 @@ pub fn call_builtin_macro_is_error<'ctx>(
         .into_int_value();
     let data_ptr = self_compiler
         .builder
-        .build_struct_gep(self_compiler.runtime_value_type, val_ptr, 1, "is_error_data_ptr")
+        .build_struct_gep(
+            self_compiler.runtime_value_type,
+            val_ptr,
+            1,
+            "is_error_data_ptr",
+        )
         .unwrap();
     let data_val = self_compiler
         .builder
@@ -1098,18 +1586,28 @@ pub fn call_builtin_macro_error_message<'ctx>(
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
     if args.len() != 1 {
         return Err(SprsError::Semantic {
-            code: ErrorCode { category: ErrorCategory::Semantic, number: 3 },
+            code: ErrorCode {
+                category: ErrorCategory::Semantic,
+                number: 3,
+            },
             location: Location::new(String::new(), Span::DUMMY),
             message: "@error_message expects exactly 1 argument".to_string(),
             help: None,
         });
     }
 
-    let val_ptr = self_compiler.compile_expr(&args[0], module)?.into_pointer_value();
+    let val_ptr = self_compiler
+        .compile_expr(&args[0], module)?
+        .into_pointer_value();
 
     let data_ptr = self_compiler
         .builder
-        .build_struct_gep(self_compiler.runtime_value_type, val_ptr, 1, "error_msg_data_ptr")
+        .build_struct_gep(
+            self_compiler.runtime_value_type,
+            val_ptr,
+            1,
+            "error_msg_data_ptr",
+        )
         .unwrap();
     let data_val = self_compiler
         .builder
@@ -1150,20 +1648,46 @@ pub fn call_builtin_macro_attach<'ctx>(
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
     if args.len() != 2 {
-        return Err(SprsError::Semantic { code: ErrorCode { category: ErrorCategory::Semantic, number: 3 }, location: Location::new(String::new(), Span::DUMMY), message: "@attach expects exactly 2 arguments: expression and label".to_string(), help: None });
+        return Err(SprsError::Semantic {
+            code: ErrorCode {
+                category: ErrorCategory::Semantic,
+                number: 3,
+            },
+            location: Location::new(String::new(), Span::DUMMY),
+            message: "@attach expects exactly 2 arguments: expression and label".to_string(),
+            help: None,
+        });
     }
     let label_name = match &args[1].node {
         ast::Expr::Label(crate::front::label_name::LabelName::Static(name), None) => name.clone(),
         _ => {
-            return Err(SprsError::Semantic { code: ErrorCode { category: ErrorCategory::Semantic, number: 3 }, location: Location::new(String::new(), args[1].span), message: "@attach second argument must be a label such as :name".to_string(), help: None });
+            return Err(SprsError::Semantic {
+                code: ErrorCode {
+                    category: ErrorCategory::Semantic,
+                    number: 3,
+                },
+                location: Location::new(String::new(), args[1].span),
+                message: "@attach second argument must be a label such as :name".to_string(),
+                help: None,
+            });
         }
     };
 
-    let value_ptr = self_compiler.compile_expr(&args[0], module)?.into_pointer_value();
+    let value_ptr = self_compiler
+        .compile_expr(&args[0], module)?
+        .into_pointer_value();
     let captured_ptr = clone_runtime_value(self_compiler, value_ptr, module)?;
-    if let Some(previous) = self_compiler.attachments.insert(label_name.clone(), captured_ptr) {
+    if let Some(previous) = self_compiler
+        .attachments
+        .insert(label_name.clone(), captured_ptr)
+    {
         let drop_fn = self_compiler.get_runtime_fn(module, "__drop")?;
-        crate::llvm::variable::drop_var(self_compiler, previous, drop_fn, &format!("attach_{}", label_name));
+        crate::llvm::variable::drop_var(
+            self_compiler,
+            previous,
+            drop_fn,
+            &format!("attach_{}", label_name),
+        );
     }
     create_unit(self_compiler)
 }
@@ -1177,7 +1701,10 @@ pub fn call_builtin_macro_label_is<'ctx>(
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
     if args.len() != 2 {
         return Err(SprsError::Semantic {
-            code: ErrorCode { category: ErrorCategory::Semantic, number: 3 },
+            code: ErrorCode {
+                category: ErrorCategory::Semantic,
+                number: 3,
+            },
             location: Location::new(String::new(), Span::DUMMY),
             message: "@label_is expects exactly 2 arguments: value and label".to_string(),
             help: None,
@@ -1188,18 +1715,29 @@ pub fn call_builtin_macro_label_is<'ctx>(
         ast::Expr::Label(name, None) => name,
         _ => {
             return Err(SprsError::Semantic {
-                code: ErrorCode { category: ErrorCategory::Semantic, number: 3 },
+                code: ErrorCode {
+                    category: ErrorCategory::Semantic,
+                    number: 3,
+                },
                 location: Location::new(String::new(), args[1].span),
-                message: "@label_is second argument must be a label such as :name or :\"{i}-item\"".to_string(),
+                message: "@label_is second argument must be a label such as :name or :\"{i}-item\""
+                    .to_string(),
                 help: None,
             });
         }
     };
 
-    let val_ptr = self_compiler.compile_expr(&args[0], module)?.into_pointer_value();
+    let val_ptr = self_compiler
+        .compile_expr(&args[0], module)?
+        .into_pointer_value();
     let data_ptr = self_compiler
         .builder
-        .build_struct_gep(self_compiler.runtime_value_type, val_ptr, 1, "label_is_data_ptr")
+        .build_struct_gep(
+            self_compiler.runtime_value_type,
+            val_ptr,
+            1,
+            "label_is_data_ptr",
+        )
         .unwrap();
     let data_val = self_compiler
         .builder
@@ -1246,8 +1784,8 @@ pub fn call_builtin_macro_label_is<'ctx>(
         }
         LabelName::Dynamic(_) => {
             // Evaluate expected dynamic label, compare names, then drop the temp label.
-            let expected_ptr = create_label(self_compiler, expected_name, None, module)?
-                .into_pointer_value();
+            let expected_ptr =
+                create_label(self_compiler, expected_name, None, module)?.into_pointer_value();
             let expected_data_ptr = self_compiler
                 .builder
                 .build_struct_gep(
@@ -1286,7 +1824,12 @@ pub fn call_builtin_macro_label_is<'ctx>(
                 }
             };
             let drop_fn = self_compiler.get_runtime_fn(module, "__drop")?;
-            crate::llvm::variable::drop_var(self_compiler, expected_ptr, drop_fn, "label_is_expected");
+            crate::llvm::variable::drop_var(
+                self_compiler,
+                expected_ptr,
+                drop_fn,
+                "label_is_expected",
+            );
             cmp
         }
     };
@@ -1314,21 +1857,35 @@ pub fn call_builtin_macro_label_payload<'ctx>(
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
     if args.len() != 1 {
         return Err(SprsError::Semantic {
-            code: ErrorCode { category: ErrorCategory::Semantic, number: 3 },
+            code: ErrorCode {
+                category: ErrorCategory::Semantic,
+                number: 3,
+            },
             location: Location::new(String::new(), Span::DUMMY),
             message: "@label_payload expects exactly 1 argument".to_string(),
             help: None,
         });
     }
 
-    let val_ptr = self_compiler.compile_expr(&args[0], module)?.into_pointer_value();
+    let val_ptr = self_compiler
+        .compile_expr(&args[0], module)?
+        .into_pointer_value();
     let data_ptr = self_compiler
         .builder
-        .build_struct_gep(self_compiler.runtime_value_type, val_ptr, 1, "label_payload_data_ptr")
+        .build_struct_gep(
+            self_compiler.runtime_value_type,
+            val_ptr,
+            1,
+            "label_payload_data_ptr",
+        )
         .unwrap();
     let data_val = self_compiler
         .builder
-        .build_load(self_compiler.context.i64_type(), data_ptr, "label_payload_data")
+        .build_load(
+            self_compiler.context.i64_type(),
+            data_ptr,
+            "label_payload_data",
+        )
         .unwrap()
         .into_int_value();
 
@@ -1348,7 +1905,10 @@ pub fn call_builtin_macro_label_payload<'ctx>(
     };
 
     let res_ptr = create_entry_block_alloca(self_compiler, "label_payload_res")?;
-    self_compiler.builder.build_store(res_ptr, result_val).unwrap();
+    self_compiler
+        .builder
+        .build_store(res_ptr, result_val)
+        .unwrap();
     Ok(res_ptr.into())
 }
 
@@ -1360,21 +1920,35 @@ pub fn call_builtin_macro_label_name<'ctx>(
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
     if args.len() != 1 {
         return Err(SprsError::Semantic {
-            code: ErrorCode { category: ErrorCategory::Semantic, number: 3 },
+            code: ErrorCode {
+                category: ErrorCategory::Semantic,
+                number: 3,
+            },
             location: Location::new(String::new(), Span::DUMMY),
             message: "@label_name expects exactly 1 argument".to_string(),
             help: None,
         });
     }
 
-    let val_ptr = self_compiler.compile_expr(&args[0], module)?.into_pointer_value();
+    let val_ptr = self_compiler
+        .compile_expr(&args[0], module)?
+        .into_pointer_value();
     let data_ptr = self_compiler
         .builder
-        .build_struct_gep(self_compiler.runtime_value_type, val_ptr, 1, "label_name_data_ptr")
+        .build_struct_gep(
+            self_compiler.runtime_value_type,
+            val_ptr,
+            1,
+            "label_name_data_ptr",
+        )
         .unwrap();
     let data_val = self_compiler
         .builder
-        .build_load(self_compiler.context.i64_type(), data_ptr, "label_name_data")
+        .build_load(
+            self_compiler.context.i64_type(),
+            data_ptr,
+            "label_name_data",
+        )
         .unwrap()
         .into_int_value();
 
@@ -1413,7 +1987,10 @@ pub fn call_builtin_macro_error<'ctx>(
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
     if args.len() != 1 {
         return Err(SprsError::Semantic {
-            code: ErrorCode { category: ErrorCategory::Semantic, number: 3 },
+            code: ErrorCode {
+                category: ErrorCategory::Semantic,
+                number: 3,
+            },
             location: Location::new(String::new(), Span::DUMMY),
             message: "@error expects exactly 1 argument: reason".to_string(),
             help: None,

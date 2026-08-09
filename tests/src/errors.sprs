@@ -25,7 +25,7 @@ pub fn propagate_error() >> err {
     return error_value; # unreachable when error propagates
 }
 
-# Test: label reason (詳細表示: non-string payload renders via format_sprs_value)
+# Test: label reason (non-string payload renders via format_sprs_value)
 pub fn label_reason_message() >> str {
     return @error_message(@error(:enoent));
 }
@@ -59,4 +59,14 @@ pub fn mod_zero_is_error() >> bool {
 pub fn not_an_error() >> bool {
     var normal_value = 42;
     return @is_error(normal_value);
+}
+
+# Test: ? does not propagate ordinary labels such as :ok
+fn make_ok() >> Label(:ok, int) {
+    return {:ok, 7};
+}
+
+pub fn question_keeps_ok() >> int {
+    var ok_value = make_ok()?;
+    return @label_payload(ok_value);
 }

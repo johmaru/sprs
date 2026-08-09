@@ -16,7 +16,7 @@ pub fn create_if_condition<'ctx>(
     then_blk: &Vec<Spanned<ast::Stmt>>,
     else_blk: &Option<Vec<Spanned<ast::Stmt>>>,
     module: &inkwell::module::Module<'ctx>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), SprsError> {
     let parent_fn = self_compiler
         .builder
         .get_insert_block()
@@ -99,7 +99,7 @@ pub fn create_while_condition<'ctx>(
     cond: &Spanned<ast::Expr>,
     body: &Vec<Spanned<ast::Stmt>>,
     module: &inkwell::module::Module<'ctx>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), SprsError> {
     let parent_fn = self_compiler
         .builder
         .get_insert_block()

@@ -63,11 +63,17 @@ pub struct Compiler<'ctx> {
     pub string_counter: usize,
     pub malloc_type: inkwell::types::FunctionType<'ctx>,
     pub source_path: String,
+    /// Absolute/relative path of the module currently being compiled.
+    /// Used for type/semantic error locations (was previously left empty).
+    pub current_file: String,
     pub struct_defs: HashMap<String, StructDef<'ctx>>, // struct name -> struct definition
     pub enum_names: HashSet<String>,
     pub sources: HashMap<String, String>, // module name → source text
     /// Values captured by @attach within the current function.
     pub attachments: HashMap<String, PointerValue<'ctx>>,
+    /// Nesting depth of `unsafe { ... }` blocks in the current function.
+    /// `@raw` / `@free` are gated on this being > 0.
+    pub unsafe_depth: u32,
 }
 
 pub enum StoreTag<'ctx> {
@@ -125,7 +131,10 @@ impl<'ctx> Compiler<'ctx> {
 
         let data_val = match value {
             StoreValue::Int(stored_value) => stored_value,
-            StoreValue::Float(float_value) => self.context.i64_type().const_int(float_value.to_bits(), false),
+            StoreValue::Float(float_value) => self
+                .context
+                .i64_type()
+                .const_int(float_value.to_bits(), false),
             StoreValue::Ptr(pointer_value) => self
                 .builder
                 .build_ptr_to_int(pointer_value, self.context.i64_type(), "ptr_to_int")
@@ -277,6 +286,8 @@ pub enum Tag {
     Struct = 8,
     // 9 was the legacy Error tag; removed in Phase 3 Step 3 (left unused).
     Label = 10,
+    Buffer = 11,
+    RawPtr = 12, // bare address in `data`; not a slab handle
 
     // System types
     Int8 = 100,
@@ -313,8 +324,9 @@ impl Tag {
             6 => Some(Tag::Unit),
             7 => Some(Tag::Enum),
             8 => Some(Tag::Struct),
-            // 9 is the legacy Error tag (removed in Phase 3 Step 3); no Tag maps to it.
             10 => Some(Tag::Label),
+            11 => Some(Tag::Buffer),
+            12 => Some(Tag::RawPtr),
             100 => Some(Tag::Int8),
             101 => Some(Tag::Uint8),
             102 => Some(Tag::Int16),
@@ -337,6 +349,8 @@ pub(crate) const LINUX_STR: &str = "Linux";
 pub struct Scope<'ctx> {
     pub variables: HashMap<String, VarBinding<'ctx>>,
     pub var_name: Vec<String>,
+    /// `defer <expr>;` queue; run LIFO at scope exit, before variable `__drop`.
+    pub deferred: Vec<Spanned<ast::Expr>>,
 }
 
 impl<'ctx> Scope<'ctx> {
@@ -344,6 +358,7 @@ impl<'ctx> Scope<'ctx> {
         Scope {
             variables: HashMap::new(),
             var_name: Vec::new(),
+            deferred: Vec::new(),
         }
     }
 }
@@ -376,11 +391,17 @@ impl<'ctx> Compiler<'ctx> {
             string_counter: 0,
             malloc_type,
             source_path,
+            current_file: String::new(),
             struct_defs: HashMap::new(),
             enum_names: HashSet::new(),
             sources: HashMap::new(),
             attachments: HashMap::new(),
+            unsafe_depth: 0,
         }
+    }
+
+    pub(crate) fn location(&self, span: crate::front::span::Span) -> Location {
+        Location::new(self.current_file.clone(), span)
     }
 
     pub(crate) fn enter_scope(&mut self) {
@@ -388,7 +409,7 @@ impl<'ctx> Compiler<'ctx> {
     }
 
     pub(crate) fn exit_scope(&mut self, module: &Module<'ctx>) -> Result<(), SprsError> {
-        let scope = self.scopes.pop().unwrap();
+        let mut scope = self.scopes.pop().unwrap();
 
         if self
             .builder
@@ -398,6 +419,12 @@ impl<'ctx> Compiler<'ctx> {
             .is_none()
         {
             let drop_fn = self.get_runtime_fn(module, "__drop")?;
+
+            // Take deferred first: compile_expr needs &mut self, and must run before drops.
+            let deferred = std::mem::take(&mut scope.deferred);
+            for expr in deferred.iter().rev() {
+                self.compile_expr(expr, module)?;
+            }
 
             for name in scope.var_name.iter().rev() {
                 if let Some(binding) = scope.variables.get(name) {
@@ -448,7 +475,6 @@ impl<'ctx> Compiler<'ctx> {
         }
     }
 
-    /// Update the static type of an existing binding (e.g. after `ambi` reassignment).
     pub fn set_variable_type(&mut self, name: &str, ty: Type) {
         for scope in self.scopes.iter_mut().rev() {
             if let Some(var) = scope.variables.get_mut(name) {
@@ -467,20 +493,30 @@ impl<'ctx> Compiler<'ctx> {
     pub(crate) fn emit_drop_for_return(&mut self, module: &Module<'ctx>) -> Result<(), SprsError> {
         let drop_fn = self.get_runtime_fn(module, "__drop")?;
 
-        let mut vars_to_drop: Vec<(PointerValue<'ctx>, String)> = Vec::new();
-
-        for scope in self.scopes.iter().skip(1).rev() {
+        let mut scope_work: Vec<(Vec<Spanned<ast::Expr>>, Vec<(PointerValue<'ctx>, String)>)> =
+            Vec::new();
+        // skip(1): function-arg scope is popped separately; take deferred/vars so
+        // compile_expr does not borrow `scopes` while mutating.
+        for scope in self.scopes.iter_mut().skip(1) {
+            let deferred = std::mem::take(&mut scope.deferred);
+            let mut vars = Vec::new();
             for name in scope.var_name.iter().rev() {
                 if let Some(binding) = scope.variables.get(name) {
                     if binding.value.is_pointer_value() {
-                        vars_to_drop.push((binding.value.into_pointer_value(), name.clone()));
+                        vars.push((binding.value.into_pointer_value(), name.clone()));
                     }
                 }
             }
+            scope_work.push((deferred, vars));
         }
 
-        for (ptr, var_name) in vars_to_drop.into_iter() {
-            builder_helper::drop_var(self, ptr, drop_fn, &var_name);
+        for (deferred, vars) in scope_work.into_iter().rev() {
+            for expr in deferred.iter().rev() {
+                self.compile_expr(expr, module)?;
+            }
+            for (ptr, var_name) in vars.into_iter() {
+                builder_helper::drop_var(self, ptr, drop_fn, &var_name);
+            }
         }
         self.emit_drop_for_attachments(module)?;
         Ok(())
@@ -515,14 +551,18 @@ impl<'ctx> Compiler<'ctx> {
                     | Type::List
                     | Type::Range
                     | Type::Struct(_)
-                    | Type::Label => self.runtime_value_type.into(),
+                    | Type::Label
+                    | Type::Buffer
+                    | Type::RawPtr => self.runtime_value_type.into(),
                     Type::Int => self.context.i64_type().into(),
                     Type::Str => self.context.ptr_type(AddressSpace::default()).into(),
                     Type::Float => self.context.f64_type().into(),
                     Type::Bool => self.context.bool_type().into(),
                     Type::Enum(name) => self.context.i64_type().into(),
                     // App / Param / Atom are compile-time only; erase to a runtime slot.
-                    Type::App(_, _) | Type::Param(_) | Type::Atom(_) => self.runtime_value_type.into(),
+                    Type::App(_, _) | Type::Param(_) | Type::Atom(_) => {
+                        self.runtime_value_type.into()
+                    }
                     Type::TypeI8 => self.context.i8_type().into(),
                     Type::TypeU8 => self.context.i8_type().into(),
                     Type::TypeI16 => self.context.i16_type().into(),
@@ -621,6 +661,27 @@ impl<'ctx> Compiler<'ctx> {
                 ],
                 false,
             ),
+            // Buffer slot construction (fixed-size byte array via `new(n)`).
+            "__buffer_new" => i64_type.fn_type(&[i64_type.into()], false),
+            "__buffer_len" => i64_type.fn_type(&[i64_type.into()], false),
+            "__buffer_get" => self.runtime_value_type.fn_type(
+                &[
+                    i64_type.into(), // buffer handle
+                    i64_type.into(), // index
+                ],
+                false,
+            ),
+            "__buffer_set" => void_type.fn_type(
+                &[
+                    i64_type.into(), // buffer handle
+                    i64_type.into(), // index
+                    i64_type.into(), // byte value
+                ],
+                false,
+            ),
+            "__buffer_exist" => i32_type.fn_type(&[i64_type.into()], false),
+            "__buffer_into_raw" => i64_type.fn_type(&[i64_type.into()], false),
+            "__raw_free" => void_type.fn_type(&[i64_type.into()], false),
             "__range_new" => i64_type.fn_type(
                 &[
                     i64_type.into(), // start
@@ -769,6 +830,8 @@ mod tag_type_sync_tests {
             (Type::Enum("Point".into()), Tag::Enum),
             (Type::Struct("Point".into()), Tag::Struct),
             (Type::Label, Tag::Label),
+            (Type::Buffer, Tag::Buffer),
+            (Type::RawPtr, Tag::RawPtr),
             (Type::TypeI8, Tag::Int8),
             (Type::TypeU8, Tag::Uint8),
             (Type::TypeI16, Tag::Int16),
