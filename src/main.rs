@@ -42,15 +42,20 @@
 //!  * Unit — `unit`
 //!  * Enum
 //!  * Struct
-//!  * Error (catchable) — annotation keyword `err`
-//!  * Label (tagged value) — annotation keyword `label` (also `Label(T)` application form)
+//!  * Buffer — fixed-size zero-initialized byte array; annotation keyword `buffer`
+//!  * RawPtr — bare address from `@raw(buf)`; annotation keyword `rawptr`
+//!  * Error labels (catchable) — `err` sugar for `Label(:error)`
+//!  * Label (tagged value) — annotation keyword `label` (also `Label(:name[, T])` application form)
 //!  * i8 / u8 / i16 / u16 / i32 / u32 / i64 / u64 (mainly `@cast`; also usable in `>>` annotations)
 //!  * fp16 / fp32 / fp64 (mainly `@cast`; also usable in `>>` annotations)
 //!
 //! Type *application* in annotations uses `Name(Type, …)` (for example `List(int)`,
-//! `Result(int, err)`, `Label(int)`). These are compile-time forms only: they are not runtime tags.
-//! Everyday code keeps the flat keywords (`list`, `err`, `label`). Generics / type parameters
-//! (`Param`) are not user-facing yet.
+//! `Result(int, err)`, `Label(:ok, int)`). These are compile-time forms only: they are not runtime tags.
+//! Everyday code keeps the flat keywords (`list`, `err`, `label`, `buffer`, `rawptr`). Generics /
+//! type parameters (`Param`) are not user-facing yet.
+//!
+//! `buffer` and `rawptr` are type keywords and cannot be used as identifiers (same for `new`,
+//! `destroy`, `exist`, `unsafe`, and `defer`).
 //!
 //! - Variables and assignments
 //! ```sprs
@@ -73,7 +78,7 @@
 //! ```
 //!
 //! - Functions
-//! ```
+//! ```rust
 //! fn add(a, b) {
 //!    return a + b;
 //! }
@@ -90,7 +95,7 @@
 //! Parameter and return types use `>>` annotations. Unannotated parameters stay dynamic.
 //! Annotated parameters are checked at call sites (arity and type). `int` and `i64` are
 //! treated as the same type for checking; `fp` and `fp64` likewise.
-//! ```
+//! ```rust
 //! fn add(a >> int, b >> int) >> int {
 //!   return a + b;
 //! }
@@ -98,23 +103,20 @@
 //!
 //! Fixed annotations reject incompatible reassignment. Prefix the type with `ambi`
 //! (ambiguous) when the binding should start as that type but allow dynamic reassignment:
-//! ```
+//! ```rust
 //! fn demo(fixed >> int, flex >> ambi int) {
 //!   fixed = 1;      # ok
-//!   # fixed = "x";  # type error
 //!   flex = 1;       # ok
 //!   flex = "x";     # ok — becomes dynamic after reassignment
 //! }
 //! ```
 //!
 //! Applied types nest and are checked by constructor name and each argument:
-//! ```
+//! ```rust
 //! fn take(xs >> List(int)) >> List(int) {
 //!   return xs;
 //! }
 //!
-//! # `Result(...)` here is only an annotation shape (App), not a dedicated
-//! # error ABI. Catchable errors still use `err` / `@error` / `?`.
 //! fn parse() >> Result(int, err) {
 //!   return 1;
 //! }
@@ -134,28 +136,33 @@
 //!   | __drop | for dropping a value|
 //!   | __clone | for cloning a value|
 //!   | __panic | for handling panic situations|
+//!   | __buffer_new | allocate a Buffer |
+//!   | __buffer_len | Buffer length |
+//!   | __buffer_get | Buffer byte read |
+//!   | __buffer_set | Buffer byte write |
+//!   | __buffer_exist | Buffer liveness check |
+//!   | __buffer_into_raw | move Buffer bytes to a raw address |
+//!   | __raw_free | free an address from __buffer_into_raw |
 //!
 //!
 //! - enum
 //!
-//! ```
-//!pub enum Animal {
+//! ```rust
+//! pub enum Animal {
 //!  Dog,
 //!  Cat,
-//!}
+//! }
 //!
-//!fn main() {
-//!    # test enum
+//! fn main() {
 //!    @println(Animal.Dog);
 //!
-//!    #  Will be print out from a runtime "Value[Animal.Dog]: <enum variant index 1>"
 //! }
 //!
 //! ```
 //!
 //! - struct
 //!
-//! ```
+//! ```rust
 //! pub struct Point {
 //!   x >> i64,
 //!   y >> i64
@@ -173,7 +180,7 @@
 //! ```
 //!
 //! - Control flow
-//! ```
+//! ```rust
 //! if x > 5 {
 //!   @println("x is greater than 5");
 //! } else {
@@ -191,62 +198,158 @@
 //! Labels are a core feature for tagging values (`Tag::Label`), not an error-only type.
 //! A label has a name plus one optional payload (Unit when omitted).
 //!
-//! ```
-//! # static name only / name + payload
-//! var a = :ok;
-//! var b = {:ok, 42};
+//! ```rust
+//! var success_label = :ok;
+//! var labeled_value = {:ok, 42};
 //!
-//! # dynamic name: only `{ident}` interpolations (int / bool / str)
-//! var i = 10;
-//! var c = {:"{i}-item", 42};   # name becomes "10-item"
+//! var item_index = 10;
+//! var dynamic_label = {:"{item_index}-item", 42};   # name becomes "10-item"
 //!
-//! # branch with macros + existing if (no match/case yet)
-//! if @label_is(c, :"{i}-item") {
-//!   @println(@label_payload(c));  # 42
-//!   @println(@label_name(c));     # "10-item"
+//! if @label_is(dynamic_label, :"{item_index}-item") {
+//!   @println(@label_payload(dynamic_label));  # 42
+//!   @println(@label_name(dynamic_label));     # "10-item"
 //! }
 //!
-//! # type annotations (params / returns)
-//! fn wrap(x >> int) >> Label(int) {
-//!   return {:ok, x};
+//! fn wrap(value_input >> int) >> Label(int) {
+//!   var item_index = value_input;
+//!   return {:"{item_index}", value_input};
 //! }
-//! fn take(v >> label) >> label {
-//!   return v;
+//! fn wrap_named(value_input >> int) >> Label(:ok, int) {
+//!   return {:ok, value_input};
+//! }
+//! fn take(label_value >> label) >> label {
+//!   return label_value;
 //! }
 //!
-//! # @attach captures a value under a *static* label name for later :name use
-//! @attach(wrap(7), :item);
+//! @attach(wrap_named(7), :item);
 //! @println(:item);  # {:ok, 7}
 //! ```
 //!
 //! Notes:
 //! - Dynamic templates reject `{}`, `{expr}`, and nested braces. Use `{ident}` only.
 //! - `@attach` currently accepts only a static label without payload (`:name`).
-//! - `?` propagates labels named "error" (`{:error, _}`).
+//! - `?` propagates only the label named `:error`; ordinary labels such as `:ok` continue on the normal path.
 //! - There is no `match` / `case` syntax; use `@label_is` with `if`.
+//!
+//! ### **Error labels**
+//!
+//! Errors are ordinary labels, not a dedicated runtime value. `err` is syntax sugar
+//! for `Label(:error)`, and `@error(reason)` creates `{:error, reason}` with exactly
+//! one argument.
+//!
+//! The same value can be created directly as a normal label literal. Use
+//! `Label(:error, T)` when the error name and payload type should be part of the
+//! function signature:
+//!
+//! ```sprs
+//! fn make_error_label() >> Label(:error, str) {
+//!   return {:error, "file not found"};
+//! }
+//!
+//! fn main() {
+//!   var error_label_value = make_error_label();
+//!   @println(@is_error(error_label_value));         # true
+//!   @println(@error_message(error_label_value));    # file not found
+//! }
+//! ```
+//!
+//! `err` and `@error(reason)` are shorthand for the same label convention:
+//!
+//! ```sprs
+//! fn make_error() >> err {
+//!   return @error("file not found");
+//! }
+//!
+//! fn show_error() {
+//!   var error_value = make_error();
+//!   @println(@is_error(error_value));         # true
+//!   @println(@error_message(error_value));    # file not found
+//!   @println(@error_message(@error(:enoent))); # :enoent
+//! }
+//! ```
+//!
+//! `@error_message` returns the String payload directly when the reason is a
+//! String; other payloads are rendered using the normal value formatter. The
+//! removed `@error_code` macro and the legacy `Tag::Error`/`SlotData::Error` ABI
+//! are no longer available. Runtime tag `9` is intentionally unused, while
+//! `Tag::Label` remains `10`.
+//!
+//! When an error label reaches the `main` boundary without being handled, Sprs
+//! prints `Uncaught error in main` and exits. A known runtime limitation is that
+//! the subsequent thread-local slot cleanup may emit a TLS destruction warning:
+//! the cleanup of a label payload re-enters the same thread-local slot table after
+//! it has started being destroyed. This warning occurs during process termination,
+//! after the uncaught-error message, and does not change the error-label result.
+//!
+//! ### **Buffers**
+//!
+//! `new(n)` allocates a zero-initialized Buffer of `n` bytes (negative → invalid handle; `0` is a valid empty buffer).
+//! Bytes are Integers in `0..=255`. Index sugar `buf[i]` reads/writes like `@bufGet` / `@bufSet`.
+//! Writes truncate to the low 8 bits. Out-of-bounds `@bufGet` / `buf[i]` reads return the `Unit` sentinel
+//! (same convention as list indexing); out-of-bounds writes are no-ops.
+//!
+//! `destroy(x)` explicitly releases a heap value and marks the binding `Unit` (double `destroy` is a no-op).
+//! `exist(x)` is `true` only while `x` is a live Buffer. Scope exit still auto-`__drop`s live Buffers, so
+//! explicit `destroy` is optional.
+//!
+//! ```sprs
+//! var a = new(4);
+//! @bufSet(a, 0, 10);
+//! a[1] = 20;
+//! @println(@bufLen(a));           # 4
+//! @println(a[0] + @bufGet(a, 1)); # 30
+//! @println(exist(a));             # true
+//! destroy(a);
+//! @println(exist(a));             # false
+//! ```
 //!
 //! ###  **Operators**
 //! * Arithmetic: `+`, `-`, `*`, `/`, `%`
 //! * Comparison: `==`, `!=`, `<`, `>`, `<=`, `>=`
 //! * Increment/Decrement: `++`, `--`(only for postfix)
 //! * Range creation: `..`(e.g., `1..10`)
-//! * indexing: `list[index]`
+//! * indexing: `list[index]` / `buf[index]` (Buffer uses byte get/set)
 //!
 //! ###  **Built-in macros**
 //! * `@println(value)`: Print value to the console
 //! examples:
-//! ```
+//! ```rust
 //! @println(y[1]);
 //! ```
 //! * `@list_push(list, value)`: Push value to the end of the list
 //! examples:
-//! ```
+//! ```rust
 //! @list_push(y, z);
+//! ```
+//!
+//! * `@bufLen(buf)`: Buffer length as Integer (`0` for stale / non-Buffer)
+//! * `@bufGet(buf, i)`: read one byte as Integer; OOB / stale → `Unit`
+//! * `@bufSet(buf, i, v)`: write low 8 bits of `v` at `i`; OOB → no-op
+//! examples:
+//! ```rust
+//! var a = new(2);
+//! @bufSet(a, 0, 7);
+//! @println(@bufGet(a, 0));
+//! @println(@bufLen(a));
+//! ```
+//!
+//! * `@raw(buf)`: move Buffer ownership to a RawPtr. Requires `unsafe { ... }`.
+//!   Source binding becomes `Unit`; caller must `@free` the result.
+//! * `@free(p)`: release a RawPtr from `@raw`. Requires `unsafe { ... }`.
+//!   Null / unknown addresses are no-ops; source binding becomes `Unit`.
+//! examples:
+//! ```rust
+//! var b = new(2);
+//! unsafe {
+//!   var p = @raw(b);
+//!   @free(p);
+//! }
+//! @println(exist(b)); # false
 //! ```
 //!
 //! * `@clone(value)`: Clone the value
 //! examples:
-//! ```
+//! ```rust
 //! var a = "hello";
 //! @println(@clone(a));
 //!
@@ -254,14 +357,14 @@
 //!
 //! * `@move(value)`: Move out of a `cp` binding for one use (invalidates the binding)
 //! examples:
-//! ```
+//! ```rust
 //! cp var a = "hello";
 //! @println(@move(a)); # a becomes Unit
 //! ```
 //!
 //! * `@cast(value, type)`: Cast the value to the specified type
 //! examples:
-//! ```
+//! ```rust
 //! var a = 100; # default is i64
 //! var b = @cast(a, i8); # cast to i8
 //! @println(b); # prints 100 as i8
@@ -269,7 +372,7 @@
 //!
 //! * `@attach(expr, :name)`: Capture `expr`'s value under a static label name.
 //!   Later `:name` (no payload) reuses the captured value. Dynamic names are not supported yet.
-//! ```
+//! ```rust
 //! @attach(compute(), :result);
 //! @println(:result);
 //! ```
@@ -278,7 +381,7 @@
 //!   `expected` (`:name` or `:"{ident}-…"` without payload).
 //! * `@label_payload(value)`: Clone the label payload (Unit when not a label).
 //! * `@label_name(value)`: Return the label name as `str` (`""` when not a label).
-//! ```
+//! ```rust
 //! var v = {:ok, 1};
 //! if @label_is(v, :ok) {
 //!   @println(@label_payload(v));
@@ -288,7 +391,7 @@
 //!
 //! **Note:** @cast macro is faster than normal int type, because it use i8 and u8 llvm type directly.
 //! examples:
-//! ```
+//! ```rust
 //! var i = 0; # default is i64
 //! while i < 5 {
 //!   @println(i); ## this is too slow for embedded and system programming environment, because it use dynamic type checking.
@@ -297,7 +400,7 @@
 //! ```
 //!
 //!  but with @cast macro
-//!```
+//! ```rust
 //! var i = @cast(0, i8); # i is i8 type
 //! while i < @cast(5, i8) {
 //!  @println(i); ## this is faster for embedded system, because it use i8 llvm type directly.
@@ -314,13 +417,12 @@
 //! * 'import' for module importing
 //!
 //! examples:
-//! ```
+//! ```rust
 //!
 //! import test;
 //! #define Windows
 //!
 //!        fn main() {
-//!           # access to module function
 //!           var x = test.test();
 //!           var y = [];
 //!           var z = 20;
@@ -330,26 +432,22 @@
 //!           @list_push(y, z);
 //!           @list_push(y, alpha);
 //!           @println(y[1]);
-//!           # println(x + alpha);
 //!
-//!            # test calc
 //!              var result = (x + 10) * 2;
 //!              @println(result);
-//!            # test while
 //!              var i = @cast(0, i8);
 //!                while i <= 5 {
 //!                    @println(i);
 //!                    i = i + 1;
 //!                }
 //!
-//!            # test mod
 //!              var m = 10 % 3;
 //!              @println(m);
 //!        }
 //!
 //! ```
 //!
-//! ```
+//! ```rust
 //!
 //! pkg test;
 //!
@@ -359,7 +457,6 @@
 //!            var c = "hello" + " world";
 //!            @println(c);
 //!
-//!            # test equality
 //!            if a == 3 {
 //!                return a;
 //!            }
@@ -393,7 +490,7 @@
 //!
 //! ## Memory Management
 //!
-//! Sprs uses **move semantics** for heap values (`str`, `list`, `range`, `struct`, `enum`, `error`).
+//! Sprs uses **move semantics** for heap values (`str`, `list`, `range`, `struct`, `enum`, `label`, `buffer`).
 //! Assigning or passing one of these values transfers ownership; the old binding becomes invalid
 //! (`Unit`). Integers, floats, and bools are copied instead.
 //!
@@ -409,26 +506,24 @@
 //! deep-copies; the compiler warns when `cp` is clearly applied to `list` / `range` / `struct` / `enum`.
 //!
 //! **Move on assignment:**
-//! ```
+//! ```rust
 //! fn main() {
 //!     var greeting = "Hello, Sprs!";
 //!     var copy = greeting;       # ownership moves to copy; greeting is now invalid
 //!     @println(copy);            # prints: Hello, Sprs!
-//!     # @println(greeting);      # would print () — greeting was moved
 //! }
 //! ```
 //!
 //! **Move into a function call:**
-//! ```
+//! ```rust
 //! fn main() {
 //!     var greeting = "Hello, Sprs!";
 //!     @println(greeting);        # greeting is moved into @println and becomes invalid
-//!     # @println(greeting);      # would print ()
 //! }
 //! ```
 //!
 //! **Keep ownership with `@clone`:**
-//! ```
+//! ```rust
 //! fn main() {
 //!     var greeting = "Hello, Sprs!";
 //!     @println(@clone(greeting)); # prints a copy; greeting stays valid
@@ -437,7 +532,7 @@
 //! ```
 //!
 //! **Always-clone binding with `cp var`:**
-//! ```
+//! ```rust
 //! fn main() {
 //!     cp var greeting = "Hello, Sprs!";
 //!     @println(greeting);         # same as @println(@clone(greeting))
@@ -445,6 +540,39 @@
 //!     @println(@move(greeting));  # one-shot real move; greeting becomes Unit
 //! }
 //! ```
+//!
+//! ## Buffers, destroy, and exist
+//!
+//! Buffers participate in the same auto-drop path as other heap values: leaving a scope without
+//! `destroy` still frees a live Buffer. Prefer `destroy` / `defer destroy(...)` when you need an
+//! explicit lifetime cut; `exist` reports Buffer liveness only.
+//!
+//! ## Unsafe, RawPtr, and defer
+//!
+//! `@raw` / `@free` are allowed only inside `unsafe { ... }` (nesting increments a depth counter).
+//! `@raw(buf)` moves the Buffer's byte allocation to a RawPtr (bare address). After `@raw`, the
+//! source binding is `Unit`, so later auto-drop / `destroy` on that binding is a no-op.
+//! The caller owns the address and must `@free` it. Empty / non-Buffer / stale inputs yield a null
+//! RawPtr (`0`); `@free` ignores null and unknown addresses.
+//!
+//! `defer <expr>;` queues `expr` and runs the queue **LIFO** at scope exit, **before** automatic
+//! variable drops (including on `return`).
+//!
+//! ```sprs
+//! fn demo() {
+//!   var a = new(1);
+//!   defer destroy(a);   # runs at scope exit before auto-drop
+//!   @bufSet(a, 0, 1);
+//!
+//!   var b = new(2);
+//!   defer destroy(b);
+//!   unsafe {
+//!     var p = @raw(b);  # b becomes Unit; deferred destroy(b) is then a no-op
+//!     @free(p);
+//!   }
+//! }
+//! ```
+//!
 
 use std::error::Error;
 

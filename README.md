@@ -46,6 +46,8 @@ For this language development environment setup is WSL2(Ubuntu) + VSCode is reco
  * Unit — `unit`
  * Enum
  * Struct
+ * Buffer — fixed-size zero-initialized byte array; annotation keyword `buffer`
+ * RawPtr — bare address from `@raw(buf)`; annotation keyword `rawptr`
  * Error labels (catchable) — `err` sugar for `Label(:error)`
  * Label (tagged value) — annotation keyword `label` (also `Label(:name[, T])` application form)
  * i8 / u8 / i16 / u16 / i32 / u32 / i64 / u64 (mainly `@cast`; also usable in `>>` annotations)
@@ -53,8 +55,11 @@ For this language development environment setup is WSL2(Ubuntu) + VSCode is reco
 
 Type *application* in annotations uses `Name(Type, …)` (for example `List(int)`,
 `Result(int, err)`, `Label(:ok, int)`). These are compile-time forms only: they are not runtime tags.
-Everyday code keeps the flat keywords (`list`, `err`, `label`). Generics / type parameters
-(`Param`) are not user-facing yet.
+Everyday code keeps the flat keywords (`list`, `err`, `label`, `buffer`, `rawptr`). Generics /
+type parameters (`Param`) are not user-facing yet.
+
+`buffer` and `rawptr` are type keywords and cannot be used as identifiers (same for `new`,
+`destroy`, `exist`, `unsafe`, and `defer`).
 
 - Variables and assignments
 ```sprs
@@ -135,6 +140,13 @@ fn parse() >> Result(int, err) {
   | __drop | for dropping a value|
   | __clone | for cloning a value|
   | __panic | for handling panic situations|
+  | __buffer_new | allocate a Buffer |
+  | __buffer_len | Buffer length |
+  | __buffer_get | Buffer byte read |
+  | __buffer_set | Buffer byte write |
+  | __buffer_exist | Buffer liveness check |
+  | __buffer_into_raw | move Buffer bytes to a raw address |
+  | __raw_free | free an address from __buffer_into_raw |
 
 
 - enum
@@ -273,12 +285,34 @@ the cleanup of a label payload re-enters the same thread-local slot table after
 it has started being destroyed. This warning occurs during process termination,
 after the uncaught-error message, and does not change the error-label result.
 
+#### **Buffers**
+
+`new(n)` allocates a zero-initialized Buffer of `n` bytes (negative → invalid handle; `0` is a valid empty buffer).
+Bytes are Integers in `0..=255`. Index sugar `buf[i]` reads/writes like `@bufGet` / `@bufSet`.
+Writes truncate to the low 8 bits. Out-of-bounds `@bufGet` / `buf[i]` reads return the `Unit` sentinel
+(same convention as list indexing); out-of-bounds writes are no-ops.
+
+`destroy(x)` explicitly releases a heap value and marks the binding `Unit` (double `destroy` is a no-op).
+`exist(x)` is `true` only while `x` is a live Buffer. Scope exit still auto-`__drop`s live Buffers, so
+explicit `destroy` is optional.
+
+```sprs
+var a = new(4);
+@bufSet(a, 0, 10);
+a[1] = 20;
+@println(@bufLen(a));           # 4
+@println(a[0] + @bufGet(a, 1)); # 30
+@println(exist(a));             # true
+destroy(a);
+@println(exist(a));             # false
+```
+
 ####  **Operators**
 * Arithmetic: `+`, `-`, `*`, `/`, `%`
 * Comparison: `==`, `!=`, `<`, `>`, `<=`, `>=`
 * Increment/Decrement: `++`, `--`(only for postfix)
 * Range creation: `..`(e.g., `1..10`)
-* indexing: `list[index]`
+* indexing: `list[index]` / `buf[index]` (Buffer uses byte get/set)
 
 ####  **Built-in macros**
 * `@println(value)`: Print value to the console
@@ -290,6 +324,31 @@ examples:
 examples:
 ```rust
 @list_push(y, z);
+```
+
+* `@bufLen(buf)`: Buffer length as Integer (`0` for stale / non-Buffer)
+* `@bufGet(buf, i)`: read one byte as Integer; OOB / stale → `Unit`
+* `@bufSet(buf, i, v)`: write low 8 bits of `v` at `i`; OOB → no-op
+examples:
+```rust
+var a = new(2);
+@bufSet(a, 0, 7);
+@println(@bufGet(a, 0));
+@println(@bufLen(a));
+```
+
+* `@raw(buf)`: move Buffer ownership to a RawPtr. Requires `unsafe { ... }`.
+  Source binding becomes `Unit`; caller must `@free` the result.
+* `@free(p)`: release a RawPtr from `@raw`. Requires `unsafe { ... }`.
+  Null / unknown addresses are no-ops; source binding becomes `Unit`.
+examples:
+```rust
+var b = new(2);
+unsafe {
+  var p = @raw(b);
+  @free(p);
+}
+@println(exist(b)); # false
 ```
 
 * `@clone(value)`: Clone the value
@@ -435,7 +494,7 @@ This command creates a new directory structure with a default `sprs.toml` config
 
 ### Memory Management
 
-Sprs uses **move semantics** for heap values (`str`, `list`, `range`, `struct`, `enum`, `label`).
+Sprs uses **move semantics** for heap values (`str`, `list`, `range`, `struct`, `enum`, `label`, `buffer`).
 Assigning or passing one of these values transfers ownership; the old binding becomes invalid
 (`Unit`). Integers, floats, and bools are copied instead.
 
@@ -483,6 +542,38 @@ fn main() {
     @println(greeting);         # same as @println(@clone(greeting))
     @println(greeting);         # still valid
     @println(@move(greeting));  # one-shot real move; greeting becomes Unit
+}
+```
+
+### Buffers, destroy, and exist
+
+Buffers participate in the same auto-drop path as other heap values: leaving a scope without
+`destroy` still frees a live Buffer. Prefer `destroy` / `defer destroy(...)` when you need an
+explicit lifetime cut; `exist` reports Buffer liveness only.
+
+### Unsafe, RawPtr, and defer
+
+`@raw` / `@free` are allowed only inside `unsafe { ... }` (nesting increments a depth counter).
+`@raw(buf)` moves the Buffer's byte allocation to a RawPtr (bare address). After `@raw`, the
+source binding is `Unit`, so later auto-drop / `destroy` on that binding is a no-op.
+The caller owns the address and must `@free` it. Empty / non-Buffer / stale inputs yield a null
+RawPtr (`0`); `@free` ignores null and unknown addresses.
+
+`defer <expr>;` queues `expr` and runs the queue **LIFO** at scope exit, **before** automatic
+variable drops (including on `return`).
+
+```sprs
+fn demo() {
+  var a = new(1);
+  defer destroy(a);   # runs at scope exit before auto-drop
+  @bufSet(a, 0, 1);
+
+  var b = new(2);
+  defer destroy(b);
+  unsafe {
+    var p = @raw(b);  # b becomes Unit; deferred destroy(b) is then a no-op
+    @free(p);
+  }
 }
 ```
 
