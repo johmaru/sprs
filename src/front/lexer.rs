@@ -19,6 +19,7 @@ pub enum Token {
     EqEq,
     Neq,
     Lt,
+    LtColon,
     Gt,
     GtGt,
     Question,
@@ -68,6 +69,7 @@ pub enum Token {
     TypeUnit,
     TypeError,
     TypeLabel,
+    TypeAtomKw,
 
     TypeI8,
     TypeU8,
@@ -117,6 +119,8 @@ enum RawTok {
     EqEq,
     #[token("!=")]
     Neq,
+    #[token("<:")]
+    LtColon,
     #[token("<")]
     Lt,
     #[token(">")]
@@ -224,6 +228,8 @@ enum RawTok {
     TypeError,
     #[token("label")]
     TypeLabel,
+    #[token("atom")]
+    TypeAtomKw,
 
     #[token("i8")]
     TypeI8,
@@ -301,6 +307,7 @@ impl<'input> Iterator for Lexer<'input> {
             RawTok::Assign => Token::Assign,
             RawTok::EqEq => Token::EqEq,
             RawTok::Neq => Token::Neq,
+            RawTok::LtColon => Token::LtColon,
             RawTok::Lt => Token::Lt,
             RawTok::Gt => Token::Gt,
             RawTok::GtGt => Token::GtGt,
@@ -368,6 +375,7 @@ impl<'input> Iterator for Lexer<'input> {
             RawTok::TypeUnit => Token::TypeUnit,
             RawTok::TypeError => Token::TypeError,
             RawTok::TypeLabel => Token::TypeLabel,
+            RawTok::TypeAtomKw => Token::TypeAtomKw,
 
             RawTok::TypeI8 => Token::TypeI8,
             RawTok::TypeU8 => Token::TypeU8,

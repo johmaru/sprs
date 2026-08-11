@@ -88,6 +88,21 @@ impl<'ctx> Compiler<'ctx> {
         for item in &items {
             match item {
                 ast::Item::StructItem(items) => {
+                    for field in &items.fields {
+                        if let Some(field_ty) = &field.ty {
+                            type_helper::reject_payloadless_label_type(field_ty).map_err(
+                                |msg| SprsError::Semantic {
+                                    code: ErrorCode {
+                                        category: ErrorCategory::Semantic,
+                                        number: 11,
+                                    },
+                                    location: Location::new(String::new(), field.span),
+                                    message: msg,
+                                    help: None,
+                                },
+                            )?;
+                        }
+                    }
                     self.register_struct(items.ident.clone(), items.fields.clone());
 
                     if !items.is_public {

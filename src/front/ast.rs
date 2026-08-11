@@ -34,7 +34,9 @@ pub enum Expr {
     Unit(),
     Macro(String, Vec<Spanned<Expr>>), // Ident, Args e.g. @lshift(x, 4)
     StructInit(String, Vec<(String, Spanned<Expr>)>), // StructName, Fields
-    Label(LabelName, Option<Box<Spanned<Expr>>>), // Label name with an optional single payload
+    Atom(LabelName),                   // :ok / :"{x}-item" — immutable atom, no payload
+    Label(LabelName, Box<Spanned<Expr>>), // {:name, payload} — payload required
+    AttachSlot(String),                // <:name — local operation slot reference (read)
     Try(Box<Spanned<Expr>>),           // Error propagation: expr?
     HeapAlloc(Box<Spanned<Expr>>),     // new(n) — Buffer allocation
     Destroy(Box<Spanned<Expr>>),       // destroy(expr) — explicit Buffer release

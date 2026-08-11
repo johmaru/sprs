@@ -28,3 +28,23 @@ pub fn static_label_is() >> bool {
     var labeled_value = {:ok, 1};
     return @label_is(labeled_value, :ok);
 }
+
+pub fn atom_identity() >> bool {
+    var same = :ok == :ok;
+    var different = :ok == :error;
+    if same {
+        return @not(different);
+    }
+    return false;
+}
+
+pub fn attach_slot_roundtrip() >> int {
+    @attach({:ok, 7}, <:item);
+    return @label_payload(<:item);
+}
+
+pub fn slot_and_atom_display() {
+    @attach({:ok, 7}, <:item);
+    @println(<:item);
+    @println(:item);
+}

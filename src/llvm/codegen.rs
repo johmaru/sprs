@@ -6,7 +6,7 @@ use crate::front::label_name::LabelName;
 use crate::front::span::Span;
 use crate::front::span::Spanned;
 use crate::front::type_helper;
-use crate::front::type_helper::{Type, is_error_label_type, types_compatible};
+use crate::front::type_helper::{Type, is_error_label_type, reject_payloadless_label_type, types_compatible};
 use crate::llvm::builder_helper;
 use crate::llvm::builder_helper::BuilderExt;
 use crate::llvm::builder_helper::Comparison;
@@ -14,7 +14,7 @@ use crate::llvm::builder_helper::ContextExt;
 use crate::llvm::builder_helper::EqNeq;
 use crate::llvm::builder_helper::UpDown;
 use crate::llvm::compiler::{Compiler, Tag};
-use crate::llvm::value::{build_label_is_error, create_label};
+use crate::llvm::value::{build_label_is_error, create_atom, create_label};
 use crate::naming;
 use inkwell::AddressSpace;
 use inkwell::module::Module;
@@ -213,13 +213,13 @@ impl<'ctx> Compiler<'ctx> {
             ast::Expr::HeapAlloc(_) => Type::Buffer,
             ast::Expr::Destroy(_) => Type::Unit,
             ast::Expr::Exist(_) => Type::Bool,
-            ast::Expr::Label(name, None) => match name {
+            ast::Expr::Atom(name) => match name {
                 LabelName::Static(static_name) => {
-                    Type::App("Label".into(), vec![Type::Atom(static_name.clone())])
+                    Type::App("Atom".into(), vec![Type::Atom(static_name.clone())])
                 }
-                LabelName::Dynamic(_) => Type::Label,
+                LabelName::Dynamic(_) => Type::AtomVal,
             },
-            ast::Expr::Label(name, Some(payload)) => {
+            ast::Expr::Label(name, payload) => {
                 let payload_ty = self.infer_type(payload);
                 match name {
                     LabelName::Static(static_name) => {
@@ -241,6 +241,7 @@ impl<'ctx> Compiler<'ctx> {
                     }
                 }
             }
+            ast::Expr::AttachSlot(_) => Type::Any,
             _ => Type::Any,
         }
     }
@@ -275,6 +276,17 @@ impl<'ctx> Compiler<'ctx> {
         self.attachments.clear();
 
         let fn_sig = self.fn_types.get(func_name).cloned();
+        if let Some(ret_ty) = &func.ret_ty {
+            reject_payloadless_label_type(ret_ty).map_err(|msg| SprsError::Semantic {
+                code: ErrorCode {
+                    category: ErrorCategory::Semantic,
+                    number: 11,
+                },
+                location: self.location(func.span),
+                message: msg,
+                help: None,
+            })?;
+        }
         self.current_fn_ret_ty = func.ret_ty.clone();
 
         for (idx, param) in func.params.iter().enumerate() {
@@ -301,6 +313,19 @@ impl<'ctx> Compiler<'ctx> {
                     .as_ref()
                     .and_then(|signature| signature.params.get(idx).cloned().flatten())
             });
+            if let Some(argument) = &annot {
+                reject_payloadless_label_type(&argument.ty).map_err(|msg| {
+                    SprsError::Semantic {
+                        code: ErrorCode {
+                            category: ErrorCategory::Semantic,
+                            number: 11,
+                        },
+                        location: self.location(param.span),
+                        message: msg,
+                        help: None,
+                    }
+                })?;
+            }
             let (param_ty, is_ambi, is_annotated) = match annot {
                 Some(argument) => (argument.ty, argument.ambi, true),
                 None => (Type::Any, false, false),
@@ -1060,15 +1085,24 @@ impl<'ctx> Compiler<'ctx> {
                 )?)
             }
             ast::Expr::Unit() => Ok(builder_helper::create_unit(self)?),
+            ast::Expr::Atom(name) => Ok(create_atom(self, name, module)?),
             ast::Expr::Label(name, payload) => {
-                if payload.is_none() {
-                    if let crate::front::label_name::LabelName::Static(static_name) = name {
-                        if let Some(attached) = self.attachments.get(static_name).copied() {
-                            return Ok(builder_helper::clone_runtime_value(self, attached, module)?.into());
-                        }
-                    }
+                Ok(create_label(self, name, payload, module)?)
+            }
+            ast::Expr::AttachSlot(slot_name) => {
+                if let Some(attached) = self.attachments.get(slot_name).copied() {
+                    Ok(builder_helper::clone_runtime_value(self, attached, module)?.into())
+                } else {
+                    Err(SprsError::Semantic {
+                        code: ErrorCode {
+                            category: ErrorCategory::Semantic,
+                            number: 2,
+                        },
+                        location: self.location(expr.span),
+                        message: format!("attach slot '<:{}' used before @attach", slot_name),
+                        help: None,
+                    })
                 }
-                Ok(create_label(self, name, payload.as_deref(), module)?)
             }
             ast::Expr::StructInit(struct_name, fields) => Ok(builder_helper::create_struct_init(self, struct_name, fields, module)?),
             ast::Expr::Try(inner_expr) => {

@@ -1,7 +1,8 @@
 use crate::front::label_name::LabelName;
 use crate::llvm::data_structures::create_unit;
 use crate::llvm::value::{
-    build_label_is_error, create_entry_block_alloca, create_error_label_from_str, create_label,
+    build_dynamic_string, build_label_is_error, create_entry_block_alloca,
+    create_error_label_from_str, create_label,
 };
 use crate::llvm::variable::{clone_runtime_value, move_variable, var_load_at_init_variable};
 use crate::{
@@ -1658,8 +1659,8 @@ pub fn call_builtin_macro_attach<'ctx>(
             help: None,
         });
     }
-    let label_name = match &args[1].node {
-        ast::Expr::Label(crate::front::label_name::LabelName::Static(name), None) => name.clone(),
+    let slot_name = match &args[1].node {
+        ast::Expr::AttachSlot(name) => name.clone(),
         _ => {
             return Err(SprsError::Semantic {
                 code: ErrorCode {
@@ -1667,7 +1668,7 @@ pub fn call_builtin_macro_attach<'ctx>(
                     number: 3,
                 },
                 location: Location::new(String::new(), args[1].span),
-                message: "@attach second argument must be a label such as :name".to_string(),
+                message: "@attach second argument must be a slot such as <:name".to_string(),
                 help: None,
             });
         }
@@ -1679,21 +1680,21 @@ pub fn call_builtin_macro_attach<'ctx>(
     let captured_ptr = clone_runtime_value(self_compiler, value_ptr, module)?;
     if let Some(previous) = self_compiler
         .attachments
-        .insert(label_name.clone(), captured_ptr)
+        .insert(slot_name.clone(), captured_ptr)
     {
         let drop_fn = self_compiler.get_runtime_fn(module, "__drop")?;
         crate::llvm::variable::drop_var(
             self_compiler,
             previous,
             drop_fn,
-            &format!("attach_{}", label_name),
+            &format!("attach_{}", slot_name),
         );
     }
     create_unit(self_compiler)
 }
 
 /// @label_is(value, expected) — true if value is a label whose name matches expected.
-/// `expected` must be a payload-less label (`:name` or `:"{i}-item"`).
+/// `expected` must be an atom (`:name` or `:"{i}-item"`).
 pub fn call_builtin_macro_label_is<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
     args: &[Spanned<ast::Expr>],
@@ -1712,7 +1713,7 @@ pub fn call_builtin_macro_label_is<'ctx>(
     }
 
     let expected_name = match &args[1].node {
-        ast::Expr::Label(name, None) => name,
+        ast::Expr::Atom(name) => name,
         _ => {
             return Err(SprsError::Semantic {
                 code: ErrorCode {
@@ -1720,8 +1721,9 @@ pub fn call_builtin_macro_label_is<'ctx>(
                     number: 3,
                 },
                 location: Location::new(String::new(), args[1].span),
-                message: "@label_is second argument must be a label such as :name or :\"{i}-item\""
-                    .to_string(),
+                message:
+                    "@label_is second argument must be an atom such as :name or :\"{i}-item\""
+                        .to_string(),
                 help: None,
             });
         }
@@ -1782,35 +1784,19 @@ pub fn call_builtin_macro_label_is<'ctx>(
                 }
             }
         }
-        LabelName::Dynamic(_) => {
-            // Evaluate expected dynamic label, compare names, then drop the temp label.
-            let expected_ptr =
-                create_label(self_compiler, expected_name, None, module)?.into_pointer_value();
-            let expected_data_ptr = self_compiler
-                .builder
-                .build_struct_gep(
-                    self_compiler.runtime_value_type,
-                    expected_ptr,
-                    1,
-                    "label_is_expected_data_ptr",
-                )
-                .unwrap();
-            let expected_data = self_compiler
-                .builder
-                .build_load(
-                    self_compiler.context.i64_type(),
-                    expected_data_ptr,
-                    "label_is_expected_data",
-                )
-                .unwrap()
-                .into_int_value();
-            let names_equal = self_compiler.get_runtime_fn(module, "__label_names_equal")?;
-            let cmp = match self_compiler
+        LabelName::Dynamic(parts) => {
+            // Build the expected name string, intern it as an atom, and
+            // compare ids with the actual label's name (also interned).
+            // No temporary Label is created (Labels now require a payload).
+            let atom_from_string = self_compiler.get_runtime_fn(module, "__atom_from_string")?;
+            let (expected_str, temps_to_drop) =
+                build_dynamic_string(self_compiler, parts, module)?;
+            let expected_id = match self_compiler
                 .builder
                 .build_call(
-                    names_equal,
-                    &[data_val.into(), expected_data.into()],
-                    "label_is_names_equal",
+                    atom_from_string,
+                    &[expected_str.into()],
+                    "label_is_expected_atom",
                 )
                 .unwrap()
                 .try_as_basic_value()
@@ -1818,18 +1804,88 @@ pub fn call_builtin_macro_label_is<'ctx>(
                 ValueKind::Basic(basic_value) => basic_value.into_int_value(),
                 _ => {
                     return Err(SprsError::Internal {
-                        message: "__label_names_equal returned void".to_string(),
+                        message: "__atom_from_string returned void".to_string(),
                         location: None,
                     });
                 }
             };
+            let label_name_fn = self_compiler.get_runtime_fn(module, "__label_name")?;
+            let actual_name = match self_compiler
+                .builder
+                .build_call(label_name_fn, &[data_val.into()], "label_is_actual_name")
+                .unwrap()
+                .try_as_basic_value()
+            {
+                ValueKind::Basic(basic_value) => basic_value.into_int_value(),
+                _ => {
+                    return Err(SprsError::Internal {
+                        message: "__label_name returned void".to_string(),
+                        location: None,
+                    });
+                }
+            };
+            let actual_id = match self_compiler
+                .builder
+                .build_call(
+                    atom_from_string,
+                    &[actual_name.into()],
+                    "label_is_actual_atom",
+                )
+                .unwrap()
+                .try_as_basic_value()
+            {
+                ValueKind::Basic(basic_value) => basic_value.into_int_value(),
+                _ => {
+                    return Err(SprsError::Internal {
+                        message: "__atom_from_string returned void".to_string(),
+                        location: None,
+                    });
+                }
+            };
+            let atom_eq = self_compiler.get_runtime_fn(module, "__atom_eq")?;
+            let cmp = match self_compiler
+                .builder
+                .build_call(
+                    atom_eq,
+                    &[expected_id.into(), actual_id.into()],
+                    "label_is_atom_eq",
+                )
+                .unwrap()
+                .try_as_basic_value()
+            {
+                ValueKind::Basic(basic_value) => basic_value.into_int_value(),
+                _ => {
+                    return Err(SprsError::Internal {
+                        message: "__atom_eq returned void".to_string(),
+                        location: None,
+                    });
+                }
+            };
+            // Drop temporaries: the expected-name string chain and the
+            // actual label's name string.
             let drop_fn = self_compiler.get_runtime_fn(module, "__drop")?;
-            crate::llvm::variable::drop_var(
-                self_compiler,
-                expected_ptr,
-                drop_fn,
-                "label_is_expected",
-            );
+            let string_tag = self_compiler
+                .context
+                .i32_type()
+                .const_int(Tag::String as u64, false);
+            for (temporary_index, temp) in temps_to_drop.into_iter().enumerate() {
+                self_compiler
+                    .builder
+                    .build_call(
+                        drop_fn,
+                        &[string_tag.into(), temp.into()],
+                        &format!("label_is_drop_tmp_{}", temporary_index),
+                    )
+                    .unwrap();
+            }
+            self_compiler
+                .builder
+                .build_call(
+                    drop_fn,
+                    &[string_tag.into(), actual_name.into()],
+                    "label_is_drop_actual_name",
+                )
+                .unwrap();
             cmp
         }
     };
@@ -2000,7 +2056,7 @@ pub fn call_builtin_macro_error<'ctx>(
     create_label(
         self_compiler,
         &LabelName::Static("error".into()),
-        Some(&args[0]),
+        &args[0],
         module,
     )
 }

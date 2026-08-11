@@ -101,6 +101,26 @@ where
         .compile_expr(rhs, module)?
         .into_pointer_value();
 
+    let l_tag_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, l_ptr, 0, "l_tag_ptr")
+        .unwrap();
+    let l_tag = self_compiler
+        .builder
+        .build_load(self_compiler.context.i32_type(), l_tag_ptr, "l_tag")
+        .unwrap()
+        .into_int_value();
+
+    let r_tag_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, r_ptr, 0, "r_tag_ptr")
+        .unwrap();
+    let r_tag = self_compiler
+        .builder
+        .build_load(self_compiler.context.i32_type(), r_tag_ptr, "r_tag")
+        .unwrap()
+        .into_int_value();
+
     let l_data_ptr = self_compiler
         .builder
         .build_struct_gep(self_compiler.runtime_value_type, l_ptr, 1, "l_data_ptr")
@@ -121,7 +141,67 @@ where
         .unwrap()
         .into_int_value();
 
-    let result = op_fn(
+    let atom_tag = self_compiler
+        .context
+        .i32_type()
+        .const_int(Tag::Atom as u64, false);
+    let l_is_atom = self_compiler
+        .builder
+        .build_int_compare(inkwell::IntPredicate::EQ, l_tag, atom_tag, "l_is_atom")
+        .unwrap();
+    let r_is_atom = self_compiler
+        .builder
+        .build_int_compare(inkwell::IntPredicate::EQ, r_tag, atom_tag, "r_is_atom")
+        .unwrap();
+    let either_atom = self_compiler
+        .builder
+        .build_or(l_is_atom, r_is_atom, "either_atom")
+        .unwrap();
+
+    // Atoms compare by tag AND interned id; other values keep the old
+    // data-only comparison. Merge the two paths with a PHI.
+    let parent_fn = self_compiler
+        .builder
+        .get_insert_block()
+        .unwrap()
+        .get_parent()
+        .unwrap();
+    let atom_bb = self_compiler.context.append_basic_block(parent_fn, "eq_atom");
+    let data_bb = self_compiler.context.append_basic_block(parent_fn, "eq_data");
+    let merge_bb = self_compiler.context.append_basic_block(parent_fn, "eq_merge");
+    self_compiler
+        .builder
+        .build_conditional_branch(either_atom, atom_bb, data_bb)
+        .unwrap();
+
+    self_compiler.builder.position_at_end(atom_bb);
+    let tag_eq = self_compiler
+        .builder
+        .build_int_compare(inkwell::IntPredicate::EQ, l_tag, r_tag, "atom_tag_eq")
+        .unwrap();
+    let data_eq = self_compiler
+        .builder
+        .build_int_compare(inkwell::IntPredicate::EQ, l_val, r_val, "atom_data_eq")
+        .unwrap();
+    let atom_eq = self_compiler
+        .builder
+        .build_and(tag_eq, data_eq, "atom_eq")
+        .unwrap();
+    let atom_result = match mode {
+        EqNeq::Eq => atom_eq,
+        EqNeq::Neq => self_compiler
+            .builder
+            .build_xor(
+                atom_eq,
+                self_compiler.context.bool_type().const_int(1, false),
+                "atom_neq",
+            )
+            .unwrap(),
+    };
+    self_compiler.builder.build_unconditional_branch(merge_bb).unwrap();
+
+    self_compiler.builder.position_at_end(data_bb);
+    let data_result = op_fn(
         &self_compiler.builder,
         l_val,
         r_val,
@@ -130,13 +210,21 @@ where
             EqNeq::Neq => "neq",
         },
     )?;
+    self_compiler.builder.build_unconditional_branch(merge_bb).unwrap();
+
+    self_compiler.builder.position_at_end(merge_bb);
+    let phi = self_compiler
+        .builder
+        .build_phi(self_compiler.context.bool_type(), "eq_phi")
+        .unwrap();
+    phi.add_incoming(&[(&atom_result, atom_bb), (&data_result, data_bb)]);
 
     let res_ptr = create_entry_block_alloca(self_compiler, "eq_or_neq_res_alloc")?;
 
     self_compiler.build_runtime_value_store(
         res_ptr,
         StoreTag::Int(Tag::Boolean as u64),
-        StoreValue::Bool(result),
+        StoreValue::Bool(phi.as_basic_value().into_int_value()),
         "eq_or_neq_res",
     );
 

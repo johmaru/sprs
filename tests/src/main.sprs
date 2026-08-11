@@ -182,6 +182,9 @@ fn main() {
     @println(labels.dynamic_name());
     @println(labels.typed_label_payload());
     @println(labels.static_label_is());
+    @println(labels.atom_identity());
+    @println(labels.attach_slot_roundtrip());
+    labels.slot_and_atom_display();
 
     @println("=== Buffer ===");
     @println(buffers.buf_macro_roundtrip());

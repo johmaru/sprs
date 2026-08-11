@@ -356,30 +356,22 @@ pub fn create_bool<'ctx>(
 pub fn create_label<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
     name: &LabelName,
-    payload: Option<&Spanned<ast::Expr>>,
+    payload: &Spanned<ast::Expr>,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
-    let initial_payload_ptr = if let Some(payload_expr) = payload {
-        self_compiler
-            .compile_expr(payload_expr, module)?
-            .into_pointer_value()
-    } else {
-        create_unit(self_compiler)?.into_pointer_value()
-    };
+    let initial_payload_ptr = self_compiler
+        .compile_expr(payload, module)?
+        .into_pointer_value();
 
     let mut source_to_move: Option<(BasicValueEnum<'ctx>, String)> = None;
-    let final_payload_ptr = if let Some(payload_expr) = payload {
-        if let ast::Expr::Var(source_name) = &payload_expr.node {
-            let source = self_compiler
-                .get_variables(source_name)
-                .ok_or_else(|| format!("Undefined variable: {}", source_name))?;
-            if source.always_clone {
-                clone_runtime_value(self_compiler, source.value.into_pointer_value(), module)?
-            } else {
-                source_to_move = Some((source.value, source_name.clone()));
-                initial_payload_ptr
-            }
+    let final_payload_ptr = if let ast::Expr::Var(source_name) = &payload.node {
+        let source = self_compiler
+            .get_variables(source_name)
+            .ok_or_else(|| format!("Undefined variable: {}", source_name))?;
+        if source.always_clone {
+            clone_runtime_value(self_compiler, source.value.into_pointer_value(), module)?
         } else {
+            source_to_move = Some((source.value, source_name.clone()));
             initial_payload_ptr
         }
     } else {
@@ -480,20 +472,112 @@ pub fn create_label<'ctx>(
     Ok(result_ptr.into())
 }
 
-/// Build a dynamic label name string from template parts, then create the label.
-/// Temporary string handles are explicitly dropped after use.
-fn build_dynamic_label_handle<'ctx>(
+/// Create an immutable atom (`Tag::Atom`, data = interned id).
+///
+/// Static names go through `__atom_from_bytes` directly; dynamic templates
+/// build the name string with [`build_dynamic_string`] and intern it via
+/// `__atom_from_string`. Atoms never touch the attachment table.
+pub fn create_atom<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+    name: &LabelName,
+    module: &inkwell::module::Module<'ctx>,
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
+    let atom_id = match name {
+        LabelName::Static(static_name) => {
+            let atom_index = self_compiler.string_counter;
+            self_compiler.string_counter += 1;
+            let name_ptr = self_compiler
+                .builder
+                .build_global_string_ptr(static_name, &format!("atom_name_{}", atom_index))
+                .unwrap()
+                .as_pointer_value();
+            let atom_from_bytes = self_compiler.get_runtime_fn(module, "__atom_from_bytes")?;
+            match self_compiler
+                .builder
+                .build_call(
+                    atom_from_bytes,
+                    &[
+                        name_ptr.into(),
+                        self_compiler
+                            .context
+                            .i64_type()
+                            .const_int(static_name.len() as u64, false)
+                            .into(),
+                    ],
+                    "atom_from_bytes_call",
+                )
+                .unwrap()
+                .try_as_basic_value()
+            {
+                ValueKind::Basic(value) => value.into_int_value(),
+                ValueKind::Instruction(_) => {
+                    return Err(SprsError::Internal {
+                        message: "__atom_from_bytes returned void".to_string(),
+                        location: None,
+                    });
+                }
+            }
+        }
+        LabelName::Dynamic(parts) => {
+            let (acc, temps_to_drop) = build_dynamic_string(self_compiler, parts, module)?;
+            let atom_from_string = self_compiler.get_runtime_fn(module, "__atom_from_string")?;
+            let id = match self_compiler
+                .builder
+                .build_call(atom_from_string, &[acc.into()], "atom_from_string_call")
+                .unwrap()
+                .try_as_basic_value()
+            {
+                ValueKind::Basic(value) => value.into_int_value(),
+                ValueKind::Instruction(_) => {
+                    return Err(SprsError::Internal {
+                        message: "__atom_from_string returned void".to_string(),
+                        location: None,
+                    });
+                }
+            };
+            // Drop all temporary string handles (atom interned the name).
+            let drop_fn = self_compiler.get_runtime_fn(module, "__drop")?;
+            let string_tag = self_compiler
+                .context
+                .i32_type()
+                .const_int(Tag::String as u64, false);
+            for (temporary_index, temp) in temps_to_drop.into_iter().enumerate() {
+                self_compiler
+                    .builder
+                    .build_call(
+                        drop_fn,
+                        &[string_tag.into(), temp.into()],
+                        &format!("atom_drop_tmp_{}", temporary_index),
+                    )
+                    .unwrap();
+            }
+            id
+        }
+    };
+
+    let result_ptr = create_entry_block_alloca(self_compiler, "atom_res")?;
+    self_compiler.build_runtime_value_store(
+        result_ptr,
+        StoreTag::Int(Tag::Atom as u64),
+        StoreValue::Int(atom_id),
+        "atom_res_store",
+    );
+    Ok(result_ptr.into())
+}
+
+/// Build a dynamic name string from template parts.
+///
+/// Returns `(final string handle, temporary handles to drop)`; the final
+/// handle is included in the temporaries. Callers intern it into a Label or
+/// Atom, then drop the temporaries.
+pub(crate) fn build_dynamic_string<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
     parts: &[LabelNamePart],
-    payload_tag: IntValue<'ctx>,
-    payload_data: IntValue<'ctx>,
     module: &inkwell::module::Module<'ctx>,
-) -> Result<IntValue<'ctx>, SprsError> {
+) -> Result<(IntValue<'ctx>, Vec<IntValue<'ctx>>), SprsError> {
     let string_new = self_compiler.get_runtime_fn(module, "__string_new")?;
     let string_concat = self_compiler.get_runtime_fn(module, "__string_concat")?;
     let value_to_string = self_compiler.get_runtime_fn(module, "__value_to_string")?;
-    let label_new_from_string = self_compiler.get_runtime_fn(module, "__label_new_from_string")?;
-    let drop_fn = self_compiler.get_runtime_fn(module, "__drop")?;
     let panic_fn = self_compiler.get_runtime_fn(module, "__panic")?;
 
     // Start with empty string.
@@ -724,6 +808,22 @@ fn build_dynamic_label_handle<'ctx>(
         temps_to_drop.push(concatenated);
         acc = concatenated;
     }
+
+    Ok((acc, temps_to_drop))
+}
+
+/// Build a dynamic label name string from template parts, then create the label.
+/// Temporary string handles are explicitly dropped after use.
+fn build_dynamic_label_handle<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+    parts: &[LabelNamePart],
+    payload_tag: IntValue<'ctx>,
+    payload_data: IntValue<'ctx>,
+    module: &inkwell::module::Module<'ctx>,
+) -> Result<IntValue<'ctx>, SprsError> {
+    let label_new_from_string = self_compiler.get_runtime_fn(module, "__label_new_from_string")?;
+    let drop_fn = self_compiler.get_runtime_fn(module, "__drop")?;
+    let (acc, temps_to_drop) = build_dynamic_string(self_compiler, parts, module)?;
 
     let handle = match self_compiler
         .builder

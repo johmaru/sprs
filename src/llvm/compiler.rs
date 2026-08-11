@@ -284,7 +284,7 @@ pub enum Tag {
     Unit = 6,
     Enum = 7,
     Struct = 8,
-    // 9 was the legacy Error tag; removed in Phase 3 Step 3 (left unused).
+    Atom = 9, // immediate: data = interned atom id (u32 as u64). NOT a slab handle
     Label = 10,
     Buffer = 11,
     RawPtr = 12, // bare address in `data`; not a slab handle
@@ -324,6 +324,7 @@ impl Tag {
             6 => Some(Tag::Unit),
             7 => Some(Tag::Enum),
             8 => Some(Tag::Struct),
+            9 => Some(Tag::Atom),
             10 => Some(Tag::Label),
             11 => Some(Tag::Buffer),
             12 => Some(Tag::RawPtr),
@@ -552,6 +553,7 @@ impl<'ctx> Compiler<'ctx> {
                     | Type::Range
                     | Type::Struct(_)
                     | Type::Label
+                    | Type::AtomVal
                     | Type::Buffer
                     | Type::RawPtr => self.runtime_value_type.into(),
                     Type::Int => self.context.i64_type().into(),
@@ -697,6 +699,28 @@ impl<'ctx> Compiler<'ctx> {
                 &[
                     i32_type.into(), // value tag
                     i64_type.into(), // value data
+                ],
+                false,
+            ),
+            "__atom_from_bytes" => i64_type.fn_type(
+                &[
+                    i8_ptr_type.into(), // atom name bytes
+                    i64_type.into(),    // atom name length
+                ],
+                false,
+            ),
+            "__atom_from_string" => i64_type.fn_type(
+                &[i64_type.into()], // string handle
+                false,
+            ),
+            "__atom_name" => i64_type.fn_type(
+                &[i64_type.into()], // atom id
+                false,
+            ),
+            "__atom_eq" => i32_type.fn_type(
+                &[
+                    i64_type.into(), // atom id a
+                    i64_type.into(), // atom id b
                 ],
                 false,
             ),

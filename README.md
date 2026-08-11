@@ -48,14 +48,15 @@ For this language development environment setup is WSL2(Ubuntu) + VSCode is reco
  * Struct
  * Buffer — fixed-size zero-initialized byte array; annotation keyword `buffer`
  * RawPtr — bare address from `@raw(buf)`; annotation keyword `rawptr`
- * Error labels (catchable) — `err` sugar for `Label(:error)`
+ * Error labels (catchable) — `err` sugar for `Label(:error, any)`
+ * Atom (immutable name) — annotation keyword `atom` (also `Atom(:name)` application form)
  * Label (tagged value) — annotation keyword `label` (also `Label(:name[, T])` application form)
  * i8 / u8 / i16 / u16 / i32 / u32 / i64 / u64 (mainly `@cast`; also usable in `>>` annotations)
  * fp16 / fp32 / fp64 (mainly `@cast`; also usable in `>>` annotations)
 
 Type *application* in annotations uses `Name(Type, …)` (for example `List(int)`,
 `Result(int, err)`, `Label(:ok, int)`). These are compile-time forms only: they are not runtime tags.
-Everyday code keeps the flat keywords (`list`, `err`, `label`, `buffer`, `rawptr`). Generics /
+Everyday code keeps the flat keywords (`list`, `err`, `atom`, `label`, `buffer`, `rawptr`). Generics /
 type parameters (`Param`) are not user-facing yet.
 
 `buffer` and `rawptr` are type keywords and cannot be used as identifiers (same for `new`,
@@ -200,11 +201,12 @@ while x < 10 {
 - Labels (tagged values)
 
 Labels are a core feature for tagging values (`Tag::Label`), not an error-only type.
-A label has a name plus one optional payload (Unit when omitted).
+A label always has a name plus one payload: `{:name, payload}`.
+A bare `:name` is an immutable Atom (`Tag::Atom`) with no payload.
 
 ```rust
-var success_label = :ok;
-var labeled_value = {:ok, 42};
+var success_label = :ok;              # Atom
+var labeled_value = {:ok, 42};        # Label with payload
 
 var item_index = 10;
 var dynamic_label = {:"{item_index}-item", 42};   # name becomes "10-item"
@@ -225,21 +227,23 @@ fn take(label_value >> label) >> label {
   return label_value;
 }
 
-@attach(wrap_named(7), :item);
-@println(:item);  # {:ok, 7}
+@attach(wrap_named(7), <:item);   # capture into a local slot
+@println(<:item);                 # {:ok, 7}
 ```
 
 Notes:
 - Dynamic templates reject `{}`, `{expr}`, and nested braces. Use `{ident}` only.
-- `@attach` currently accepts only a static label without payload (`:name`).
+- `@attach(expr, <:name)` stores a cloned value into the function-local slot
+  `<:name`; reading `<:name` before any `@attach` is a compile error.
+- A bare `:name` is always an Atom and never shadows an attached slot.
 - `?` propagates only the label named `:error`; ordinary labels such as `:ok` continue on the normal path.
 - There is no `match` / `case` syntax; use `@label_is` with `if`.
 
 #### **Error labels**
 
 Errors are ordinary labels, not a dedicated runtime value. `err` is syntax sugar
-for `Label(:error)`, and `@error(reason)` creates `{:error, reason}` with exactly
-one argument.
+for `Label(:error, any)`, and `@error(reason)` creates `{:error, reason}` with
+exactly one argument.
 
 The same value can be created directly as a normal label literal. Use
 `Label(:error, T)` when the error name and payload type should be part of the
@@ -374,15 +378,15 @@ var b = @cast(a, i8); # cast to i8
 @println(b); # prints 100 as i8
 ```
 
-* `@attach(expr, :name)`: Capture `expr`'s value under a static label name.
-  Later `:name` (no payload) reuses the captured value. Dynamic names are not supported yet.
+* `@attach(expr, <:name)`: Clone `expr` into the function-local attach slot `<:name`.
+  Read the captured value with `<:name` (not bare `:name`). Dynamic slot names are not supported.
 ```rust
-@attach(compute(), :result);
-@println(:result);
+@attach(compute(), <:result);
+@println(<:result);
 ```
 
 * `@label_is(value, expected)`: `true` when `value` is a label whose name matches
-  `expected` (`:name` or `:"{ident}-…"` without payload).
+  `expected` (an Atom: `:name` or `:"{ident}-…"`).
 * `@label_payload(value)`: Clone the label payload (Unit when not a label).
 * `@label_name(value)`: Return the label name as `str` (`""` when not a label).
 ```rust

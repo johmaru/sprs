@@ -24,6 +24,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::CStr;
+use std::sync::{Mutex, OnceLock};
 
 // ---------------------------------------------------------------------------
 // Public value types (C ABI)
@@ -47,7 +48,7 @@ pub enum Tag {
     Unit = 6,
     Enum = 7,
     Struct = 8,
-    // 9 was the legacy Error tag; removed in Phase 3 Step 3 (left unused).
+    Atom = 9, // immediate: data = interned atom id (u32 as u64). NOT a slab handle
     Label = 10,
     Buffer = 11,
     RawPtr = 12, // bare address in `data`; not a slab handle
@@ -69,6 +70,7 @@ pub enum Tag {
 
 /// Return true for tags whose `data` field is a slab handle (needs `__drop`).
 /// RawPtr is intentionally omitted: `data` is a bare address, not a slab handle.
+/// Atom is omitted too: `data` is an interned id, an immediate value.
 const fn is_heap_tag(tag: i32) -> bool {
     matches!(
         tag,
@@ -80,6 +82,45 @@ const fn is_heap_tag(tag: i32) -> bool {
             || tag_value == Tag::Label as i32
             || tag_value == Tag::Buffer as i32
     )
+}
+
+// ---------------------------------------------------------------------------
+// Atom interning (process-global, never freed — Elixir-style)
+// ---------------------------------------------------------------------------
+
+struct AtomTable {
+    to_id: HashMap<String, u32>,
+    to_name: Vec<String>,
+}
+
+static ATOM_TABLE: OnceLock<Mutex<AtomTable>> = OnceLock::new();
+
+fn atom_table() -> &'static Mutex<AtomTable> {
+    ATOM_TABLE.get_or_init(|| {
+        Mutex::new(AtomTable {
+            to_id: HashMap::new(),
+            to_name: Vec::new(),
+        })
+    })
+}
+
+/// Intern a name, returning its stable id. The same name always yields the
+/// same id; ids are never reused or freed.
+fn intern_atom(name: &str) -> u32 {
+    let mut table = atom_table().lock().unwrap();
+    if let Some(&id) = table.to_id.get(name) {
+        return id;
+    }
+    let id = table.to_name.len() as u32;
+    table.to_name.push(name.to_string());
+    table.to_id.insert(name.to_string(), id);
+    id
+}
+
+/// Reverse lookup: id → name. `None` for ids never handed out.
+fn atom_name(id: u32) -> Option<String> {
+    let table = atom_table().lock().unwrap();
+    table.to_name.get(id as usize).cloned()
 }
 
 // ---------------------------------------------------------------------------
@@ -817,6 +858,43 @@ pub extern "C" fn __label_names_equal(first_value: u64, second_value: u64) -> i3
     }
 }
 
+/// Intern a static name (bytes) and return its atom id.
+#[unsafe(no_mangle)]
+pub extern "C" fn __atom_from_bytes(name_ptr: *const u8, name_len: i64) -> u64 {
+    if name_ptr.is_null() || name_len < 0 {
+        return u64::MAX;
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(name_ptr, name_len as usize) };
+    let name = String::from_utf8_lossy(bytes).into_owned();
+    u64::from(intern_atom(&name))
+}
+
+/// Intern the contents of a String slot as an atom id.
+#[unsafe(no_mangle)]
+pub extern "C" fn __atom_from_string(name_handle: u64) -> u64 {
+    let name: Option<String> = slot_with(name_handle, None, |slot_data| match slot_data {
+        SlotData::String(string_value) => Some(string_value.clone()),
+        _ => None,
+    });
+    match name {
+        Some(string_value) => u64::from(intern_atom(&string_value)),
+        None => u64::MAX,
+    }
+}
+
+/// Return the name of an atom id as a new String slot ("" for invalid ids).
+#[unsafe(no_mangle)]
+pub extern "C" fn __atom_name(id: u64) -> u64 {
+    let name = atom_name(id as u32).unwrap_or_default();
+    slot_insert(SlotData::String(name))
+}
+
+/// Compare two atom ids. Returns 1 on equality, else 0.
+#[unsafe(no_mangle)]
+pub extern "C" fn __atom_eq(left: u64, right: u64) -> i32 {
+    i32::from(left == right)
+}
+
 /// Return a cloned payload from a label. Non-label → Unit.
 #[unsafe(no_mangle)]
 pub extern "C" fn __label_payload(handle: u64) -> SprsValue {
@@ -1299,6 +1377,13 @@ fn format_sprs_value(val: &SprsValue, out: &mut String) {
             use std::fmt::Write;
             let _ = write!(out, "RawPtr(0x{:x})", val.data);
         }
+        tag_value if tag_value == Tag::Atom as i32 => {
+            out.push(':');
+            match atom_name(val.data as u32) {
+                Some(name) => out.push_str(&name),
+                None => out.push_str("<?>"),
+            }
+        }
         tag_value if tag_value == Tag::Label as i32 => {
             let (name, payload) = slot_with(
                 val.data,
@@ -1320,16 +1405,11 @@ fn format_sprs_value(val: &SprsValue, out: &mut String) {
                     ),
                 },
             );
-            if payload.tag == Tag::Unit as i32 {
-                out.push(':');
-                out.push_str(&name);
-            } else {
-                out.push_str("{:");
-                out.push_str(&name);
-                out.push_str(", ");
-                format_sprs_value(&payload, out);
-                out.push('}');
-            }
+            out.push_str("{:");
+            out.push_str(&name);
+            out.push_str(", ");
+            format_sprs_value(&payload, out);
+            out.push('}');
         }
         _ => {
             out.push_str("<unknown type>");
@@ -1358,11 +1438,12 @@ pub extern "C" fn __panic(message_ptr: *const i8) {
 #[cfg(test)]
 mod tests {
     use super::{
-        __buffer_exist, __buffer_get, __buffer_into_raw, __buffer_len, __buffer_new, __buffer_set,
-        __clone, __drop, __error_label_from_str, __error_message_from_label, __label_is_error,
-        __label_name, __label_name_eq, __label_new, __label_new_from_string, __label_payload,
-        __raw_free, __string_new, __value_to_string, INVALID_HANDLE, RAW_LAYOUTS, SlotData,
-        SprsValue, Tag, format_sprs_value, slot_with,
+        __atom_eq, __atom_from_bytes, __atom_from_string, __atom_name, __buffer_exist,
+        __buffer_get, __buffer_into_raw, __buffer_len, __buffer_new, __buffer_set, __clone,
+        __drop, __error_label_from_str, __error_message_from_label, __label_is_error, __label_name,
+        __label_name_eq, __label_new, __label_new_from_string, __label_payload, __raw_free,
+        __string_new, __value_to_string, atom_name, intern_atom, INVALID_HANDLE, RAW_LAYOUTS,
+        SlotData, SprsValue, Tag, format_sprs_value, slot_with,
     };
 
     #[test]
@@ -1387,7 +1468,9 @@ mod tests {
     }
 
     #[test]
-    fn label_without_payload_prints_name_only() {
+    fn label_with_unit_payload_prints_brace_form() {
+        // Bare `:ok` is now an Atom; a Label always carries a payload, so a
+        // Unit payload renders as `{:ok, ()}` rather than `:ok`.
         let name = b"ok";
         let handle = __label_new(name.as_ptr(), name.len() as i64, Tag::Unit as i32, 0);
         let value = SprsValue {
@@ -1396,8 +1479,86 @@ mod tests {
         };
         let mut output = String::new();
         format_sprs_value(&value, &mut output);
-        assert_eq!(output, ":ok");
+        assert_eq!(output, "{:ok, ()}");
         __drop(value.tag, value.data);
+    }
+
+    #[test]
+    fn atom_intern_returns_stable_ids() {
+        let first = intern_atom("ok");
+        let second = intern_atom("ok");
+        assert_eq!(first, second);
+        let other = intern_atom("error");
+        assert_ne!(first, other);
+        assert_eq!(atom_name(first).as_deref(), Some("ok"));
+        assert_eq!(atom_name(u32::MAX), None);
+    }
+
+    #[test]
+    fn atom_from_bytes_and_format() {
+        let id = __atom_from_bytes(b"ok".as_ptr(), 2);
+        assert_ne!(id, u64::MAX);
+        let value = SprsValue {
+            tag: Tag::Atom as i32,
+            data: id,
+        };
+        let mut output = String::new();
+        format_sprs_value(&value, &mut output);
+        assert_eq!(output, ":ok");
+        // Invalid id renders as :<?>
+        let bad = SprsValue {
+            tag: Tag::Atom as i32,
+            data: u64::MAX,
+        };
+        let mut bad_output = String::new();
+        format_sprs_value(&bad, &mut bad_output);
+        assert_eq!(bad_output, ":<?>");
+    }
+
+    #[test]
+    fn atom_from_string_interps_slot_content() {
+        let string_handle = __string_new(b"item".as_ptr(), 4);
+        let id = __atom_from_string(string_handle);
+        assert_ne!(id, u64::MAX);
+        assert_eq!(atom_name(id as u32).as_deref(), Some("item"));
+        // Non-string handle → invalid id.
+        assert_eq!(__atom_from_string(INVALID_HANDLE), u64::MAX);
+        __drop(Tag::String as i32, string_handle);
+    }
+
+    #[test]
+    fn atom_eq_compares_ids() {
+        let a = __atom_from_bytes(b"ok".as_ptr(), 2);
+        let b = __atom_from_bytes(b"ok".as_ptr(), 2);
+        let c = __atom_from_bytes(b"no".as_ptr(), 2);
+        assert_eq!(__atom_eq(a, b), 1);
+        assert_eq!(__atom_eq(a, c), 0);
+    }
+
+    #[test]
+    fn atom_name_returns_new_string_slot() {
+        let id = __atom_from_bytes(b"hello".as_ptr(), 5);
+        let name_handle = __atom_name(id);
+        let text = slot_with(name_handle, String::new(), |slot_data| match slot_data {
+            SlotData::String(string_value) => string_value.clone(),
+            _ => String::new(),
+        });
+        assert_eq!(text, "hello");
+        __drop(Tag::String as i32, name_handle);
+        // Invalid id → empty string slot, never INVALID.
+        let empty_handle = __atom_name(u64::MAX);
+        assert_ne!(empty_handle, INVALID_HANDLE);
+        __drop(Tag::String as i32, empty_handle);
+    }
+
+    #[test]
+    fn atom_clone_and_drop_are_noops() {
+        let id = __atom_from_bytes(b"ok".as_ptr(), 2);
+        let cloned = __clone(Tag::Atom as i32, id);
+        assert_eq!(cloned.tag, Tag::Atom as i32);
+        assert_eq!(cloned.data, id);
+        __drop(Tag::Atom as i32, id); // must not panic
+        __drop(Tag::Atom as i32, id); // double drop must not panic
     }
     #[test]
     fn dropping_label_releases_heap_payload() {

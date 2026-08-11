@@ -43,6 +43,7 @@ extern {
         EqEq   => Token::EqEq,
         Neq    => Token::Neq,
         Lt     => Token::Lt,
+        LtColon => Token::LtColon,
         Gt     => Token::Gt,
         GtGt   => Token::GtGt,
         Question => Token::Question,
@@ -92,6 +93,7 @@ extern {
         TypeUnit => Token::TypeUnit,
         TypeError => Token::TypeError,
         TypeLabel => Token::TypeLabel,
+        TypeAtomKw => Token::TypeAtomKw,
 
         TypeI8 => Token::TypeI8,
         TypeU8 => Token::TypeU8,
@@ -254,11 +256,12 @@ Type: Type = {
     TypeRawPtr => Type::RawPtr,
     TypeRange => Type::Range,
     TypeUnit => Type::Unit,
-    // `err` sugar: `{:error, reason}` label. `Type::Error` is removed in Phase 3 Step 3.
-    TypeError => Type::App("Label".into(), vec![Type::Atom("error".into())]),
+    // `err` sugar: `{:error, reason}` label.
+    TypeError => Type::App("Label".into(), vec![Type::Atom("error".into()), Type::Any]),
     TypeLabel => Type::Label,
+    TypeAtomKw => Type::AtomVal,
 
-    // Named label argument: `Label(:ok)`, `Label(:ok, int)`. Compile-time only.
+    // Named label/atom argument: `Label(:ok, int)`, `Atom(:ok)`. Compile-time only.
     Colon <id:Ident> => Type::Atom(id),
 
     TypeI8 => Type::TypeI8,
@@ -506,20 +509,21 @@ Atom: Spanned<Expr> = {
         args.extend(rest);
         Spanned::new(Expr::Call(id, args), Span::new(start, end))
     },
-    <start:@L> Colon <id:Ident> <end:@R> => Spanned::new(Expr::Label(LabelName::Static(id), None), Span::new(start, end)),
+    <start:@L> Colon <id:Ident> <end:@R> => Spanned::new(Expr::Atom(LabelName::Static(id)), Span::new(start, end)),
     <start:@L> Colon <s:StringLiteral> <end:@R> =>? {
         match parse_dynamic_label_template(&s) {
-            Ok(parts) => Ok(Spanned::new(Expr::Label(LabelName::Dynamic(parts), None), Span::new(start, end))),
+            Ok(parts) => Ok(Spanned::new(Expr::Atom(LabelName::Dynamic(parts)), Span::new(start, end))),
             Err(msg) => Err(ParseError::User { error: msg }),
         }
     },
-    <start:@L> LBrace Colon <id:Ident> Comma <payload:Expr> RBrace <end:@R> => Spanned::new(Expr::Label(LabelName::Static(id), Some(Box::new(payload))), Span::new(start, end)),
+    <start:@L> LBrace Colon <id:Ident> Comma <payload:Expr> RBrace <end:@R> => Spanned::new(Expr::Label(LabelName::Static(id), Box::new(payload)), Span::new(start, end)),
     <start:@L> LBrace Colon <s:StringLiteral> Comma <payload:Expr> RBrace <end:@R> =>? {
         match parse_dynamic_label_template(&s) {
-            Ok(parts) => Ok(Spanned::new(Expr::Label(LabelName::Dynamic(parts), Some(Box::new(payload))), Span::new(start, end))),
+            Ok(parts) => Ok(Spanned::new(Expr::Label(LabelName::Dynamic(parts), Box::new(payload)), Span::new(start, end))),
             Err(msg) => Err(ParseError::User { error: msg }),
         }
     },
+    <start:@L> LtColon <id:Ident> <end:@R> => Spanned::new(Expr::AttachSlot(id), Span::new(start, end)),
     <start:@L> <id:Ident> <end:@R> => Spanned::new(Expr::Var(id), Span::new(start, end)),
     <start:@L> <n:Num> <end:@R> => Spanned::new(Expr::Number(n), Span::new(start, end)),
     <start:@L> <f:Float> <end:@R> => Spanned::new(Expr::Float(f), Span::new(start, end)),

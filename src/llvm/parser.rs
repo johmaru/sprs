@@ -40,7 +40,10 @@ fn error_value() >> err { return @error(100, "x"); }
             vec![
                 &Type::List,
                 &Type::Range,
-                &Type::App("Label".into(), vec![Type::Atom("error".into())])
+                &Type::App(
+                    "Label".into(),
+                    vec![Type::Atom("error".into()), Type::Any]
+                )
             ]
         );
 
@@ -69,7 +72,7 @@ fn third_function(xs >> List()) >> list { return xs; }
         let list_int = Type::App("List".into(), vec![Type::Int]);
         let result_int_err = Type::App(
             "Result".into(),
-            vec![Type::Int, Type::App("Label".into(), vec![Type::Atom("error".into())])],
+            vec![Type::Int, Type::App("Label".into(), vec![Type::Atom("error".into()), Type::Any])],
         );
 
         match &items[0] {
@@ -118,7 +121,7 @@ fn third_function(xs >> List()) >> list { return xs; }
             "List".into(),
             vec![Type::App(
                 "Result".into(),
-                vec![Type::Int, Type::App("Label".into(), vec![Type::Atom("error".into())])],
+                vec![Type::Int, Type::App("Label".into(), vec![Type::Atom("error".into()), Type::Any])],
             )],
         );
         match &items[0] {
@@ -184,9 +187,8 @@ fn third_function(xs >> List()) >> list { return xs; }
         };
         assert!(matches!(
             first.expr.as_ref().map(|expr| &expr.node),
-            Some(crate::front::ast::Expr::Label(
-                crate::front::label_name::LabelName::Static(name),
-                None
+            Some(crate::front::ast::Expr::Atom(
+                crate::front::label_name::LabelName::Static(name)
             )) if name == "ok"
         ));
         let crate::front::ast::Stmt::Var(second) = &function.blk[1].node else {
@@ -196,7 +198,7 @@ fn third_function(xs >> List()) >> list { return xs; }
             second.expr.as_ref().map(|expr| &expr.node),
             Some(crate::front::ast::Expr::Label(
                 crate::front::label_name::LabelName::Static(name),
-                Some(payload)
+                payload
             )) if name == "value" && matches!(payload.node, crate::front::ast::Expr::Number(42))
         ));
     }
@@ -212,9 +214,8 @@ fn third_function(xs >> List()) >> list { return xs; }
             panic!("expected first variable");
         };
         match first.expr.as_ref().map(|expr| &expr.node) {
-            Some(crate::front::ast::Expr::Label(
+            Some(crate::front::ast::Expr::Atom(
                 crate::front::label_name::LabelName::Dynamic(parts),
-                None,
             )) => {
                 assert_eq!(
                     parts,
@@ -224,7 +225,7 @@ fn third_function(xs >> List()) >> list { return xs; }
                     ]
                 );
             }
-            other => panic!("expected dynamic label, got {:?}", other),
+            other => panic!("expected dynamic atom, got {:?}", other),
         }
         let crate::front::ast::Stmt::Var(second) = &function.blk[1].node else {
             panic!("expected second variable");
@@ -232,7 +233,7 @@ fn third_function(xs >> List()) >> list { return xs; }
         match second.expr.as_ref().map(|expr| &expr.node) {
             Some(crate::front::ast::Expr::Label(
                 crate::front::label_name::LabelName::Dynamic(parts),
-                Some(payload),
+                payload,
             )) => {
                 assert_eq!(
                     parts,
@@ -245,6 +246,22 @@ fn third_function(xs >> List()) >> list { return xs; }
             }
             other => panic!("expected dynamic label with payload, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn parses_attach_slot() {
+        let src = "fn main() { var item = <:item; @attach(1, <:item); }\n";
+        let items = parse_only(src, "attach_slot.sprs").expect("parse");
+        let crate::front::ast::Item::FunctionItem(function) = &items[0] else {
+            panic!("expected function");
+        };
+        let crate::front::ast::Stmt::Var(first) = &function.blk[0].node else {
+            panic!("expected first variable");
+        };
+        assert!(matches!(
+            first.expr.as_ref().map(|expr| &expr.node),
+            Some(crate::front::ast::Expr::AttachSlot(name)) if name == "item"
+        ));
     }
 
     #[test]
@@ -285,19 +302,22 @@ fn second_label_value(input_value >> Label(int)) >> Label(int) { return input_va
     #[test]
     fn parses_named_label_type_annotations() {
         let src = r#"
-fn first_function() >> Label(:ok) { return :ok; }
+fn first_function() >> Atom(:ok) { return :ok; }
 fn second_function(input_value >> Label(:ok, int)) >> Label(:ok, int) { return input_value; }
 fn third_function() >> err { return :error; }
 "#;
         let items = parse_only(src, "named_label_ty.sprs").expect("parse");
-        let label_ok = Type::App("Label".into(), vec![Type::Atom("ok".into())]);
+        let atom_ok = Type::App("Atom".into(), vec![Type::Atom("ok".into())]);
         let label_ok_int =
             Type::App("Label".into(), vec![Type::Atom("ok".into()), Type::Int]);
-        let err_sugar = Type::App("Label".into(), vec![Type::Atom("error".into())]);
+        let err_sugar = Type::App(
+            "Label".into(),
+            vec![Type::Atom("error".into()), Type::Any],
+        );
 
         match &items[0] {
             Item::FunctionItem(function_item) => {
-                assert_eq!(function_item.ret_ty.as_ref(), Some(&label_ok));
+                assert_eq!(function_item.ret_ty.as_ref(), Some(&atom_ok));
             }
             other => panic!("expected first function, got {:?}", other),
         }

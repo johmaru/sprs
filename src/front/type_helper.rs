@@ -18,6 +18,7 @@
 /// | Enum            | Enum         | 7            |
 /// | Struct(_)       | Struct       | 8            |
 /// | Label           | Label        | 10           |
+/// | AtomVal         | Atom         | 9            |
 /// | Buffer          | Buffer       | 11           |
 /// | RawPtr          | RawPtr       | 12           |
 /// | TypeI8          | Int8         | 100          |
@@ -45,8 +46,9 @@
 /// `App("List", [Int])`. Everyday annotations keep the keywords (`list`,
 /// `err`, `label`); `App` is for explicit constructor application in annotations.
 ///
-/// Runtime tag 9 is unused: it was the legacy `Error` tag, removed in Phase 3
-/// Step 3. No `Type` maps to it.
+/// Runtime tag 9 is `Atom`: an interned, immutable symbol with no payload
+/// (`Tag::Atom`, data = intern id). It is an immediate value, not a slab
+/// handle — `is_heap_tag` excludes it and `__drop` / `__clone` are no-ops.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Type {
     Any,
@@ -60,6 +62,7 @@ pub enum Type {
     Enum(String),
     Struct(String),
     Label,
+    AtomVal,
     Buffer,
     RawPtr,
 
@@ -108,6 +111,7 @@ impl Type {
             Type::Unit => Some(6),
             Type::Enum(_) => Some(7),
             Type::Struct(_) => Some(8),
+            Type::AtomVal => Some(9),
             Type::Label => Some(10),
             Type::Buffer => Some(11),
             Type::RawPtr => Some(12),
@@ -144,7 +148,7 @@ impl Type {
             6 => Some(Type::Unit),
             7 => Some(Type::Enum(String::new())),
             8 => Some(Type::Struct(String::new())),
-            // 9 is the legacy Error tag (removed in Phase 3 Step 3); no Type maps to it.
+            9 => Some(Type::AtomVal),
             10 => Some(Type::Label),
             11 => Some(Type::Buffer),
             12 => Some(Type::RawPtr),
@@ -187,6 +191,12 @@ impl Type {
 ///   - `Label` ≡ `App("Label", [])` ≡ `App("Label", [Any])`
 ///   `App("List", [Int])` is not compatible with bare `List`; bare `Label` is
 ///   not compatible with `Label(:name[, T])` either
+/// - Named atom applications (atoms carry no payload):
+///   - `AtomVal` ≡ `App("Atom", [])` ≡ `App("Atom", [Any])`
+///   - `App("Atom", [Atom(:name)])` ≡ `App("Atom", [Atom(:name), Any])` (symmetric)
+///   - the only named atom form is `App("Atom", [Atom(:name)])`; a payload
+///     arg other than `Any` is rejected
+///   - `AtomVal` is not compatible with `Atom(:name)` (same rule as `Label`)
 pub fn types_compatible(expected: &Type, actual: &Type) -> bool {
     if expected == actual {
         return true;
@@ -205,6 +215,12 @@ pub fn types_compatible(expected: &Type, actual: &Type) -> bool {
         (Type::Atom(a), Type::Atom(b)) => a == b,
         (Type::App(n1, a1), Type::App(n2, a2)) if n1 == "Label" && n2 == "Label" => {
             label_args_compatible(a1, a2)
+        }
+        (Type::App(n1, a1), Type::App(n2, a2)) if n1 == "Atom" && n2 == "Atom" => {
+            atom_args_compatible(a1, a2)
+        }
+        (Type::AtomVal, Type::App(n, args)) | (Type::App(n, args), Type::AtomVal) => {
+            n == "Atom" && is_untyped_collection_args(args)
         }
         (Type::App(n1, a1), Type::App(n2, a2)) => {
             n1 == n2
@@ -256,9 +272,39 @@ fn label_args_compatible(expected: &[Type], actual: &[Type]) -> bool {
     }
 }
 
+/// Compatibility for `Atom(:name[, Any])` argument lists.
+///
+/// Atoms carry no payload, so the only named form is a single `Atom(name)`.
+/// The `Any`-suffixed forms are symmetric bridge targets for the flat
+/// `AtomVal` keyword (`atom`).
+fn atom_args_compatible(expected: &[Type], actual: &[Type]) -> bool {
+    match (expected, actual) {
+        ([Type::Atom(e_name)], [Type::Atom(a_name)]) => e_name == a_name,
+        ([Type::Atom(e_name)], [Type::Atom(a_name), Type::Any]) => e_name == a_name,
+        ([Type::Atom(e_name), Type::Any], [Type::Atom(a_name)]) => e_name == a_name,
+        _ => false,
+    }
+}
+
+/// Reject a payload-less label type annotation (`Label(:ok)`).
+///
+/// Since bare `:ok` is now an Atom, `Label(:ok)` is a contradiction: a Label
+/// requires a payload. Callers should use `Atom(:ok)` instead. The flat
+/// `label`, the two-arg `Label(:name, T)` and the name-less
+/// `App("Label", [T])` forms stay valid.
+pub fn reject_payloadless_label_type(ty: &Type) -> Result<(), String> {
+    match ty {
+        Type::App(n, args) if n == "Label" => match args.as_slice() {
+            [Type::Atom(_)] => Err("use Atom(:name) instead of Label(:name)".to_string()),
+            _ => Ok(()),
+        },
+        _ => Ok(()),
+    }
+}
+
 /// Whether a static type denotes the `:error` label.
 ///
-/// Matches the `err` sugar (`Label(:error)`) and both named forms
+/// Matches the `err` sugar (`Label(:error, any)`) and both named forms
 /// `Label(:error)` / `Label(:error, T)`. Used for the failure check in
 /// return-type validation (`@error(reason)` produces `{:error, reason}`).
 pub fn is_error_label_type(ty: &Type) -> bool {
@@ -331,8 +377,8 @@ mod tests {
         assert_eq!(Type::App("List".into(), vec![Type::Int]).tag_discriminant(), None);
         assert_eq!(Type::Param("T".into()).tag_discriminant(), None);
         assert_eq!(Type::from_tag_discriminant(4), Some(Type::List));
-        // 9 is the legacy Error tag (removed); no Type maps to it.
-        assert_eq!(Type::from_tag_discriminant(9), None);
+        assert_eq!(Type::AtomVal.tag_discriminant(), Some(9));
+        assert_eq!(Type::from_tag_discriminant(9), Some(Type::AtomVal));
         assert_eq!(Type::from_tag_discriminant(10), Some(Type::Label));
         assert_eq!(Type::from_tag_discriminant(11), Some(Type::Buffer));
         assert_eq!(Type::RawPtr.tag_discriminant(), Some(12));
