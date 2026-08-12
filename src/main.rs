@@ -233,7 +233,64 @@
 //!   `<:name`; reading `<:name` before any `@attach` is a compile error.
 //! - A bare `:name` is always an Atom and never shadows an attached slot.
 //! - `?` propagates only the label named `:error`; ordinary labels such as `:ok` continue on the normal path.
-//! - There is no `match` / `case` syntax; use `@label_is` with `if`.
+//!
+//! - Match
+//!
+//! `match` is a statement for branching on Atom / Label values with static
+//! patterns. Two forms:
+//!
+//! - **Bind** — `match <Expr> ?(var name) { case PAT => expr break; … }`.
+//!   Each arm evaluates an expression, stores it into `name`, and leaves the
+//!   match. The binding is visible after the match in the same block.
+//! - **No bind** — `match <Expr> { case PAT => { stmts } … }`. Arms are
+//!   statement blocks (same shape as `if`).
+//!
+//! Patterns (v1, static names only):
+//! - `case :name` — match Atom or Label by name (no payload bind)
+//! - `case {:name, binder}` — Label only; bind the payload to `binder`
+//!   (`_` discards it)
+//!
+//! ```sprs
+//! fn match_label_bind() >> int {
+//!   match {:ok, 7} ?(var r) {
+//!     case :ok => 1 break;
+//!     case :error => 0 break;
+//!   }
+//!   return r;
+//! }
+//!
+//! fn match_payload_bind() >> int {
+//!   match {:ok, 7} ?(var r) {
+//!     case {:ok, x} => x break;
+//!     case :error => 0 break;
+//!   }
+//!   return r;
+//! }
+//!
+//! fn match_atom_bind() >> int {
+//!   match :ok ?(var r) {
+//!     case :ok => 1 break;
+//!     case :error => 0 break;
+//!   }
+//!   return r;
+//! }
+//!
+//! fn match_no_bind_block() >> int {
+//!   var flag = 0;
+//!   match :error {
+//!     case :ok => { flag = 100; }
+//!     case :error => { flag = 1; }
+//!   }
+//!   return flag;
+//! }
+//! ```
+//!
+//! Notes:
+//! - Unmatched scrutinees panic with `Match failed` (process exits non-zero).
+//! - Dynamic name patterns such as `case :"{i}-item"` are rejected at compile
+//!   time. Prefer `@label_is` with `if` for dynamic names.
+//! - The bind marker is the single token `?(`; it does not collide with
+//!   postfix Try `?` (`match x? { … }` still means Try-then-match).
 //!
 //! ### **Error labels**
 //!

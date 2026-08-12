@@ -116,7 +116,7 @@ impl<'ctx> Compiler<'ctx> {
         Ok(())
     }
 
-    fn infer_type(&self, expr: &Spanned<ast::Expr>) -> Type {
+    pub(crate) fn infer_type(&self, expr: &Spanned<ast::Expr>) -> Type {
         match &expr.node {
             ast::Expr::Number(_) => Type::Int,
             ast::Expr::Float(_) => Type::Float,
@@ -713,6 +713,14 @@ impl<'ctx> Compiler<'ctx> {
                     if let Some(scope) = self.scopes.last_mut() {
                         scope.deferred.push(expr.clone());
                     }
+                }
+                ast::Stmt::Match {
+                    scrutinee,
+                    bind,
+                    arms,
+                    ..
+                } => {
+                    builder_helper::create_match_stmt(self, scrutinee, bind, arms, module)?;
                 }
                 ast::Stmt::Expr(expr) => {
                     self.compile_expr(expr, module)?;

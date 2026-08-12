@@ -13,6 +13,9 @@ use crate::front::ast::{
     StructField,
     Suffix,
     LabelName,
+    MatchPat,
+    MatchArm,
+    MatchArmBody,
     parse_dynamic_label_template,
 };
 use crate::front::span::{Span, Spanned};
@@ -47,6 +50,11 @@ extern {
         Gt     => Token::Gt,
         GtGt   => Token::GtGt,
         Question => Token::Question,
+        QuestionLParen => Token::QuestionLParen,
+        Match => Token::Match,
+        Case => Token::Case,
+        Break => Token::Break,
+        FatArrow => Token::FatArrow,
         Le     => Token::Le,
         Ge     => Token::Ge,
         Dot    => Token::Dot,
@@ -342,6 +350,7 @@ Stmt: Spanned<Stmt> = {
         }
     },
     IfStmt,
+    MatchStmt,
     <start:@L> While <c:Expr> <body:Block> <end:@R> =>
         Spanned::new(Stmt::While {
             cond: c,
@@ -373,6 +382,74 @@ IfStmt: Spanned<Stmt> = {
         then_blk: then,
         else_blk: Some(else_blk),
     }, Span::new(start, end)),
+};
+
+/// `match <scrutinee> ?(var name) { case PAT => expr break; ... }` (bind form)
+/// or `match <scrutinee> { case PAT => { stmts } ... }` (no-bind form).
+///
+/// The bind form takes a full Expr as scrutinee: `?(` is a single lexer token
+/// (QuestionLParen), so the bind `?` never competes with the postfix Try `?`.
+/// `match x? {` (Try, no bind) and `match x ?(var r) {` (bind) separate on the
+/// lookahead after the Expr is reduced.
+MatchStmt: Spanned<Stmt> = {
+    // bind: `match <Expr> ?(var name) { ... }`
+    <start:@L> Match <e:Expr> QuestionLParen Var <bind:Ident> RParen
+        LBrace <arms:MatchArmsBind> RBrace <end:@R>
+      => Spanned::new(Stmt::Match {
+          scrutinee: e,
+          bind: Some(bind),
+          arms,
+          span: Span::new(start, end),
+      }, Span::new(start, end)),
+
+    // no bind: `match <Expr> { case PAT => { ... } }`
+    <start:@L> Match <e:Expr> LBrace <arms:MatchArmsBlock> RBrace <end:@R>
+      => Spanned::new(Stmt::Match {
+          scrutinee: e,
+          bind: None,
+          arms,
+          span: Span::new(start, end),
+      }, Span::new(start, end)),
+};
+
+MatchArmsBind: Vec<MatchArm> = {
+    <a:MatchArmBind> => vec![a],
+    <a:MatchArmBind> <rest:MatchArmsBind> => {
+        let mut v = vec![a];
+        v.extend(rest);
+        v
+    }
+};
+
+MatchArmBind: MatchArm = {
+    <start:@L> Case <pat:MatchPatNode> FatArrow <e:Expr> Break Semi <end:@R> => MatchArm {
+        pat,
+        body: MatchArmBody::ExprBreak(e),
+        span: Span::new(start, end),
+    },
+};
+
+MatchArmsBlock: Vec<MatchArm> = {
+    <a:MatchArmBlock> => vec![a],
+    <a:MatchArmBlock> <rest:MatchArmsBlock> => {
+        let mut v = vec![a];
+        v.extend(rest);
+        v
+    }
+};
+
+MatchArmBlock: MatchArm = {
+    <start:@L> Case <pat:MatchPatNode> FatArrow <body:Block> <end:@R> => MatchArm {
+        pat,
+        body: MatchArmBody::Block(body),
+        span: Span::new(start, end),
+    },
+};
+
+MatchPatNode: MatchPat = {
+    Colon <id:Ident> => MatchPat::Name(LabelName::Static(id)),
+    LBrace Colon <id:Ident> Comma <binder:Ident> RBrace =>
+        MatchPat::LabelPayload { name: LabelName::Static(id), binder },
 };
 
 StmtTail: Option<Spanned<Expr>> = {

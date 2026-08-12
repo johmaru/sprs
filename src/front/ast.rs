@@ -139,6 +139,36 @@ pub enum Suffix {
     Struct(Vec<(String, Spanned<Expr>)>),
 }
 
+/// A `case` pattern in a `match` statement.
+///
+/// v1 supports static names only: `:name` (Atom or Label by name, no payload
+/// bind) and `{:name, binder}` (Label only, payload bound to `binder` unless
+/// the binder is `"_"`). Dynamic `:"{i}-item"` patterns are rejected.
+#[derive(Debug, PartialEq)]
+pub enum MatchPat {
+    /// `case :name` — Atom or Label by name (no payload bind)
+    Name(LabelName),
+    /// `case {:name, binder}` — Label only; binder `"_"` means ignore
+    LabelPayload { name: LabelName, binder: String },
+}
+
+/// Body of one `match` arm.
+#[derive(Debug, PartialEq)]
+pub enum MatchArmBody {
+    /// Bind form: `=> expr break;` — value is stored into the `?(var name)` binding.
+    ExprBreak(Spanned<Expr>),
+    /// No-bind form: `=> { stmts }`
+    Block(Vec<Spanned<Stmt>>),
+}
+
+/// One `case` arm of a `match` statement.
+#[derive(Debug, PartialEq)]
+pub struct MatchArm {
+    pub pat: MatchPat,
+    pub body: MatchArmBody,
+    pub span: Span,
+}
+
 #[derive(Debug, PartialEq)]
 pub enum Stmt {
     Var(VarDecl),
@@ -169,4 +199,11 @@ pub enum Stmt {
     }, // queue `expr`; LIFO at scope exit before auto `__drop`
     Return(Option<Spanned<Expr>>),
     EnumItem(Enum),
+    Match {
+        scrutinee: Spanned<Expr>,
+        /// Some(name) when `?(var name)` present
+        bind: Option<String>,
+        arms: Vec<MatchArm>,
+        span: Span,
+    },
 }

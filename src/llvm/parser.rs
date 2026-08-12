@@ -15,7 +15,10 @@ pub fn parse_only(input: &str, file_path: &str) -> Result<Vec<ast::Item>, SprsEr
 #[cfg(test)]
 mod tests {
     use super::parse_only;
-    use crate::front::ast::{Function, Item};
+    use crate::front::ast::{
+        Expr, Function, Item, MatchArmBody, MatchPat, Stmt,
+    };
+    use crate::front::label_name::LabelName;
     use crate::front::type_helper::{Type, TypeAnnot};
 
     #[test]
@@ -360,4 +363,162 @@ fn third_function() >> err { return :error; }
             other => panic!("expected function, got {:?}", other),
         }
     }
+    #[test]
+    fn parses_match_bind_ident_form() {
+        let src = r#"
+fn request_check(req >> Label(:ok, int)) >> Label(:result, int) {
+    match req ?(var result) {
+        case :ok => {:result, 0} break;
+        case {:error, _reason} => {:result, 1} break;
+    }
+    return result;
+}
+"#;
+        let items = parse_only(src, "test.sprs").expect("parse");
+        let Item::FunctionItem(function_item) = &items[0] else {
+            panic!("expected function");
+        };
+        let Stmt::Match {
+            scrutinee,
+            bind,
+            arms,
+            ..
+        } = &function_item.blk[0].node
+        else {
+            panic!("expected match statement");
+        };
+        assert_eq!(bind.as_deref(), Some("result"));
+        assert!(matches!(&scrutinee.node, Expr::Var(name) if name == "req"));
+        assert_eq!(arms.len(), 2);
+        assert_eq!(
+            arms[0].pat,
+            MatchPat::Name(LabelName::Static("ok".into()))
+        );
+        assert!(matches!(arms[0].body, MatchArmBody::ExprBreak(_)));
+        assert_eq!(
+            arms[1].pat,
+            MatchPat::LabelPayload {
+                name: LabelName::Static("error".into()),
+                binder: "_reason".into(),
+            }
+        );
+        assert!(matches!(arms[1].body, MatchArmBody::ExprBreak(_)));
+    }
+
+    #[test]
+    fn parses_match_bind_parenthesized_expr() {
+        let src = r#"
+fn f() >> int {
+    match (foo()) ?(var r) {
+        case :ok => 1 break;
+    }
+    return r;
+}
+"#;
+        let items = parse_only(src, "test.sprs").expect("parse");
+        let Item::FunctionItem(function_item) = &items[0] else {
+            panic!("expected function");
+        };
+        let Stmt::Match {
+            scrutinee,
+            bind,
+            arms,
+            ..
+        } = &function_item.blk[0].node
+        else {
+            panic!("expected match statement");
+        };
+        assert_eq!(bind.as_deref(), Some("r"));
+        assert!(matches!(&scrutinee.node, Expr::Call(name, _) if name == "foo"));
+        assert_eq!(arms.len(), 1);
+    }
+
+    #[test]
+    fn parses_match_no_bind_block_arms() {
+        let src = r#"
+fn f(req) {
+    match req {
+        case :ok => { return 1; }
+        case :error => { return 0; }
+    }
+}
+"#;
+        let items = parse_only(src, "test.sprs").expect("parse");
+        let Item::FunctionItem(function_item) = &items[0] else {
+            panic!("expected function");
+        };
+        let Stmt::Match {
+            bind, arms, ..
+        } = &function_item.blk[0].node
+        else {
+            panic!("expected match statement");
+        };
+        assert!(bind.is_none());
+        assert_eq!(arms.len(), 2);
+        assert!(matches!(arms[0].body, MatchArmBody::Block(_)));
+        assert!(matches!(arms[1].body, MatchArmBody::Block(_)));
+    }
+
+    #[test]
+    fn parses_label_payload_patterns_with_underscore() {
+        let src = r#"
+fn f(req) {
+    match req {
+        case {:ok, x} => { @println(x); }
+        case {:ok, _} => { @println("ignored"); }
+    }
+}
+"#;
+        let items = parse_only(src, "test.sprs").expect("parse");
+        let Item::FunctionItem(function_item) = &items[0] else {
+            panic!("expected function");
+        };
+        let Stmt::Match { arms, .. } = &function_item.blk[0].node else {
+            panic!("expected match statement");
+        };
+        assert_eq!(
+            arms[0].pat,
+            MatchPat::LabelPayload {
+                name: LabelName::Static("ok".into()),
+                binder: "x".into(),
+            }
+        );
+        assert_eq!(
+            arms[1].pat,
+            MatchPat::LabelPayload {
+                name: LabelName::Static("ok".into()),
+                binder: "_".into(),
+            }
+        );
+    }
+
+
+    #[test]
+    fn parses_match_bind_label_literal_scrutinee() {
+        let src = r#"
+fn f() >> int {
+    match {:ok, 7} ?(var r) {
+        case :ok => 1 break;
+    }
+    return r;
+}
+"#;
+        let items = parse_only(src, "t.sprs").expect("parse");
+        assert!(!items.is_empty());
+    }
+
+    #[test]
+    fn parses_match_bind_atom_literal_scrutinee() {
+        let src = r#"
+fn f() >> int {
+    match :ok ?(var r) {
+        case :ok => 1 break;
+    }
+    return r;
+}
+"#;
+        let items = parse_only(src, "t.sprs").expect("parse");
+        assert!(!items.is_empty());
+    }
+
 }

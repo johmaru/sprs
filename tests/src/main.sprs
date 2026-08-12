@@ -185,6 +185,10 @@ fn main() {
     @println(labels.atom_identity());
     @println(labels.attach_slot_roundtrip());
     labels.slot_and_atom_display();
+    @println(labels.match_label_bind());
+    @println(labels.match_payload_bind());
+    @println(labels.match_atom_bind());
+    @println(labels.match_no_bind_block());
 
     @println("=== Buffer ===");
     @println(buffers.buf_macro_roundtrip());

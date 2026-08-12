@@ -48,3 +48,42 @@ pub fn slot_and_atom_display() {
     @println(<:item);
     @println(:item);
 }
+
+# --- match (v1: static patterns) ---
+
+pub fn match_label_bind() >> int {
+    match {:ok, 7} ?(var r) {
+        case :ok => 1 break;
+        case :error => 0 break;
+    }
+    return r;
+}
+
+pub fn match_payload_bind() >> int {
+    match {:ok, 7} ?(var r) {
+        case {:ok, x} => x break;
+        case :error => 0 break;
+    }
+    return r;
+}
+
+pub fn match_atom_bind() >> int {
+    match :ok ?(var r) {
+        case :ok => 1 break;
+        case :error => 0 break;
+    }
+    return r;
+}
+
+pub fn match_no_bind_block() >> int {
+    var flag = 0;
+    match :error {
+        case :ok => {
+            flag = 100;
+        }
+        case :error => {
+            flag = 1;
+        }
+    }
+    return flag;
+}

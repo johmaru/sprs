@@ -23,6 +23,11 @@ pub enum Token {
     Gt,
     GtGt,
     Question,
+    QuestionLParen,
+    Match,
+    Case,
+    Break,
+    FatArrow,
     Le,
     Ge,
     Dot,
@@ -175,6 +180,16 @@ enum RawTok {
     GtGt,
     #[token("?")]
     Question,
+    #[token("?(")]
+    QuestionLParen,
+    #[token("match")]
+    Match,
+    #[token("case")]
+    Case,
+    #[token("break")]
+    Break,
+    #[token("=>")]
+    FatArrow,
     #[token("return")]
     Return,
     #[regex(r"#[a-z]+")]
@@ -312,6 +327,11 @@ impl<'input> Iterator for Lexer<'input> {
             RawTok::Gt => Token::Gt,
             RawTok::GtGt => Token::GtGt,
             RawTok::Question => Token::Question,
+            RawTok::QuestionLParen => Token::QuestionLParen,
+            RawTok::Match => Token::Match,
+            RawTok::Case => Token::Case,
+            RawTok::Break => Token::Break,
+            RawTok::FatArrow => Token::FatArrow,
             RawTok::Le => Token::Le,
             RawTok::Ge => Token::Ge,
             RawTok::Dot => Token::Dot,
