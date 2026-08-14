@@ -15,14 +15,47 @@ use crate::llvm::value::{
 };
 use crate::llvm::variable::move_variable;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BinOpKind {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+}
+
+impl BinOpKind {
+    fn name(self) -> &'static str {
+        match self {
+            BinOpKind::Add => "add",
+            BinOpKind::Sub => "sub",
+            BinOpKind::Mul => "mul",
+            BinOpKind::Div => "div",
+            BinOpKind::Mod => "mod",
+        }
+    }
+}
+
 pub fn create_add_expr<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
     lhs: &Spanned<ast::Expr>,
     rhs: &Spanned<ast::Expr>,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
-    if let Ok(val) = create_add_expr_type_check(self_compiler, lhs, rhs, module) {
-        return Ok(val);
+    create_binary_dispatch(self_compiler, lhs, rhs, module, BinOpKind::Add)
+}
+
+fn create_binary_dispatch<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+    lhs: &Spanned<ast::Expr>,
+    rhs: &Spanned<ast::Expr>,
+    module: &inkwell::module::Module<'ctx>,
+    op: BinOpKind,
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
+    if op == BinOpKind::Add {
+        if let Ok(val) = create_add_expr_type_check(self_compiler, lhs, rhs, module) {
+            return Ok(val);
+        }
     }
 
     let l_ptr = self_compiler
@@ -52,6 +85,7 @@ pub fn create_add_expr<'ctx>(
         .unwrap()
         .into_int_value();
 
+    let op_name = op.name();
     let parent_fn = self_compiler
         .builder
         .get_insert_block()
@@ -60,25 +94,25 @@ pub fn create_add_expr<'ctx>(
         .unwrap();
     let int_bb = self_compiler
         .context
-        .append_basic_block(parent_fn, "add_int_bb");
+        .append_basic_block(parent_fn, &format!("{op_name}_int_bb"));
     let check_float_bb = self_compiler
         .context
-        .append_basic_block(parent_fn, "add_check_float_bb");
+        .append_basic_block(parent_fn, &format!("{op_name}_check_float_bb"));
     let float_bb = self_compiler
         .context
-        .append_basic_block(parent_fn, "add_float_bb");
+        .append_basic_block(parent_fn, &format!("{op_name}_float_bb"));
     let check_string_bb = self_compiler
         .context
-        .append_basic_block(parent_fn, "add_check_string_bb");
+        .append_basic_block(parent_fn, &format!("{op_name}_check_string_bb"));
     let string_bb = self_compiler
         .context
-        .append_basic_block(parent_fn, "add_string_bb");
+        .append_basic_block(parent_fn, &format!("{op_name}_string_bb"));
     let error_bb = self_compiler
         .context
-        .append_basic_block(parent_fn, "add_error_bb");
+        .append_basic_block(parent_fn, &format!("{op_name}_error_bb"));
     let merge_bb = self_compiler
         .context
-        .append_basic_block(parent_fn, "add_merge_bb");
+        .append_basic_block(parent_fn, &format!("{op_name}_merge_bb"));
 
     // short-circuit: if either operand is an error label, return it directly.
     let l_data_ptr = self_compiler
@@ -135,18 +169,25 @@ pub fn create_add_expr<'ctx>(
     self_compiler.builder.position_at_end(normal_dispatch_bb);
 
     // check if both are integers
-    let can_add = create_add_expr_check_int(self_compiler, l_tag, r_tag)?;
+    let can_int = create_add_expr_check_int(self_compiler, l_tag, r_tag)?;
 
-    // check if both are float(default(f64))
-    let both_float = create_add_expr_check_float(self_compiler, l_tag, r_tag)?;
+    // check if both are float (Mod is not defined on floats)
+    let both_float = if op == BinOpKind::Mod {
+        self_compiler.context.bool_type().const_int(0, false)
+    } else {
+        create_add_expr_check_float(self_compiler, l_tag, r_tag)?
+    };
 
-    // check if both are strings
-    let check_string = create_add_expr_check_string(self_compiler, l_tag, r_tag)?;
+    // check if both are strings (concatenation is Add-only)
+    let check_string = if op == BinOpKind::Add {
+        create_add_expr_check_string(self_compiler, l_tag, r_tag)?
+    } else {
+        self_compiler.context.bool_type().const_int(0, false)
+    };
 
-    // first check if can add as integers
     let _ = self_compiler
         .builder
-        .build_conditional_branch(can_add, int_bb, check_float_bb);
+        .build_conditional_branch(can_int, int_bb, check_float_bb);
 
     // second check if can add as floats
     self_compiler.builder.position_at_end(check_float_bb);
@@ -165,8 +206,8 @@ pub fn create_add_expr<'ctx>(
 
     let error_message = format!(
         "TypeError: type miss match : '{:?}' and '{:?}'",
-        self_compiler.get_known_type_from_expr(lhs),
-        self_compiler.get_known_type_from_expr(rhs)
+        self_compiler.infer_type(lhs),
+        self_compiler.infer_type(rhs)
     );
 
     let error_ptr = create_error_label_from_str(self_compiler, &error_message, module)?;
@@ -177,14 +218,44 @@ pub fn create_add_expr<'ctx>(
 
     self_compiler.builder.position_at_end(int_bb);
 
-    let int_res_ptr = create_add_expr_build_int_branch(self_compiler, l_ptr, r_ptr, l_tag)?;
+    let int_res_ptr = create_add_expr_build_int_branch(
+        self_compiler,
+        module,
+        l_ptr,
+        r_ptr,
+        l_tag,
+        r_tag,
+        op,
+    )?;
+    let int_end_bb = self_compiler.builder.get_insert_block().unwrap();
     let _ = self_compiler.builder.build_unconditional_branch(merge_bb);
 
-    // float addition branch
+    // float arithmetic branch
 
     self_compiler.builder.position_at_end(float_bb);
 
-    let float_res_ptr = create_add_expr_build_float_branch(self_compiler, module, l_ptr, r_ptr, l_tag)?;
+    let tags_equal = self_compiler
+        .builder
+        .build_int_compare(inkwell::IntPredicate::EQ, l_tag, r_tag, "float_tags_equal")
+        .unwrap();
+    let float_default_tag = self_compiler
+        .context
+        .i32_type()
+        .const_int(Tag::Float as u64, false);
+    let float_result_tag = self_compiler
+        .builder
+        .build_select(tags_equal, l_tag, float_default_tag, "float_result_tag")
+        .unwrap()
+        .into_int_value();
+
+    let float_res_ptr = create_add_expr_build_float_branch(
+        self_compiler,
+        module,
+        l_ptr,
+        r_ptr,
+        float_result_tag,
+        op,
+    )?;
     let float_end_bb = self_compiler.builder.get_insert_block().unwrap();
     let _ = self_compiler.builder.build_unconditional_branch(merge_bb);
     // string concatenation branch
@@ -207,7 +278,7 @@ pub fn create_add_expr<'ctx>(
         )
         .unwrap();
     phi.add_incoming(&[
-        (&int_res_ptr, int_bb),
+        (&int_res_ptr, int_end_bb),
         (&float_res_ptr, float_end_bb),
         (&str_res_ptr, string_bb),
         (&error_ptr, error_bb),
@@ -278,131 +349,93 @@ fn create_add_expr_type_check<'ctx>(
     Err(SprsError::Semantic { code: ErrorCode { category: ErrorCategory::Semantic, number: 14 }, location: Location::new(String::new(), Span::DUMMY), message: "Unsupported types for addition".to_string(), help: None })
 }
 
+fn tag_eq_const<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+    tag: IntValue<'ctx>,
+    kind: Tag,
+    name: &str,
+) -> IntValue<'ctx> {
+    let expected = self_compiler
+        .context
+        .i32_type()
+        .const_int(kind as u64, false);
+    self_compiler
+        .builder
+        .build_int_compare(inkwell::IntPredicate::EQ, tag, expected, name)
+        .unwrap()
+}
+
+fn or_tags<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+    a: IntValue<'ctx>,
+    b: IntValue<'ctx>,
+    name: &str,
+) -> IntValue<'ctx> {
+    self_compiler.builder.build_or(a, b, name).unwrap()
+}
+
+pub(crate) fn is_integer_family_tag<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+    tag: IntValue<'ctx>,
+) -> Result<IntValue<'ctx>, SprsError> {
+    let is_int = tag_eq_const(self_compiler, tag, Tag::Integer, "is_integer");
+    let is_i8 = tag_eq_const(self_compiler, tag, Tag::Int8, "is_int8");
+    let is_u8 = tag_eq_const(self_compiler, tag, Tag::Uint8, "is_uint8");
+    let is_i16 = tag_eq_const(self_compiler, tag, Tag::Int16, "is_int16");
+    let is_u16 = tag_eq_const(self_compiler, tag, Tag::Uint16, "is_uint16");
+    let is_i32 = tag_eq_const(self_compiler, tag, Tag::Int32, "is_int32");
+    let is_u32 = tag_eq_const(self_compiler, tag, Tag::Uint32, "is_uint32");
+    let is_i64 = tag_eq_const(self_compiler, tag, Tag::Int64, "is_int64");
+    let is_u64 = tag_eq_const(self_compiler, tag, Tag::Uint64, "is_uint64");
+    let a = or_tags(self_compiler, is_int, is_i8, "int_fam_0");
+    let b = or_tags(self_compiler, a, is_u8, "int_fam_1");
+    let c = or_tags(self_compiler, b, is_i16, "int_fam_2");
+    let d = or_tags(self_compiler, c, is_u16, "int_fam_3");
+    let e = or_tags(self_compiler, d, is_i32, "int_fam_4");
+    let f = or_tags(self_compiler, e, is_u32, "int_fam_5");
+    let g = or_tags(self_compiler, f, is_i64, "int_fam_6");
+    Ok(or_tags(self_compiler, g, is_u64, "int_fam_final"))
+}
+
+pub(crate) fn is_unsigned_int_tag<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+    tag: IntValue<'ctx>,
+) -> Result<IntValue<'ctx>, SprsError> {
+    let is_u8 = tag_eq_const(self_compiler, tag, Tag::Uint8, "is_u8");
+    let is_u16 = tag_eq_const(self_compiler, tag, Tag::Uint16, "is_u16");
+    let is_u32 = tag_eq_const(self_compiler, tag, Tag::Uint32, "is_u32");
+    let is_u64 = tag_eq_const(self_compiler, tag, Tag::Uint64, "is_u64");
+    let a = or_tags(self_compiler, is_u8, is_u16, "uint_fam_0");
+    let b = or_tags(self_compiler, a, is_u32, "uint_fam_1");
+    Ok(or_tags(self_compiler, b, is_u64, "uint_fam_final"))
+}
+
+pub(crate) fn is_float_family_tag<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+    tag: IntValue<'ctx>,
+) -> Result<IntValue<'ctx>, SprsError> {
+    let is_f = tag_eq_const(self_compiler, tag, Tag::Float, "is_float");
+    let is_f16 = tag_eq_const(self_compiler, tag, Tag::Float16, "is_float16");
+    let is_f32 = tag_eq_const(self_compiler, tag, Tag::Float32, "is_float32");
+    let is_f64 = tag_eq_const(self_compiler, tag, Tag::Float64, "is_float64");
+    let a = or_tags(self_compiler, is_f, is_f16, "float_fam_0");
+    let b = or_tags(self_compiler, a, is_f32, "float_fam_1");
+    Ok(or_tags(self_compiler, b, is_f64, "float_fam_final"))
+}
+
 fn create_add_expr_check_int<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
     l_tag: IntValue<'ctx>,
     r_tag: IntValue<'ctx>,
 ) -> Result<IntValue<'ctx>, SprsError> {
-    let int_tag = self_compiler
-        .context
-        .i32_type()
-        .const_int(Tag::Integer as u64, false);
-    let int8_tag = self_compiler
-        .context
-        .i32_type()
-        .const_int(Tag::Int8 as u64, false);
-    let uint8_tag = self_compiler
-        .context
-        .i32_type()
-        .const_int(Tag::Uint8 as u64, false);
-    let int16_tag = self_compiler
-        .context
-        .i32_type()
-        .const_int(Tag::Int16 as u64, false);
-    let uint16_tag = self_compiler
-        .context
-        .i32_type()
-        .const_int(Tag::Uint16 as u64, false);
-    let int32_tag = self_compiler
-        .context
-        .i32_type()
-        .const_int(Tag::Int32 as u64, false);
-    let uint32_tag = self_compiler
-        .context
-        .i32_type()
-        .const_int(Tag::Uint32 as u64, false);
-    let int64_tag = self_compiler
-        .context
-        .i32_type()
-        .const_int(Tag::Int64 as u64, false);
-    let uint64_tag = self_compiler
-        .context
-        .i32_type()
-        .const_int(Tag::Uint64 as u64, false);
-    let tags_equal = self_compiler
+    let l_int = is_integer_family_tag(self_compiler, l_tag)?;
+    let r_int = is_integer_family_tag(self_compiler, r_tag)?;
+    Ok(self_compiler
         .builder
-        .build_int_compare(inkwell::IntPredicate::EQ, l_tag, r_tag, "tags_equal")
-        .unwrap();
-
-    let is_l_int = self_compiler
-        .builder
-        .build_int_compare(inkwell::IntPredicate::EQ, l_tag, int_tag, "is_l_int")
-        .unwrap();
-    let is_l_int8 = self_compiler
-        .builder
-        .build_int_compare(inkwell::IntPredicate::EQ, l_tag, int8_tag, "is_l_int8")
-        .unwrap();
-    let is_l_uint8 = self_compiler
-        .builder
-        .build_int_compare(inkwell::IntPredicate::EQ, l_tag, uint8_tag, "is_l_uint8")
-        .unwrap();
-    let is_l_int16 = self_compiler
-        .builder
-        .build_int_compare(inkwell::IntPredicate::EQ, l_tag, int16_tag, "is_l_int16")
-        .unwrap();
-    let is_l_uint16 = self_compiler
-        .builder
-        .build_int_compare(inkwell::IntPredicate::EQ, l_tag, uint16_tag, "is_l_uint16")
-        .unwrap();
-    let is_l_int32 = self_compiler
-        .builder
-        .build_int_compare(inkwell::IntPredicate::EQ, l_tag, int32_tag, "is_l_int32")
-        .unwrap();
-    let is_l_uint32 = self_compiler
-        .builder
-        .build_int_compare(inkwell::IntPredicate::EQ, l_tag, uint32_tag, "is_l_uint32")
-        .unwrap();
-    let is_l_int64 = self_compiler
-        .builder
-        .build_int_compare(inkwell::IntPredicate::EQ, l_tag, int64_tag, "is_l_int64")
-        .unwrap();
-    let is_l_uint64 = self_compiler
-        .builder
-        .build_int_compare(inkwell::IntPredicate::EQ, l_tag, uint64_tag, "is_l_uint64")
-        .unwrap();
-    let is_l_numeric = self_compiler
-        .builder
-        .build_or(is_l_int, is_l_int8, "is_l_numeric")
-        .unwrap();
-    let is_l_numeric_1 = self_compiler
-        .builder
-        .build_or(is_l_uint8, is_l_numeric, "is_l_numeric_1")
-        .unwrap();
-    let is_l_numeric_2 = self_compiler
-        .builder
-        .build_or(is_l_int16, is_l_numeric_1, "is_l_numeric_2")
-        .unwrap();
-    let is_l_numeric_3 = self_compiler
-        .builder
-        .build_or(is_l_uint16, is_l_numeric_2, "is_l_numeric_3")
-        .unwrap();
-    let is_l_numeric_4 = self_compiler
-        .builder
-        .build_or(is_l_int32, is_l_numeric_3, "is_l_numeric_4")
-        .unwrap();
-    let is_l_numeric_5 = self_compiler
-        .builder
-        .build_or(is_l_uint32, is_l_numeric_4, "is_l_numeric_5")
-        .unwrap();
-    let is_l_numeric_6 = self_compiler
-        .builder
-        .build_or(is_l_int64, is_l_numeric_5, "is_l_numeric_6")
-        .unwrap();
-    let is_l_numeric_final = self_compiler
-        .builder
-        .build_or(is_l_uint64, is_l_numeric_6, "is_l_numeric_final")
-        .unwrap();
-
-    let can_add = self_compiler
-        .builder
-        .build_and(tags_equal, is_l_numeric_final, "can_add")
-        .unwrap();
-
-    Ok(can_add)
+        .build_and(l_int, r_int, "both_int")
+        .unwrap())
 }
 
-// currently only handling int + int and string + string, for now didn't use a both_string variable
-// 0 isBothString , 1 tag
 fn create_add_expr_check_string<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
     l_tag: IntValue<'ctx>,
@@ -434,86 +467,22 @@ fn create_add_expr_check_float<'ctx>(
     l_tag: IntValue<'ctx>,
     r_tag: IntValue<'ctx>,
 ) -> Result<IntValue<'ctx>, SprsError> {
-    let float_tag = self_compiler
-        .context
-        .i32_type()
-        .const_int(Tag::Float as u64, false);
-    let float16_tag = self_compiler
-        .context
-        .i32_type()
-        .const_int(Tag::Float16 as u64, false);
-    let float32_tag = self_compiler
-        .context
-        .i32_type()
-        .const_int(Tag::Float32 as u64, false);
-    let float64_tag = self_compiler
-        .context
-        .i32_type()
-        .const_int(Tag::Float64 as u64, false);
-    let float_tags_equal = self_compiler
+    let l_float = is_float_family_tag(self_compiler, l_tag)?;
+    let r_float = is_float_family_tag(self_compiler, r_tag)?;
+    Ok(self_compiler
         .builder
-        .build_int_compare(inkwell::IntPredicate::EQ, l_tag, r_tag, "float_tags_equal")
-        .unwrap();
-
-    let is_l_float = self_compiler
-        .builder
-        .build_int_compare(inkwell::IntPredicate::EQ, l_tag, float_tag, "is_l_float")
-        .unwrap();
-
-    let is_float_1 = self_compiler
-        .builder
-        .build_int_compare(
-            inkwell::IntPredicate::EQ,
-            l_tag,
-            float16_tag,
-            "is_l_float16",
-        )
-        .unwrap();
-    let is_float_2 = self_compiler
-        .builder
-        .build_int_compare(
-            inkwell::IntPredicate::EQ,
-            l_tag,
-            float32_tag,
-            "is_l_float32",
-        )
-        .unwrap();
-    let is_float_3 = self_compiler
-        .builder
-        .build_int_compare(
-            inkwell::IntPredicate::EQ,
-            l_tag,
-            float64_tag,
-            "is_l_float64",
-        )
-        .unwrap();
-
-    let is_float_combined_1 = self_compiler
-        .builder
-        .build_or(is_l_float, is_float_1, "is_l_float_combined_1")
-        .unwrap();
-    let is_float_combined_2 = self_compiler
-        .builder
-        .build_or(is_float_2, is_float_combined_1, "is_l_float_combined_2")
-        .unwrap();
-    let is_l_float_final = self_compiler
-        .builder
-        .build_or(is_float_3, is_float_combined_2, "is_l_float_final")
-        .unwrap();
-
-    let both_float = self_compiler
-        .builder
-        .build_and(float_tags_equal, is_l_float_final, "both_float")
-        .unwrap();
-
-    Ok(both_float)
+        .build_and(l_float, r_float, "both_float")
+        .unwrap())
 }
 
 fn create_add_expr_build_int_branch<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
+    module: &inkwell::module::Module<'ctx>,
     l_ptr: PointerValue<'ctx>,
     r_ptr: PointerValue<'ctx>,
     l_tag: IntValue<'ctx>,
+    r_tag: IntValue<'ctx>,
+    op: BinOpKind,
 ) -> Result<PointerValue<'ctx>, SprsError> {
     let l_int_data_ptr = self_compiler
         .builder
@@ -543,20 +512,189 @@ fn create_add_expr_build_int_branch<'ctx>(
         .unwrap()
         .into_int_value();
 
-    let int_sum = self_compiler
+    let tags_equal = self_compiler
         .builder
-        .build_int_add(l_int_val, r_int_val, "int_sum")
+        .build_int_compare(inkwell::IntPredicate::EQ, l_tag, r_tag, "int_tags_equal")
         .unwrap();
+    let integer_tag = self_compiler
+        .context
+        .i32_type()
+        .const_int(Tag::Integer as u64, false);
+    let result_tag = self_compiler
+        .builder
+        .build_select(tags_equal, l_tag, integer_tag, "int_result_tag")
+        .unwrap()
+        .into_int_value();
 
-    let int_res_ptr = create_entry_block_alloca(self_compiler, "int_res_alloc")?;
+    if matches!(op, BinOpKind::Add | BinOpKind::Sub | BinOpKind::Mul) {
+        let int_sum = match op {
+            BinOpKind::Add => self_compiler
+                .builder
+                .build_int_add(l_int_val, r_int_val, "int_sum")
+                .unwrap(),
+            BinOpKind::Sub => self_compiler
+                .builder
+                .build_int_sub(l_int_val, r_int_val, "int_diff")
+                .unwrap(),
+            BinOpKind::Mul => self_compiler
+                .builder
+                .build_int_mul(l_int_val, r_int_val, "int_prod")
+                .unwrap(),
+            _ => unreachable!(),
+        };
+        let int_res_ptr = create_entry_block_alloca(self_compiler, "int_res_alloc")?;
+        self_compiler.build_runtime_value_store(
+            int_res_ptr,
+            StoreTag::Dynamic(result_tag),
+            StoreValue::Int(int_sum),
+            "int_res",
+        );
+        return Ok(int_res_ptr);
+    }
+
+    let parent_fn = self_compiler
+        .builder
+        .get_insert_block()
+        .unwrap()
+        .get_parent()
+        .unwrap();
+    let op_name = op.name();
+    let bb_ok = self_compiler
+        .context
+        .append_basic_block(parent_fn, &format!("{op_name}_int_ok"));
+    let bb_zero = self_compiler
+        .context
+        .append_basic_block(parent_fn, &format!("{op_name}_int_zero"));
+    let bb_unsigned = self_compiler
+        .context
+        .append_basic_block(parent_fn, &format!("{op_name}_int_unsigned"));
+    let bb_signed = self_compiler
+        .context
+        .append_basic_block(parent_fn, &format!("{op_name}_int_signed"));
+    let merge_bb = self_compiler
+        .context
+        .append_basic_block(parent_fn, &format!("{op_name}_int_merge"));
+
+    let zero = self_compiler.context.i64_type().const_int(0, false);
+    let is_zero = self_compiler
+        .builder
+        .build_int_compare(inkwell::IntPredicate::EQ, r_int_val, zero, "is_zero")
+        .unwrap();
+    let _ = self_compiler
+        .builder
+        .build_conditional_branch(is_zero, bb_zero, bb_ok);
+
+    self_compiler.builder.position_at_end(bb_zero);
+    let error_ptr = create_error_label_from_str(self_compiler, "Division by zero", module)?;
+    let _ = self_compiler.builder.build_unconditional_branch(merge_bb);
+
+    self_compiler.builder.position_at_end(bb_ok);
+    let is_unsigned = is_unsigned_int_tag(self_compiler, l_tag)?;
+    let _ = self_compiler
+        .builder
+        .build_conditional_branch(is_unsigned, bb_unsigned, bb_signed);
+
+    self_compiler.builder.position_at_end(bb_unsigned);
+    let unsigned_res = match op {
+        BinOpKind::Div => self_compiler
+            .builder
+            .build_int_unsigned_div(l_int_val, r_int_val, "udiv")
+            .unwrap(),
+        _ => self_compiler
+            .builder
+            .build_int_unsigned_rem(l_int_val, r_int_val, "urem")
+            .unwrap(),
+    };
+    let unsigned_ptr = create_entry_block_alloca(self_compiler, "int_udiv_res")?;
     self_compiler.build_runtime_value_store(
-        int_res_ptr,
-        StoreTag::Dynamic(l_tag),
-        StoreValue::Int(int_sum),
-        "int_res",
+        unsigned_ptr,
+        StoreTag::Dynamic(result_tag),
+        StoreValue::Int(unsigned_res),
+        "int_udiv_res",
     );
+    let _ = self_compiler.builder.build_unconditional_branch(merge_bb);
 
-    Ok(int_res_ptr)
+    self_compiler.builder.position_at_end(bb_signed);
+    let signed_res = match op {
+        BinOpKind::Div => self_compiler
+            .builder
+            .build_int_signed_div(l_int_val, r_int_val, "sdiv")
+            .unwrap(),
+        _ => self_compiler
+            .builder
+            .build_int_signed_rem(l_int_val, r_int_val, "srem")
+            .unwrap(),
+    };
+    let signed_ptr = create_entry_block_alloca(self_compiler, "int_sdiv_res")?;
+    self_compiler.build_runtime_value_store(
+        signed_ptr,
+        StoreTag::Dynamic(result_tag),
+        StoreValue::Int(signed_res),
+        "int_sdiv_res",
+    );
+    let _ = self_compiler.builder.build_unconditional_branch(merge_bb);
+
+    self_compiler.builder.position_at_end(merge_bb);
+    let phi = self_compiler
+        .builder
+        .build_phi(
+            self_compiler.context.ptr_type(AddressSpace::default()),
+            "int_div_res_phi",
+        )
+        .unwrap();
+    phi.add_incoming(&[
+        (&error_ptr, bb_zero),
+        (&unsigned_ptr, bb_unsigned),
+        (&signed_ptr, bb_signed),
+    ]);
+    Ok(phi.as_basic_value().into_pointer_value())
+}
+
+fn apply_float_op<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+    op: BinOpKind,
+    lhs: inkwell::values::FloatValue<'ctx>,
+    rhs: inkwell::values::FloatValue<'ctx>,
+    name: &str,
+) -> inkwell::values::FloatValue<'ctx> {
+    match op {
+        BinOpKind::Add => self_compiler.builder.build_float_add(lhs, rhs, name).unwrap(),
+        BinOpKind::Sub => self_compiler.builder.build_float_sub(lhs, rhs, name).unwrap(),
+        BinOpKind::Mul => self_compiler.builder.build_float_mul(lhs, rhs, name).unwrap(),
+        BinOpKind::Div | BinOpKind::Mod => {
+            self_compiler.builder.build_float_div(lhs, rhs, name).unwrap()
+        }
+    }
+}
+
+fn maybe_guard_float_div_zero<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+    op: BinOpKind,
+    rhs: inkwell::values::FloatValue<'ctx>,
+    zero: inkwell::values::FloatValue<'ctx>,
+    div_zero_bb: inkwell::basic_block::BasicBlock<'ctx>,
+    name: &str,
+) {
+    if op != BinOpKind::Div {
+        return;
+    }
+    let parent = self_compiler
+        .builder
+        .get_insert_block()
+        .unwrap()
+        .get_parent()
+        .unwrap();
+    let cont_bb = self_compiler
+        .context
+        .append_basic_block(parent, &format!("{name}_div_ok"));
+    let is_zero = self_compiler
+        .builder
+        .build_float_compare(inkwell::FloatPredicate::OEQ, rhs, zero, &format!("{name}_is_zero"))
+        .unwrap();
+    let _ = self_compiler
+        .builder
+        .build_conditional_branch(is_zero, div_zero_bb, cont_bb);
+    self_compiler.builder.position_at_end(cont_bb);
 }
 
 fn create_add_expr_build_float_branch<'ctx>(
@@ -565,6 +703,7 @@ fn create_add_expr_build_float_branch<'ctx>(
     l_ptr: PointerValue<'ctx>,
     r_ptr: PointerValue<'ctx>,
     float_tag: IntValue<'ctx>,
+    op: BinOpKind,
 ) -> Result<PointerValue<'ctx>, SprsError> {
     let l_float_data_ptr = self_compiler
         .builder
@@ -628,6 +767,9 @@ fn create_add_expr_build_float_branch<'ctx>(
     let error_bb = self_compiler
         .context
         .append_basic_block(parent, "add_float_error_bb");
+    let div_zero_bb = self_compiler
+        .context
+        .append_basic_block(parent, "float_div_zero_bb");
 
     let float_tag_const = self_compiler
         .context
@@ -664,6 +806,10 @@ fn create_add_expr_build_float_branch<'ctx>(
     let error_ptr = create_error_label_from_str(self_compiler, error_message, module)?;
     let _ = self_compiler.builder.build_unconditional_branch(final_merge);
 
+    self_compiler.builder.position_at_end(div_zero_bb);
+    let div_zero_ptr = create_error_label_from_str(self_compiler, "Division by zero", module)?;
+    let _ = self_compiler.builder.build_unconditional_branch(final_merge);
+
     // Float16
     self_compiler.builder.position_at_end(bb_f16);
     let l_i16 = self_compiler
@@ -685,10 +831,15 @@ fn create_add_expr_build_float_branch<'ctx>(
         .build_bit_cast(r_i16, self_compiler.context.f16_type(), "f16_to_f64_cast")
         .unwrap()
         .into_float_value();
-    let sum_f16 = self_compiler
-        .builder
-        .build_float_add(l_f16, r_f16, "f16_add")
-        .unwrap();
+    maybe_guard_float_div_zero(
+        self_compiler,
+        op,
+        r_f16,
+        self_compiler.context.f16_type().const_float(0.0),
+        div_zero_bb,
+        "f16",
+    );
+    let sum_f16 = apply_float_op(self_compiler, op, l_f16, r_f16, "f16_op");
     let sum_i16 = self_compiler
         .builder
         .build_bit_cast(sum_f16, self_compiler.context.i16_type(), "f16_to_i16_cast")
@@ -699,6 +850,7 @@ fn create_add_expr_build_float_branch<'ctx>(
         .build_int_s_extend(sum_i16, self_compiler.context.i64_type(), "f16_to_i64")
         .unwrap();
 
+    let f16_end_bb = self_compiler.builder.get_insert_block().unwrap();
     self_compiler
         .builder
         .build_unconditional_branch(marge)
@@ -724,10 +876,15 @@ fn create_add_expr_build_float_branch<'ctx>(
         .build_bit_cast(r_i32, self_compiler.context.f32_type(), "f32_to_f64_cast")
         .unwrap()
         .into_float_value();
-    let sum_f32 = self_compiler
-        .builder
-        .build_float_add(l_f32, r_f32, "f32_add")
-        .unwrap();
+    maybe_guard_float_div_zero(
+        self_compiler,
+        op,
+        r_f32,
+        self_compiler.context.f32_type().const_float(0.0),
+        div_zero_bb,
+        "f32",
+    );
+    let sum_f32 = apply_float_op(self_compiler, op, l_f32, r_f32, "f32_op");
     let sum_i32 = self_compiler
         .builder
         .build_bit_cast(sum_f32, self_compiler.context.i32_type(), "f32_to_i32_cast")
@@ -737,6 +894,7 @@ fn create_add_expr_build_float_branch<'ctx>(
         .builder
         .build_int_s_extend(sum_i32, self_compiler.context.i64_type(), "f32_to_i64")
         .unwrap();
+    let f32_end_bb = self_compiler.builder.get_insert_block().unwrap();
     self_compiler
         .builder
         .build_unconditional_branch(marge)
@@ -762,16 +920,22 @@ fn create_add_expr_build_float_branch<'ctx>(
         )
         .unwrap()
         .into_float_value();
-    let sum_f64 = self_compiler
-        .builder
-        .build_float_add(l_f64, r_f64, "f64_add")
-        .unwrap();
+    maybe_guard_float_div_zero(
+        self_compiler,
+        op,
+        r_f64,
+        self_compiler.context.f64_type().const_float(0.0),
+        div_zero_bb,
+        "f64",
+    );
+    let sum_f64 = apply_float_op(self_compiler, op, l_f64, r_f64, "f64_op");
 
     let res_f64_bits = self_compiler
         .builder
         .build_bit_cast(sum_f64, self_compiler.context.i64_type(), "f64_to_i64_cast")
         .unwrap()
         .into_int_value();
+    let f64_end_bb = self_compiler.builder.get_insert_block().unwrap();
     self_compiler
         .builder
         .build_unconditional_branch(marge)
@@ -785,9 +949,9 @@ fn create_add_expr_build_float_branch<'ctx>(
         .build_phi(self_compiler.context.i64_type(), "float_add_res_phi")
         .unwrap();
     phi.add_incoming(&[
-        (&res_f16_bits, bb_f16),
-        (&res_f32_bits, bb_f32),
-        (&res_f64_bits, bb_f64),
+        (&res_f16_bits, f16_end_bb),
+        (&res_f32_bits, f32_end_bb),
+        (&res_f64_bits, f64_end_bb),
     ]);
     let res_data = phi.as_basic_value().into_int_value();
 
@@ -811,6 +975,7 @@ fn create_add_expr_build_float_branch<'ctx>(
         .unwrap();
     final_phi.add_incoming(&[
         (&error_ptr, error_bb),
+        (&div_zero_ptr, div_zero_bb),
         (&float_res_ptr, success_end_bb),
     ]);
     Ok(final_phi.as_basic_value().into_pointer_value())
@@ -1576,14 +1741,7 @@ pub fn create_mul_expr<'ctx>(
     rhs: &Spanned<ast::Expr>,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
-    create_binary_int_op(
-        self_compiler,
-        lhs,
-        rhs,
-        module,
-        IntBinOp::Mul,
-        |builder, l_val, r_val, name| Ok(builder.build_int_mul(l_val, r_val, name).unwrap()),
-    )
+    create_binary_dispatch(self_compiler, lhs, rhs, module, BinOpKind::Mul)
 }
 
 pub fn create_minus_expr<'ctx>(
@@ -1592,14 +1750,7 @@ pub fn create_minus_expr<'ctx>(
     rhs: &Spanned<ast::Expr>,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
-    create_binary_int_op(
-        self_compiler,
-        lhs,
-        rhs,
-        module,
-        IntBinOp::Sub,
-        |builder, l_val, r_val, name| Ok(builder.build_int_sub(l_val, r_val, name).unwrap()),
-    )
+    create_binary_dispatch(self_compiler, lhs, rhs, module, BinOpKind::Sub)
 }
 
 pub fn create_div_expr<'ctx>(
@@ -1608,148 +1759,7 @@ pub fn create_div_expr<'ctx>(
     rhs: &Spanned<ast::Expr>,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
-    let l_ptr = self_compiler.compile_expr(lhs, module)?.into_pointer_value();
-    let r_ptr = self_compiler.compile_expr(rhs, module)?.into_pointer_value();
-
-    let l_tag_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, l_ptr, 0, "l_tag_ptr")
-        .unwrap();
-    let l_tag = self_compiler
-        .builder
-        .build_load(self_compiler.context.i32_type(), l_tag_ptr, "l_tag")
-        .unwrap()
-        .into_int_value();
-
-    let r_tag_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, r_ptr, 0, "r_tag_ptr")
-        .unwrap();
-    let r_tag = self_compiler
-        .builder
-        .build_load(self_compiler.context.i32_type(), r_tag_ptr, "r_tag")
-        .unwrap()
-        .into_int_value();
-
-    let parent_fn = self_compiler
-        .builder
-        .get_insert_block()
-        .unwrap()
-        .get_parent()
-        .unwrap();
-    let bb_div = self_compiler
-        .context
-        .append_basic_block(parent_fn, "div_bb");
-    let bb_err = self_compiler
-        .context
-        .append_basic_block(parent_fn, "div_zero_err");
-    let merge_bb = self_compiler
-        .context
-        .append_basic_block(parent_fn, "div_merge_bb");
-
-    // Load operand data before the short-circuit so `__label_is_error` can
-    // inspect the label name.
-    let l_data_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, l_ptr, 1, "l_data_ptr")
-        .unwrap();
-    let l_val = self_compiler
-        .builder
-        .build_load(self_compiler.context.i64_type(), l_data_ptr, "l_val")
-        .unwrap()
-        .into_int_value();
-    let r_data_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, r_ptr, 1, "r_data_ptr")
-        .unwrap();
-    let r_val = self_compiler
-        .builder
-        .build_load(self_compiler.context.i64_type(), r_data_ptr, "r_val")
-        .unwrap()
-        .into_int_value();
-
-    // short-circuit: if either operand is an error label, return it directly.
-    let l_is_error = build_label_is_error(self_compiler, l_tag, l_val, module)?;
-    let l_error_bb = self_compiler
-        .context
-        .append_basic_block(parent_fn, "div_l_error_short_circuit");
-    let check_r_error_bb = self_compiler
-        .context
-        .append_basic_block(parent_fn, "div_check_r_error");
-    let _ = self_compiler.builder.build_conditional_branch(
-        l_is_error,
-        l_error_bb,
-        check_r_error_bb,
-    );
-
-    self_compiler.builder.position_at_end(l_error_bb);
-    let _ = self_compiler.builder.build_unconditional_branch(merge_bb);
-
-    self_compiler.builder.position_at_end(check_r_error_bb);
-    let r_is_error = build_label_is_error(self_compiler, r_tag, r_val, module)?;
-    let r_error_bb = self_compiler
-        .context
-        .append_basic_block(parent_fn, "div_r_error_short_circuit");
-    let normal_dispatch_bb = self_compiler
-        .context
-        .append_basic_block(parent_fn, "div_normal_dispatch");
-    let _ = self_compiler.builder.build_conditional_branch(
-        r_is_error,
-        r_error_bb,
-        normal_dispatch_bb,
-    );
-
-    self_compiler.builder.position_at_end(r_error_bb);
-    let _ = self_compiler.builder.build_unconditional_branch(merge_bb);
-
-    self_compiler.builder.position_at_end(normal_dispatch_bb);
-
-    // Zero-division check
-    let zero = self_compiler.context.i64_type().const_int(0, false);
-    let is_zero = self_compiler
-        .builder
-        .build_int_compare(inkwell::IntPredicate::EQ, r_val, zero, "is_zero")
-        .unwrap();
-    let _ = self_compiler
-        .builder
-        .build_conditional_branch(is_zero, bb_err, bb_div);
-
-    // Error: division by zero
-    self_compiler.builder.position_at_end(bb_err);
-    let error_ptr = create_error_label_from_str(self_compiler, "Division by zero", module)?;
-    let _ = self_compiler.builder.build_unconditional_branch(merge_bb);
-
-    // Div
-    self_compiler.builder.position_at_end(bb_div);
-    let result = self_compiler
-        .builder
-        .build_int_signed_div(l_val, r_val, "quotient")
-        .unwrap();
-
-    let res_ptr = create_entry_block_alloca(self_compiler, "res_alloc")?;
-    self_compiler.build_runtime_value_store(
-        res_ptr,
-        StoreTag::Int(Tag::Integer as u64),
-        StoreValue::Int(result),
-        "div_res_store",
-    );
-    let _ = self_compiler.builder.build_unconditional_branch(merge_bb);
-
-    self_compiler.builder.position_at_end(merge_bb);
-    let phi = self_compiler
-        .builder
-        .build_phi(
-            self_compiler.context.ptr_type(AddressSpace::default()),
-            "div_res_phi",
-        )
-        .unwrap();
-    phi.add_incoming(&[
-        (&error_ptr, bb_err),
-        (&res_ptr, bb_div),
-        (&l_ptr, l_error_bb),
-        (&r_ptr, r_error_bb),
-    ]);
-    Ok(phi.as_basic_value())
+    create_binary_dispatch(self_compiler, lhs, rhs, module, BinOpKind::Div)
 }
 
 pub fn create_mod_expr<'ctx>(
@@ -1758,314 +1768,5 @@ pub fn create_mod_expr<'ctx>(
     rhs: &Spanned<ast::Expr>,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
-    let l_ptr = self_compiler.compile_expr(lhs, module)?.into_pointer_value();
-    let r_ptr = self_compiler.compile_expr(rhs, module)?.into_pointer_value();
-
-    let l_tag_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, l_ptr, 0, "l_tag_ptr")
-        .unwrap();
-    let l_tag = self_compiler
-        .builder
-        .build_load(self_compiler.context.i32_type(), l_tag_ptr, "l_tag")
-        .unwrap()
-        .into_int_value();
-
-    let r_tag_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, r_ptr, 0, "r_tag_ptr")
-        .unwrap();
-    let r_tag = self_compiler
-        .builder
-        .build_load(self_compiler.context.i32_type(), r_tag_ptr, "r_tag")
-        .unwrap()
-        .into_int_value();
-
-    let parent_fn = self_compiler
-        .builder
-        .get_insert_block()
-        .unwrap()
-        .get_parent()
-        .unwrap();
-    let bb_mod = self_compiler
-        .context
-        .append_basic_block(parent_fn, "mod_bb");
-    let bb_err = self_compiler
-        .context
-        .append_basic_block(parent_fn, "mod_zero_err");
-    let merge_bb = self_compiler
-        .context
-        .append_basic_block(parent_fn, "mod_merge_bb");
-
-    // Load operand data before the short-circuit so `__label_is_error` can
-    // inspect the label name.
-    let l_data_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, l_ptr, 1, "l_data_ptr")
-        .unwrap();
-    let l_val = self_compiler
-        .builder
-        .build_load(self_compiler.context.i64_type(), l_data_ptr, "l_val")
-        .unwrap()
-        .into_int_value();
-    let r_data_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, r_ptr, 1, "r_data_ptr")
-        .unwrap();
-    let r_val = self_compiler
-        .builder
-        .build_load(self_compiler.context.i64_type(), r_data_ptr, "r_val")
-        .unwrap()
-        .into_int_value();
-
-    // short-circuit: if either operand is an error label, return it directly.
-    let l_is_error = build_label_is_error(self_compiler, l_tag, l_val, module)?;
-    let l_error_bb = self_compiler
-        .context
-        .append_basic_block(parent_fn, "mod_l_error_short_circuit");
-    let check_r_error_bb = self_compiler
-        .context
-        .append_basic_block(parent_fn, "mod_check_r_error");
-    let _ = self_compiler.builder.build_conditional_branch(
-        l_is_error,
-        l_error_bb,
-        check_r_error_bb,
-    );
-
-    self_compiler.builder.position_at_end(l_error_bb);
-    let _ = self_compiler.builder.build_unconditional_branch(merge_bb);
-
-    self_compiler.builder.position_at_end(check_r_error_bb);
-    let r_is_error = build_label_is_error(self_compiler, r_tag, r_val, module)?;
-    let r_error_bb = self_compiler
-        .context
-        .append_basic_block(parent_fn, "mod_r_error_short_circuit");
-    let normal_dispatch_bb = self_compiler
-        .context
-        .append_basic_block(parent_fn, "mod_normal_dispatch");
-    let _ = self_compiler.builder.build_conditional_branch(
-        r_is_error,
-        r_error_bb,
-        normal_dispatch_bb,
-    );
-
-    self_compiler.builder.position_at_end(r_error_bb);
-    let _ = self_compiler.builder.build_unconditional_branch(merge_bb);
-
-    self_compiler.builder.position_at_end(normal_dispatch_bb);
-
-    // Zero-division check
-    let zero = self_compiler.context.i64_type().const_int(0, false);
-    let is_zero = self_compiler
-        .builder
-        .build_int_compare(inkwell::IntPredicate::EQ, r_val, zero, "is_zero")
-        .unwrap();
-    let _ = self_compiler
-        .builder
-        .build_conditional_branch(is_zero, bb_err, bb_mod);
-
-    // Error: modulo by zero
-    self_compiler.builder.position_at_end(bb_err);
-    let error_ptr = create_error_label_from_str(self_compiler, "Modulo by zero", module)?;
-    let _ = self_compiler.builder.build_unconditional_branch(merge_bb);
-
-    // Mod
-    self_compiler.builder.position_at_end(bb_mod);
-    let result = self_compiler
-        .builder
-        .build_int_signed_rem(l_val, r_val, "remainder")
-        .unwrap();
-
-    let res_ptr = create_entry_block_alloca(self_compiler, "res_alloc")?;
-    self_compiler.build_runtime_value_store(
-        res_ptr,
-        StoreTag::Int(Tag::Integer as u64),
-        StoreValue::Int(result),
-        "mod_res_store",
-    );
-    let _ = self_compiler.builder.build_unconditional_branch(merge_bb);
-
-    self_compiler.builder.position_at_end(merge_bb);
-    let phi = self_compiler
-        .builder
-        .build_phi(
-            self_compiler.context.ptr_type(AddressSpace::default()),
-            "mod_res_phi",
-        )
-        .unwrap();
-    phi.add_incoming(&[
-        (&error_ptr, bb_err),
-        (&res_ptr, bb_mod),
-        (&l_ptr, l_error_bb),
-        (&r_ptr, r_error_bb),
-    ]);
-    Ok(phi.as_basic_value())
-}
-
-enum IntBinOp {
-    Sub,
-    Mul,
-}
-
-fn create_binary_int_op<'ctx, OperationBuilder>(
-    self_compiler: &mut Compiler<'ctx>,
-    lhs: &Spanned<ast::Expr>,
-    rhs: &Spanned<ast::Expr>,
-    module: &inkwell::module::Module<'ctx>,
-    op: IntBinOp,
-    op_fn: OperationBuilder,
-) -> Result<BasicValueEnum<'ctx>, SprsError>
-where
-    OperationBuilder: Fn(
-        &inkwell::builder::Builder<'ctx>,
-        inkwell::values::IntValue<'ctx>,
-        inkwell::values::IntValue<'ctx>,
-        &str,
-    ) -> Result<inkwell::values::IntValue<'ctx>, SprsError>,
-{
-    let l_ptr = self_compiler
-        .compile_expr(lhs, module)?
-        .into_pointer_value();
-    let r_ptr = self_compiler
-        .compile_expr(rhs, module)?
-        .into_pointer_value();
-
-    let l_tag_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, l_ptr, 0, "l_tag_ptr")
-        .unwrap();
-    let l_tag = self_compiler
-        .builder
-        .build_load(self_compiler.context.i32_type(), l_tag_ptr, "l_tag")
-        .unwrap()
-        .into_int_value();
-
-    let r_tag_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, r_ptr, 0, "r_tag_ptr")
-        .unwrap();
-    let r_tag = self_compiler
-        .builder
-        .build_load(self_compiler.context.i32_type(), r_tag_ptr, "r_tag")
-        .unwrap()
-        .into_int_value();
-
-    let op_name = match op {
-        IntBinOp::Sub => "sub",
-        IntBinOp::Mul => "mul",
-    };
-
-    let parent_fn = self_compiler
-        .builder
-        .get_insert_block()
-        .unwrap()
-        .get_parent()
-        .unwrap();
-    let merge_bb = self_compiler
-        .context
-        .append_basic_block(parent_fn, &format!("{op_name}_merge_bb"));
-
-    // Load operand data before the short-circuit so `__label_is_error` can
-    // inspect the label name.
-    let l_data_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, l_ptr, 1, "l_data_ptr")
-        .unwrap();
-    let l_val = self_compiler
-        .builder
-        .build_load(self_compiler.context.i64_type(), l_data_ptr, "l_val")
-        .unwrap()
-        .into_int_value();
-    let r_data_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, r_ptr, 1, "r_data_ptr")
-        .unwrap();
-    let r_val = self_compiler
-        .builder
-        .build_load(self_compiler.context.i64_type(), r_data_ptr, "r_val")
-        .unwrap()
-        .into_int_value();
-
-    // short-circuit: if either operand is an error label, return it directly.
-    let l_is_error = build_label_is_error(
-        self_compiler,
-        l_tag,
-        l_val,
-        module,
-    )?;
-    let l_error_bb = self_compiler.context.append_basic_block(
-        parent_fn,
-        &format!("{op_name}_l_error_short_circuit"),
-    );
-    let check_r_error_bb = self_compiler
-        .context
-        .append_basic_block(parent_fn, &format!("{op_name}_check_r_error"));
-    let _ = self_compiler.builder.build_conditional_branch(
-        l_is_error,
-        l_error_bb,
-        check_r_error_bb,
-    );
-
-    self_compiler.builder.position_at_end(l_error_bb);
-    let _ = self_compiler.builder.build_unconditional_branch(merge_bb);
-
-    self_compiler.builder.position_at_end(check_r_error_bb);
-    let r_is_error = build_label_is_error(
-        self_compiler,
-        r_tag,
-        r_val,
-        module,
-    )?;
-    let r_error_bb = self_compiler.context.append_basic_block(
-        parent_fn,
-        &format!("{op_name}_r_error_short_circuit"),
-    );
-    let normal_dispatch_bb = self_compiler
-        .context
-        .append_basic_block(parent_fn, &format!("{op_name}_normal_dispatch"));
-    let _ = self_compiler.builder.build_conditional_branch(
-        r_is_error,
-        r_error_bb,
-        normal_dispatch_bb,
-    );
-
-    self_compiler.builder.position_at_end(r_error_bb);
-    let _ = self_compiler.builder.build_unconditional_branch(merge_bb);
-
-    self_compiler.builder.position_at_end(normal_dispatch_bb);
-
-    let result = op_fn(
-        &self_compiler.builder,
-        l_val,
-        r_val,
-        match op {
-            IntBinOp::Sub => "difference",
-            IntBinOp::Mul => "product",
-        },
-    )?;
-    let res_ptr = create_entry_block_alloca(self_compiler, "res_alloc")?;
-
-    self_compiler.build_runtime_value_store(
-        res_ptr,
-        StoreTag::Int(Tag::Integer as u64),
-        StoreValue::Int(result),
-        "int_bin_op_res",
-    );
-    let normal_end_bb = self_compiler.builder.get_insert_block().unwrap();
-    let _ = self_compiler.builder.build_unconditional_branch(merge_bb);
-
-    self_compiler.builder.position_at_end(merge_bb);
-    let phi = self_compiler
-        .builder
-        .build_phi(
-            self_compiler.context.ptr_type(AddressSpace::default()),
-            &format!("{op_name}_res_phi"),
-        )
-        .unwrap();
-    phi.add_incoming(&[
-        (&l_ptr, l_error_bb),
-        (&r_ptr, r_error_bb),
-        (&res_ptr, normal_end_bb),
-    ]);
-    Ok(phi.as_basic_value())
+    create_binary_dispatch(self_compiler, lhs, rhs, module, BinOpKind::Mod)
 }

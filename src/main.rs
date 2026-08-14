@@ -236,19 +236,27 @@
 //!
 //! - Match
 //!
-//! `match` is a statement for branching on Atom / Label values with static
-//! patterns. Two forms:
+//! `match` branches on Atom / Label values with static patterns. It comes in
+//! two forms: a **statement** (blocks or a bind variable) and an
+//! **expression** (produces a value).
 //!
+//! Statement forms:
 //! - **Bind** — `match <Expr> ?(var name) { case PAT => expr break; … }`.
 //!   Each arm evaluates an expression, stores it into `name`, and leaves the
 //!   match. The binding is visible after the match in the same block.
 //! - **No bind** — `match <Expr> { case PAT => { stmts } … }`. Arms are
 //!   statement blocks (same shape as `if`).
 //!
+//! Expression form — `match <Expr> { case PAT => expr … }` produces the
+//! matching arm's value (no `break`). It needs a context that consumes the
+//! value (e.g. `var r = …;`); use a no-bind statement for a standalone branch.
+//!
 //! Patterns (v1, static names only):
 //! - `case :name` — match Atom or Label by name (no payload bind)
 //! - `case {:name, binder}` — Label only; bind the payload to `binder`
 //!   (`_` discards it)
+//! - `case _` — matches anything; must be the last arm. Use it as a default
+//!   to avoid the `Match failed` panic.
 //!
 //! ```sprs
 //! fn match_label_bind() >> int {
@@ -283,10 +291,21 @@
 //!   }
 //!   return flag;
 //! }
+//!
+//! fn match_expr_example(v >> atom) >> int {
+//!   var r = match v {
+//!     case :ok => 1
+//!     case :error => 0
+//!     case _ => -1
+//!   };
+//!   return r;
+//! }
 //! ```
 //!
 //! Notes:
-//! - Unmatched scrutinees panic with `Match failed` (process exits non-zero).
+//! - Unmatched scrutinees panic with `Match failed` (process exits non-zero)
+//!   unless a trailing `case _` catches everything.
+//! - Dynamic name patterns such as `case :"{i}-item"` are rejected at compile
 //! - Dynamic name patterns such as `case :"{i}-item"` are rejected at compile
 //!   time. Prefer `@label_is` with `if` for dynamic names.
 //! - The bind marker is the single token `?(`; it does not collide with

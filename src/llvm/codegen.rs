@@ -21,6 +21,47 @@ use inkwell::module::Module;
 use inkwell::types::{BasicMetadataTypeEnum, BasicTypeEnum};
 use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue, ValueKind};
 
+
+fn is_int_family(ty: &Type) -> bool {
+    matches!(
+        ty,
+        Type::Int
+            | Type::TypeI8
+            | Type::TypeU8
+            | Type::TypeI16
+            | Type::TypeU16
+            | Type::TypeI32
+            | Type::TypeU32
+            | Type::TypeI64
+            | Type::TypeU64
+    )
+}
+
+fn is_float_family(ty: &Type) -> bool {
+    matches!(
+        ty,
+        Type::Float | Type::TypeF16 | Type::TypeF32 | Type::TypeF64
+    )
+}
+
+fn infer_binary_arith_type(lhs: &Type, rhs: &Type) -> Type {
+    if is_int_family(lhs) && is_int_family(rhs) {
+        if lhs == rhs {
+            lhs.clone()
+        } else {
+            Type::Int
+        }
+    } else if is_float_family(lhs) && is_float_family(rhs) {
+        if lhs == rhs {
+            lhs.clone()
+        } else {
+            Type::Float
+        }
+    } else {
+        lhs.clone()
+    }
+}
+
 impl<'ctx> Compiler<'ctx> {
     pub fn get_known_type_from_expr(&self, expr: &Spanned<ast::Expr>) -> Result<String, SprsError> {
         match &expr.node {
@@ -138,11 +179,20 @@ impl<'ctx> Compiler<'ctx> {
             ast::Expr::TypeF16 => Type::TypeF16,
             ast::Expr::TypeF32 => Type::TypeF32,
             ast::Expr::TypeF64 => Type::TypeF64,
-            ast::Expr::Add(lhs, _)
-            | ast::Expr::Mul(lhs, _)
-            | ast::Expr::Minus(lhs, _)
-            | ast::Expr::Div(lhs, _)
-            | ast::Expr::Mod(lhs, _) => self.infer_type(lhs),
+            ast::Expr::Eq(_, _)
+            | ast::Expr::Neq(_, _)
+            | ast::Expr::Lt(_, _)
+            | ast::Expr::Gt(_, _)
+            | ast::Expr::Le(_, _)
+            | ast::Expr::Ge(_, _) => Type::Bool,
+            ast::Expr::Add(lhs, rhs)
+            | ast::Expr::Mul(lhs, rhs)
+            | ast::Expr::Minus(lhs, rhs)
+            | ast::Expr::Div(lhs, rhs)
+            | ast::Expr::Mod(lhs, rhs) => {
+                infer_binary_arith_type(&self.infer_type(lhs), &self.infer_type(rhs))
+            }
+            ast::Expr::Assign(_, rhs) => self.infer_type(rhs),
             ast::Expr::Increment(value) | ast::Expr::Decrement(value) | ast::Expr::Neg(value) => {
                 self.infer_type(value)
             }
@@ -159,6 +209,29 @@ impl<'ctx> Compiler<'ctx> {
                 } else {
                     Type::Any
                 }
+            }
+            ast::Expr::Match { scrutinee: _, arms } => {
+                // Fold the arm value types like Expr::If; incompatible arms
+                // fall back to Type::Any.
+                let mut result: Option<Type> = None;
+                for arm in arms {
+                    let arm_ty = self.infer_type(&arm.value);
+                    result = Some(match result {
+                        None => arm_ty,
+                        Some(t) if types_compatible(&t, &arm_ty) => {
+                            if t != Type::Any {
+                                t
+                            } else {
+                                arm_ty
+                            }
+                        }
+                        Some(_) => Type::Any,
+                    });
+                    if result == Some(Type::Any) {
+                        break;
+                    }
+                }
+                result.unwrap_or(Type::Any)
             }
             ast::Expr::Call(name, _) => self
                 .fn_types
@@ -346,7 +419,7 @@ impl<'ctx> Compiler<'ctx> {
             // Body's compile_block already exited its scopes; drop the remaining arg scope here.
             self.emit_drop_for_attachments(module)?;
             self.exit_scope(module)?;
-            builder_helper::create_dummy_for_no_return(self);
+            builder_helper::create_dummy_for_no_return(self)?;
         } else {
             self.scopes.pop();
         }
@@ -377,7 +450,12 @@ impl<'ctx> Compiler<'ctx> {
             let mut ptr = self.compile_expr(expr, module)?.into_pointer_value();
 
             if let ast::Expr::Var(name) = &expr.node {
-                let binding = self.get_variables(name).unwrap();
+                let binding = self.get_variables(name).ok_or_else(|| SprsError::Semantic {
+                    code: ErrorCode { category: ErrorCategory::Semantic, number: 2 },
+                    location: self.location(expr.span),
+                    message: format!("Undefined variable: {}", name),
+                    help: None,
+                })?;
                 let val_ptr = binding.value.into_pointer_value();
 
                 if binding.always_clone {
@@ -729,83 +807,12 @@ impl<'ctx> Compiler<'ctx> {
                     self.register_enum(enm, &module, false);
                 }
                 ast::Stmt::Assign(assign_stmt) => {
-                    // Self-assign is a no-op: drop-then-load on the same binding
-                    // would destroy the value.
-                    if let ast::Expr::Var(src_val_name) = &assign_stmt.expr.node {
-                        if src_val_name == &assign_stmt.name {
-                            continue;
-                        }
-                    }
-
-                    let mut val_ptr = self
-                        .compile_expr(&assign_stmt.expr, module)?
-                        .into_pointer_value();
-
-                    // For non-cp sources, move must happen AFTER we copy bits into the
-                    // target. Moving first would Unit the source while val_ptr still
-                    // aliases it, so the assignment stores Unit.
-                    let mut source_to_move: Option<(BasicValueEnum<'ctx>, String)> = None;
-                    if let ast::Expr::Var(src_val_name) = &assign_stmt.expr.node {
-                        let src = self
-                            .get_variables(src_val_name)
-                            .ok_or_else(|| format!("Undefined variable: {}", src_val_name))?;
-                        if src.always_clone {
-                            val_ptr = builder_helper::clone_runtime_value(
-                                self,
-                                src.value.into_pointer_value(),
-                                module,
-                            )?;
-                        } else {
-                            source_to_move = Some((src.value, src_val_name.clone()));
-                        }
-                    }
-
-                    let target = self
-                        .get_variables(&assign_stmt.name)
-                        .ok_or_else(|| format!("Undefined variable: {}", &assign_stmt.name))?;
-
-                    let rhs_ty = self.infer_type(&assign_stmt.expr);
-                    if target.is_annotated && !target.is_ambi {
-                        if !types_compatible(&target.ty, &rhs_ty) {
-                            return Err(SprsError::Type {
-                                code: ErrorCode {
-                                    category: ErrorCategory::Type,
-                                    number: 6,
-                                },
-                                location: self.location(assign_stmt.span),
-                                message: format!(
-                                    "Type mismatch: cannot assign {:?} to fixed binding `{}` of type {:?}",
-                                    rhs_ty, assign_stmt.name, target.ty
-                                ),
-                                expected_type: Some(format!("{:?}", target.ty)),
-                                actual_type: Some(format!("{:?}", rhs_ty)),
-                                help: Some(
-                                    "use `>> ambi T` if this parameter should allow dynamic reassignment"
-                                        .to_string(),
-                                ),
-                            });
-                        }
-                    }
-
-                    let target_ptr = target.value.into_pointer_value();
-
-                    let drop_fn = self.get_runtime_fn(module, "__drop")?;
-                    builder_helper::drop_var(self, target_ptr, drop_fn, &assign_stmt.name);
-
-                    let new_val = self
-                        .builder
-                        .build_load(self.runtime_value_type, val_ptr, "assign_load")
-                        .unwrap();
-                    self.builder.build_store(target_ptr, new_val).unwrap();
-
-                    if let Some((val, src_name)) = source_to_move {
-                        builder_helper::move_variable(self, &val, &src_name);
-                    }
-
-                    // Update static type: ambi / unannotated bindings track the RHS.
-                    if !target.is_annotated || target.is_ambi {
-                        self.set_variable_type(&assign_stmt.name, rhs_ty);
-                    }
+                    self.emit_named_assign(
+                        &assign_stmt.name,
+                        &assign_stmt.expr,
+                        module,
+                        assign_stmt.span,
+                    )?;
                 }
                 ast::Stmt::IndexAssign {
                     collection,
@@ -863,6 +870,107 @@ impl<'ctx> Compiler<'ctx> {
         Ok(())
     }
 
+    fn emit_named_assign(
+        &mut self,
+        name: &str,
+        rhs: &Spanned<ast::Expr>,
+        module: &Module<'ctx>,
+        span: Span,
+    ) -> Result<PointerValue<'ctx>, SprsError> {
+        let target = self.get_variables(name).ok_or_else(|| SprsError::Semantic {
+            code: ErrorCode {
+                category: ErrorCategory::Semantic,
+                number: 2,
+            },
+            location: self.location(span),
+            message: format!("Undefined variable: {}", name),
+            help: None,
+        })?;
+        let target_ptr = target.value.into_pointer_value();
+
+        // Self-assign is a no-op: drop-then-load on the same binding
+        // would destroy the value.
+        if let ast::Expr::Var(src_val_name) = &rhs.node {
+            if src_val_name == name {
+                return Ok(target_ptr);
+            }
+        }
+
+        let mut val_ptr = self.compile_expr(rhs, module)?.into_pointer_value();
+
+        // For non-cp sources, move must happen AFTER we copy bits into the
+        // target. Moving first would Unit the source while val_ptr still
+        // aliases it, so the assignment stores Unit.
+        let mut source_to_move: Option<(BasicValueEnum<'ctx>, String)> = None;
+        if let ast::Expr::Var(src_val_name) = &rhs.node {
+            let src = self
+                .get_variables(src_val_name)
+                .ok_or_else(|| format!("Undefined variable: {}", src_val_name))?;
+            if src.always_clone {
+                val_ptr = builder_helper::clone_runtime_value(
+                    self,
+                    src.value.into_pointer_value(),
+                    module,
+                )?;
+            } else {
+                source_to_move = Some((src.value, src_val_name.clone()));
+            }
+        }
+
+        let target = self.get_variables(name).ok_or_else(|| SprsError::Semantic {
+            code: ErrorCode {
+                category: ErrorCategory::Semantic,
+                number: 2,
+            },
+            location: self.location(span),
+            message: format!("Undefined variable: {}", name),
+            help: None,
+        })?;
+
+        let rhs_ty = self.infer_type(rhs);
+        if target.is_annotated && !target.is_ambi {
+            if !types_compatible(&target.ty, &rhs_ty) {
+                return Err(SprsError::Type {
+                    code: ErrorCode {
+                        category: ErrorCategory::Type,
+                        number: 6,
+                    },
+                    location: self.location(span),
+                    message: format!(
+                        "Type mismatch: cannot assign {:?} to fixed binding `{}` of type {:?}",
+                        rhs_ty, name, target.ty
+                    ),
+                    expected_type: Some(format!("{:?}", target.ty)),
+                    actual_type: Some(format!("{:?}", rhs_ty)),
+                    help: Some(
+                        "use `>> ambi T` if this parameter should allow dynamic reassignment"
+                            .to_string(),
+                    ),
+                });
+            }
+        }
+
+        let drop_fn = self.get_runtime_fn(module, "__drop")?;
+        builder_helper::drop_var(self, target_ptr, drop_fn, name);
+
+        let new_val = self
+            .builder
+            .build_load(self.runtime_value_type, val_ptr, "assign_load")
+            .unwrap();
+        self.builder.build_store(target_ptr, new_val).unwrap();
+
+        if let Some((val, src_name)) = source_to_move {
+            builder_helper::move_variable(self, &val, &src_name);
+        }
+
+        // Update static type: ambi / unannotated bindings track the RHS.
+        if !target.is_annotated || target.is_ambi {
+            self.set_variable_type(name, rhs_ty);
+        }
+
+        Ok(target_ptr)
+    }
+
     pub(crate) fn compile_expr(
         &mut self,
         expr: &Spanned<ast::Expr>,
@@ -884,6 +992,9 @@ impl<'ctx> Compiler<'ctx> {
             ast::Expr::TypeF64 => builder_helper::create_float64(self),
             ast::Expr::Str(str) => Ok(builder_helper::create_string(self, str, module)?),
             ast::Expr::Bool(boolean) => Ok(builder_helper::create_bool(self, boolean)?),
+            ast::Expr::Assign(name, rhs) => {
+                Ok(self.emit_named_assign(name, rhs, module, expr.span)?.into())
+            }
             ast::Expr::Var(ident) => {
                 if let Some(binding) = self.get_variables(ident) {
                     Ok(binding.value)
@@ -1077,6 +1188,9 @@ impl<'ctx> Compiler<'ctx> {
             }
             ast::Expr::If(cond, then_expr, else_expr) => {
                 Ok(builder_helper::create_if_expr(self, cond, then_expr, else_expr, module)?)
+            }
+            ast::Expr::Match { scrutinee, arms } => {
+                Ok(builder_helper::create_match_expr(self, scrutinee, arms, module)?)
             }
             ast::Expr::List(elements) => Ok(builder_helper::create_list(self, elements, module)?),
             ast::Expr::Index(collection_expr, index_expr) => {

@@ -2,6 +2,10 @@ pkg comparison;
 
 # === Comparison ===
 
+pub fn eq_as_bool() >> bool {
+    return 5 == 5;
+}
+
 pub fn eq_true() >> i64 {
     if 5 == 5 {
         return 1;

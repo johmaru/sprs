@@ -3,7 +3,7 @@ use crate::front::span::Span;
 use inkwell::{
     AddressSpace,
     module::Linkage,
-    values::{BasicValueEnum, IntValue, PointerValue, ValueKind},
+    values::{BasicMetadataValueEnum, BasicValueEnum, IntValue, PointerValue, ValueKind},
 };
 
 use crate::llvm::variable::{clone_runtime_value, move_variable};
@@ -1030,32 +1030,11 @@ pub(crate) fn box_return_value<'ctx>(
     Ok(result_ptr.into())
 }
 
-pub fn create_call_expr<'ctx>(
+pub fn prepare_call_args<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    ident: &str,
-    args: &Vec<Spanned<ast::Expr>>,
+    args: &[Spanned<ast::Expr>],
     module: &inkwell::module::Module<'ctx>,
-) -> Result<BasicValueEnum<'ctx>, SprsError> {
-    let func = module
-        .get_function(ident)
-        .or_else(|| {
-            self_compiler
-                .modules
-                .values()
-                .find_map(|module_value| module_value.get_function(ident))
-        })
-        .ok_or(SprsError::Semantic {
-            code: ErrorCode {
-                category: ErrorCategory::Semantic,
-                number: 15,
-            },
-            location: Location::new(String::new(), Span::DUMMY),
-            message: format!("Undefined function: {}", ident),
-            help: None,
-        })?;
-
-    self_compiler.check_call_arguments(ident, args)?;
-
+) -> Result<Vec<inkwell::values::BasicMetadataValueEnum<'ctx>>, SprsError> {
     let mut compiled_args = Vec::with_capacity(args.len());
     for arg in args {
         let compiled_arg_ptr = self_compiler
@@ -1128,6 +1107,36 @@ pub fn create_call_expr<'ctx>(
             move_variable(self_compiler, &source_ptr, source_name);
         }
     }
+    Ok(compiled_args)
+}
+
+pub fn create_call_expr<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+    ident: &str,
+    args: &Vec<Spanned<ast::Expr>>,
+    module: &inkwell::module::Module<'ctx>,
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
+    let func = module
+        .get_function(ident)
+        .or_else(|| {
+            self_compiler
+                .modules
+                .values()
+                .find_map(|module_value| module_value.get_function(ident))
+        })
+        .ok_or(SprsError::Semantic {
+            code: ErrorCode {
+                category: ErrorCategory::Semantic,
+                number: 15,
+            },
+            location: Location::new(String::new(), Span::DUMMY),
+            message: format!("Undefined function: {}", ident),
+            help: None,
+        })?;
+
+    self_compiler.check_call_arguments(ident, args)?;
+
+    let compiled_args = prepare_call_args(self_compiler, args, module)?;
     let call_site = self_compiler
         .builder
         .build_call(func, &compiled_args, "compile_expr_call_tmp")

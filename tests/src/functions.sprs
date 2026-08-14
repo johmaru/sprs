@@ -2,16 +2,15 @@ pkg functions;
 
 # === Functions ===
 
-# XFAIL: Var + Var with function args (runtime tag not Integer)
-# fn add(a, b) >> i64 { return a + b; }
-# fn call_with_args() >> i64 { return add(3, 4); }
-# fn nested_calls() >> i64 { return add(add(1, 2), add(3, 4)); }
-# fn function_with_locals() >> i64 {
-#     var a = 10;
-#     var b = 20;
-#     var c = add(a, b);
-#     return c;
-# }
+pub fn add(a, b) >> i64 { return a + b; }
+pub fn call_with_args() >> i64 { return add(3, 4); }
+pub fn nested_calls() >> i64 { return add(add(1, 2), add(3, 4)); }
+pub fn function_with_locals() >> i64 {
+    var a = 10;
+    var b = 20;
+    var c = add(a, b);
+    return c;
+}
 
 pub fn private_helper(n) >> i64 {
     return n * 2;

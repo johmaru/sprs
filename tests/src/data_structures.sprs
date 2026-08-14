@@ -114,3 +114,21 @@ pub fn enum_in_list() >> i64 {
     @list_push(y, Color.Green);
     return 1;
 }
+
+pub struct Flag {
+    ok >> bool
+}
+
+pub fn flag_true() >> bool {
+    var p = @init(Flag {
+        ok = true
+    });
+    return p.ok;
+}
+
+pub fn flag_false() >> bool {
+    var p = @init(Flag {
+        ok = false
+    });
+    return p.ok;
+}

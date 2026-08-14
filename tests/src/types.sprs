@@ -64,8 +64,7 @@ pub fn cast_int32_to_fp64() >> fp {
     return @cast(@cast(2147483647, i32), fp64);
 }
 
-# XFAIL: @cast + @cast with different types (infer_type Call bug)
-# fn cast_mixed() >> i64 { return @cast(1, i8) + @cast(2, i16) + @cast(3, i32); }
+pub fn cast_mixed() >> i64 { return @cast(1, i8) + @cast(2, i16) + @cast(3, i32); }
 
 
 # === Float ===
@@ -91,7 +90,6 @@ pub fn float_complex() >> fp {
 }
 
 pub fn float_var_arith() >> fp {
-    # XFAIL: return var (move semantics resets tag)
     var a = 5.2;
     var b = 7.3;
     return a + b;
@@ -117,7 +115,6 @@ pub fn float_nested() >> fp {
 }
 
 pub fn float_mixed() >> fp {
-    # XFAIL: return var (move semantics resets tag)
     var x = 12.3;
     return x + 0.1;
 }

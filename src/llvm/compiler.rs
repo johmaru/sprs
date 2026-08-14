@@ -555,27 +555,26 @@ impl<'ctx> Compiler<'ctx> {
                     | Type::Label
                     | Type::AtomVal
                     | Type::Buffer
-                    | Type::RawPtr => self.runtime_value_type.into(),
-                    Type::Int => self.context.i64_type().into(),
-                    Type::Str => self.context.ptr_type(AddressSpace::default()).into(),
-                    Type::Float => self.context.f64_type().into(),
-                    Type::Bool => self.context.bool_type().into(),
-                    Type::Enum(name) => self.context.i64_type().into(),
-                    // App / Param / Atom are compile-time only; erase to a runtime slot.
-                    Type::App(_, _) | Type::Param(_) | Type::Atom(_) => {
-                        self.runtime_value_type.into()
-                    }
-                    Type::TypeI8 => self.context.i8_type().into(),
-                    Type::TypeU8 => self.context.i8_type().into(),
-                    Type::TypeI16 => self.context.i16_type().into(),
-                    Type::TypeU16 => self.context.i16_type().into(),
-                    Type::TypeI32 => self.context.i32_type().into(),
-                    Type::TypeU32 => self.context.i32_type().into(),
-                    Type::TypeI64 => self.context.i64_type().into(),
-                    Type::TypeU64 => self.context.i64_type().into(),
-                    Type::TypeF16 => self.context.f16_type().into(),
-                    Type::TypeF32 => self.context.f32_type().into(),
-                    Type::TypeF64 => self.context.f64_type().into(),
+                    | Type::RawPtr
+                    | Type::App(_, _)
+                    | Type::Param(_)
+                    | Type::Atom(_) => self.runtime_value_type.into(),
+                    Type::Int
+                    | Type::TypeI64
+                    | Type::TypeU64
+                    | Type::Bool
+                    | Type::Str
+                    | Type::Float
+                    | Type::TypeF64
+                    | Type::Enum(_)
+                    | Type::TypeI8
+                    | Type::TypeU8
+                    | Type::TypeI16
+                    | Type::TypeU16
+                    | Type::TypeI32
+                    | Type::TypeU32
+                    | Type::TypeF16
+                    | Type::TypeF32 => self.context.i64_type().into(),
                 }
             } else {
                 self.runtime_value_type.into()
@@ -801,6 +800,13 @@ impl<'ctx> Compiler<'ctx> {
             ),
             "__string_from_cstr" => i64_type.fn_type(&[i8_ptr_type.into()], false),
             "__string_concat" => i64_type.fn_type(
+                &[
+                    i64_type.into(), // left handle
+                    i64_type.into(), // right handle
+                ],
+                false,
+            ),
+            "__string_eq" => i32_type.fn_type(
                 &[
                     i64_type.into(), // left handle
                     i64_type.into(), // right handle

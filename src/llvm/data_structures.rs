@@ -346,11 +346,7 @@ pub fn create_module_access<'ctx>(
 
     self_compiler.check_call_arguments(function_name, args)?;
 
-    let mut compiled_args = Vec::with_capacity(args.len());
-    for arg_expr in args {
-        let arg_val = self_compiler.compile_expr(arg_expr, module)?.into();
-        compiled_args.push(arg_val);
-    }
+    let compiled_args = crate::llvm::value::prepare_call_args(self_compiler, args, module)?;
 
     let call_site = self_compiler
         .builder
@@ -513,6 +509,23 @@ pub fn create_field_access<'ctx>(
                     StoreTag::Int(Tag::Boolean as u64),
                     StoreValue::Bool(val),
                     "bool_field_access_res",
+                );
+                return Ok(res_ptr.into());
+            }
+            crate::front::type_helper::Type::Float
+            | crate::front::type_helper::Type::TypeF64 => {
+                let val = self_compiler
+                    .builder
+                    .build_load(self_compiler.context.i64_type(), field_ptr, "float_field_val")
+                    .unwrap()
+                    .into_int_value();
+                let res_ptr =
+                    create_entry_block_alloca(self_compiler, "float_field_access_res_alloc")?;
+                self_compiler.build_runtime_value_store(
+                    res_ptr,
+                    StoreTag::Int(Tag::Float as u64),
+                    StoreValue::Int(val),
+                    "float_field_access_res",
                 );
                 return Ok(res_ptr.into());
             }
@@ -694,7 +707,9 @@ pub fn create_struct_init<'ctx>(
                 crate::front::type_helper::Type::Int
                 | crate::front::type_helper::Type::TypeI64
                 | crate::front::type_helper::Type::TypeU64
-                | crate::front::type_helper::Type::Bool => {
+                | crate::front::type_helper::Type::Bool
+                | crate::front::type_helper::Type::Float
+                | crate::front::type_helper::Type::TypeF64 => {
                     let val_ptr = value.into_pointer_value();
                     let data_ptr = self_compiler
                         .builder

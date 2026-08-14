@@ -32,6 +32,7 @@ fn main() {
     @println(arithmetic.sub_to_zero());
 
     @println("=== Comparison ===");
+    @println(comparison.eq_as_bool());
     @println(comparison.eq_true());
     @println(comparison.eq_false());
     @println(comparison.neq_true());
@@ -62,6 +63,8 @@ fn main() {
     @println(variables.var_shadow());
     @println(variables.var_in_loop());
     @println(variables.var_math());
+    @println(variables.chained_assign());
+    @println(variables.str_eq_same());
 
     @println("=== cp / @move ===");
     @println(variables.cp_print_twice());
@@ -72,9 +75,9 @@ fn main() {
     @println(variables.cp_call_twice());
 
     @println("=== Functions ===");
-    # XFAIL: call_with_args (Var+Var in add function)
-    # XFAIL: nested_calls (uses add)
-    # XFAIL: function_with_locals (uses add)
+    @println(functions.call_with_args());
+    @println(functions.nested_calls());
+    @println(functions.function_with_locals());
     @println(functions.call_private());
     @println(functions.test_recursion());
     @println(functions.test_fib());
@@ -99,8 +102,7 @@ fn main() {
     @println(types.cast_u64());
     @println(types.cast_arithmetic());
     @println(types.cast_loop());
-    # @println(types.cast_mixed());
-    # XFAIL: cast_mixed (infer_type Call bug)
+    @println(types.cast_mixed());
     @println("=== BUG-L08 Verify ===");
     @println(types.cast_uint32_to_fp64());
     @println(types.cast_int32_to_fp64());
@@ -130,10 +132,7 @@ fn main() {
     @println(types.float_div());
     @println(types.float_complex());
     @println(types.float_var_arith());
-    # XFAIL: @cast >> fp (infer_type bug)
-    # @println(types.float_cast_f16());
-    # @println(types.float_cast_f32());
-    # @println(types.float_cast_f64());
+    # @cast(..., fp16/fp32) is incompatible with >> fp
     @println(types.float_while_loop());
     @println(types.float_nested());
     @println(types.float_mixed());
@@ -156,6 +155,8 @@ fn main() {
     @println(data_structures.struct_create_y());
     @println(data_structures.struct_both_fields());
     @println(data_structures.struct_in_function());
+    @println(data_structures.flag_true());
+    @println(data_structures.flag_false());
 
     @println("=== Enum ===");
     @println(data_structures.enum_access());
@@ -189,6 +190,13 @@ fn main() {
     @println(labels.match_payload_bind());
     @println(labels.match_atom_bind());
     @println(labels.match_no_bind_block());
+    @println(labels.match_expr_wildcard());
+    @println(labels.match_expr_default());
+    @println(labels.match_expr_payload());
+    @println(labels.match_expr_payload_str());
+    @println(labels.match_expr_move_str());
+    @println(labels.match_expr_clone_str());
+    @println(labels.match_stmt_payload_str());
 
     @println("=== Buffer ===");
     @println(buffers.buf_macro_roundtrip());

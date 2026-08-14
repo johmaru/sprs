@@ -277,29 +277,38 @@ fn slot_release(handle: u64) {
         return;
     }
 
-    let released = SLOTS.with(|slots_cell| {
-        let mut slots = slots_cell.borrow_mut();
-        let idx = handle_index(handle) as usize;
-        if idx >= slots.len() {
-            return None;
-        }
-        let slot = &mut slots[idx];
-        if slot.generation != handle_gen(handle) {
-            return None; // stale handle, not a live slot
-        }
-        // Move the payload out while SLOTS is borrowed, then drop it after
-        // the borrow ends so nested heap payloads may release their slots.
-        let data = std::mem::replace(&mut slot.data, SlotData::Empty);
-        slot.generation = slot.generation.wrapping_add(1);
-        if slot.generation == 0 {
-            slot.generation = 1;
-        }
-        Some((idx as u32, data))
-    });
+    let released = SLOTS
+        .try_with(|slots_cell| {
+            let Ok(mut slots) = slots_cell.try_borrow_mut() else {
+                return None;
+            };
+            let idx = handle_index(handle) as usize;
+            if idx >= slots.len() {
+                return None;
+            }
+            let slot = &mut slots[idx];
+            if slot.generation != handle_gen(handle) {
+                return None; // stale handle, not a live slot
+            }
+            // Move the payload out while SLOTS is borrowed, then drop it after
+            // the borrow ends so nested heap payloads may release their slots.
+            let data = std::mem::replace(&mut slot.data, SlotData::Empty);
+            slot.generation = slot.generation.wrapping_add(1);
+            if slot.generation == 0 {
+                slot.generation = 1;
+            }
+            Some((idx as u32, data))
+        })
+        .ok()
+        .flatten();
 
     if let Some((idx, data)) = released {
         drop(data);
-        FREE_LIST.with(|fl| fl.borrow_mut().push(idx));
+        let _ = FREE_LIST.try_with(|fl| {
+            if let Ok(mut list) = fl.try_borrow_mut() {
+                list.push(idx);
+            }
+        });
     }
 }
 
@@ -579,15 +588,16 @@ pub extern "C" fn __buffer_into_raw(handle: u64) -> u64 {
         if slot.generation == 0 {
             slot.generation = 1;
         }
-        Some((addr, cap))
+        Some((idx as u32, addr, cap))
     });
     match taken {
-        Some((addr, cap)) => {
+        Some((idx, addr, cap)) => {
             let layout = std::alloc::Layout::from_size_align(cap, 1)
                 .unwrap_or_else(|_| std::alloc::Layout::from_size_align(cap.max(1), 1).unwrap());
             RAW_LAYOUTS.with(|layouts| {
                 layouts.borrow_mut().insert(addr, layout);
             });
+            FREE_LIST.with(|fl| fl.borrow_mut().push(idx));
             addr as u64
         }
         None => 0,
@@ -669,6 +679,25 @@ pub extern "C" fn __string_concat(left_handle: u64, right_handle: u64) -> u64 {
             slot_insert(SlotData::String(left_text))
         }
         _ => INVALID_HANDLE,
+    }
+}
+
+/// Compare two String slot handles by content. Returns 1 if both handles are
+/// live `SlotData::String` values with equal text, otherwise 0 (including
+/// stale / `INVALID_HANDLE` / non-String slots).
+#[unsafe(no_mangle)]
+pub extern "C" fn __string_eq(a: u64, b: u64) -> i32 {
+    let left_text: Option<String> = slot_with(a, None, |slot_data| match slot_data {
+        SlotData::String(string_value) => Some(string_value.clone()),
+        _ => None,
+    });
+    let right_text: Option<String> = slot_with(b, None, |slot_data| match slot_data {
+        SlotData::String(string_value) => Some(string_value.clone()),
+        _ => None,
+    });
+    match (left_text, right_text) {
+        (Some(left_text), Some(right_text)) if left_text == right_text => 1,
+        _ => 0,
     }
 }
 
@@ -1442,7 +1471,7 @@ mod tests {
         __buffer_get, __buffer_into_raw, __buffer_len, __buffer_new, __buffer_set, __clone,
         __drop, __error_label_from_str, __error_message_from_label, __label_is_error, __label_name,
         __label_name_eq, __label_new, __label_new_from_string, __label_payload, __raw_free,
-        __string_new, __value_to_string, atom_name, intern_atom, INVALID_HANDLE, RAW_LAYOUTS,
+        __string_eq, __string_new, __value_to_string, atom_name, intern_atom, INVALID_HANDLE, RAW_LAYOUTS,
         SlotData, SprsValue, Tag, format_sprs_value, slot_with,
     };
 
@@ -1702,6 +1731,20 @@ mod tests {
         });
         assert_eq!(text, "");
         __drop(Tag::String as i32, msg);
+    }
+
+    #[test]
+    fn string_eq_compares_contents_and_rejects_stale() {
+        let a = super::slot_insert(SlotData::String("abc".to_string()));
+        let b = super::slot_insert(SlotData::String("abc".to_string()));
+        let c = super::slot_insert(SlotData::String("abd".to_string()));
+        assert_eq!(__string_eq(a, b), 1);
+        assert_eq!(__string_eq(a, c), 0);
+        assert_eq!(__string_eq(a, INVALID_HANDLE), 0);
+        assert_eq!(__string_eq(INVALID_HANDLE, b), 0);
+        __drop(Tag::String as i32, a);
+        __drop(Tag::String as i32, b);
+        __drop(Tag::String as i32, c);
     }
 
     #[test]

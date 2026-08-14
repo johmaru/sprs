@@ -9,6 +9,7 @@ pub enum Expr {
     Float(f64),                                                     // Value
     Str(String),                                                    // Value
     Bool(bool),                                                     // Value
+    Assign(String, Box<Spanned<Expr>>),                             // name = expr (chained)
     Add(Box<Spanned<Expr>>, Box<Spanned<Expr>>),                    // Lhs, Rhs
     Mul(Box<Spanned<Expr>>, Box<Spanned<Expr>>),                    // Lhs, Rhs
     Minus(Box<Spanned<Expr>>, Box<Spanned<Expr>>),                  // Lhs, Rhs
@@ -38,6 +39,10 @@ pub enum Expr {
     Label(LabelName, Box<Spanned<Expr>>), // {:name, payload} — payload required
     AttachSlot(String),                // <:name — local operation slot reference (read)
     Try(Box<Spanned<Expr>>),           // Error propagation: expr?
+    Match {
+        scrutinee: Box<Spanned<Expr>>,
+        arms: Vec<ExprMatchArm>,
+    }, // Expression match: `match e { case PAT => expr }`
     HeapAlloc(Box<Spanned<Expr>>),     // new(n) — Buffer allocation
     Destroy(Box<Spanned<Expr>>),       // destroy(expr) — explicit Buffer release
     Exist(Box<Spanned<Expr>>),         // exist(expr) — Buffer liveness check
@@ -144,12 +149,14 @@ pub enum Suffix {
 /// v1 supports static names only: `:name` (Atom or Label by name, no payload
 /// bind) and `{:name, binder}` (Label only, payload bound to `binder` unless
 /// the binder is `"_"`). Dynamic `:"{i}-item"` patterns are rejected.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum MatchPat {
     /// `case :name` — Atom or Label by name (no payload bind)
     Name(LabelName),
     /// `case {:name, binder}` — Label only; binder `"_"` means ignore
     LabelPayload { name: LabelName, binder: String },
+    /// `case _` — matches anything; must be the last arm (SEM-017 otherwise)
+    Wildcard,
 }
 
 /// Body of one `match` arm.
@@ -166,6 +173,14 @@ pub enum MatchArmBody {
 pub struct MatchArm {
     pub pat: MatchPat,
     pub body: MatchArmBody,
+    pub span: Span,
+}
+
+/// One arm of an expression `match` (`case PAT => expr`, no `break`).
+#[derive(Debug, PartialEq, Clone)]
+pub struct ExprMatchArm {
+    pub pat: MatchPat,
+    pub value: Spanned<Expr>,
     pub span: Span,
 }
 

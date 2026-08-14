@@ -919,7 +919,11 @@ pub fn call_builtin_macro_cast<'ctx>(
 
             let new_data = self_compiler
                 .builder
-                .build_int_truncate(data, self_compiler.context.i8_type(), "cast_to_int8")
+                .build_float_to_signed_int(
+                    normalized_f64,
+                    self_compiler.context.i8_type(),
+                    "cast_to_int8",
+                )
                 .unwrap();
             let new_data_ext = self_compiler
                 .builder
@@ -939,7 +943,11 @@ pub fn call_builtin_macro_cast<'ctx>(
 
             let new_data = self_compiler
                 .builder
-                .build_int_truncate(data, self_compiler.context.i8_type(), "cast_to_uint8")
+                .build_float_to_unsigned_int(
+                    normalized_f64,
+                    self_compiler.context.i8_type(),
+                    "cast_to_uint8",
+                )
                 .unwrap();
             let new_data_ext = self_compiler
                 .builder
@@ -959,7 +967,11 @@ pub fn call_builtin_macro_cast<'ctx>(
 
             let new_data = self_compiler
                 .builder
-                .build_int_truncate(data, self_compiler.context.i16_type(), "cast_to_int16")
+                .build_float_to_signed_int(
+                    normalized_f64,
+                    self_compiler.context.i16_type(),
+                    "cast_to_int16",
+                )
                 .unwrap();
             let new_data_ext = self_compiler
                 .builder
@@ -979,7 +991,11 @@ pub fn call_builtin_macro_cast<'ctx>(
 
             let new_data = self_compiler
                 .builder
-                .build_int_truncate(data, self_compiler.context.i16_type(), "cast_to_uint16")
+                .build_float_to_unsigned_int(
+                    normalized_f64,
+                    self_compiler.context.i16_type(),
+                    "cast_to_uint16",
+                )
                 .unwrap();
             let new_data_ext = self_compiler
                 .builder
@@ -999,7 +1015,11 @@ pub fn call_builtin_macro_cast<'ctx>(
 
             let new_data = self_compiler
                 .builder
-                .build_int_truncate(data, self_compiler.context.i32_type(), "cast_to_int32")
+                .build_float_to_signed_int(
+                    normalized_f64,
+                    self_compiler.context.i32_type(),
+                    "cast_to_int32",
+                )
                 .unwrap();
             let new_data_ext = self_compiler
                 .builder
@@ -1019,7 +1039,11 @@ pub fn call_builtin_macro_cast<'ctx>(
 
             let new_data = self_compiler
                 .builder
-                .build_int_truncate(data, self_compiler.context.i32_type(), "cast_to_uint32")
+                .build_float_to_unsigned_int(
+                    normalized_f64,
+                    self_compiler.context.i32_type(),
+                    "cast_to_uint32",
+                )
                 .unwrap();
             let new_data_ext = self_compiler
                 .builder
@@ -1036,14 +1060,30 @@ pub fn call_builtin_macro_cast<'ctx>(
                 .context
                 .i32_type()
                 .const_int(Tag::Int64 as u64, false);
-            (new_tag, data)
+            let new_data = self_compiler
+                .builder
+                .build_float_to_signed_int(
+                    normalized_f64,
+                    self_compiler.context.i64_type(),
+                    "cast_to_int64",
+                )
+                .unwrap();
+            (new_tag, new_data)
         }
         "u64" => {
             let new_tag = self_compiler
                 .context
                 .i32_type()
                 .const_int(Tag::Uint64 as u64, false);
-            (new_tag, data)
+            let new_data = self_compiler
+                .builder
+                .build_float_to_unsigned_int(
+                    normalized_f64,
+                    self_compiler.context.i64_type(),
+                    "cast_to_uint64",
+                )
+                .unwrap();
+            (new_tag, new_data)
         }
 
         "fp16" => {

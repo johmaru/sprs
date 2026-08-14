@@ -521,4 +521,67 @@ fn f() >> int {
         assert!(!items.is_empty());
     }
 
+    #[test]
+    fn parses_match_expression_form() {
+        let src = r#"
+fn f() >> int {
+    var r = match :ok {
+        case :ok => 1
+        case :error => 0
+        case _ => -1
+    };
+    return r;
+}
+"#;
+        let items = parse_only(src, "t.sprs").expect("parse");
+        let Item::FunctionItem(function_item) = &items[0] else {
+            panic!("expected function");
+        };
+        let Stmt::Var(var_decl) = &function_item.blk[0].node else {
+            panic!("expected var statement");
+        };
+        let init = var_decl.expr.as_ref().expect("var has initializer");
+        let Expr::Match { scrutinee, arms } = &init.node else {
+            panic!("expected match expression");
+        };
+        assert!(matches!(
+            &scrutinee.node,
+            Expr::Atom(LabelName::Static(name)) if name == "ok"
+        ));
+        assert_eq!(arms.len(), 3);
+        assert_eq!(
+            arms[0].pat,
+            MatchPat::Name(LabelName::Static("ok".into()))
+        );
+        assert_eq!(
+            arms[1].pat,
+            MatchPat::Name(LabelName::Static("error".into()))
+        );
+        assert_eq!(arms[2].pat, MatchPat::Wildcard);
+    }
+
+    #[test]
+    fn parses_match_wildcard_in_stmt_form() {
+        let src = r#"
+fn f() >> int {
+    var flag = 0;
+    match :ok {
+        case :ok => { flag = 1; }
+        case _ => { flag = -1; }
+    }
+    return flag;
+}
+"#;
+        let items = parse_only(src, "t.sprs").expect("parse");
+        let Item::FunctionItem(function_item) = &items[0] else {
+            panic!("expected function");
+        };
+        let Stmt::Match { arms, .. } = &function_item.blk[1].node else {
+            panic!("expected match statement");
+        };
+        assert_eq!(arms.len(), 2);
+        assert!(matches!(arms[0].body, MatchArmBody::Block(_)));
+        assert_eq!(arms[1].pat, MatchPat::Wildcard);
+    }
+
 }

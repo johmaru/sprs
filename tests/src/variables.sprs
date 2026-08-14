@@ -103,3 +103,18 @@ pub fn cp_call_twice() >> i64 {
 fn echo_str(x) {
     return x;
 }
+
+pub fn chained_assign() >> i64 {
+    var a;
+    var b;
+    var c = 3;
+    a = b = c;
+    return a;
+}
+
+pub fn str_eq_same() >> i64 {
+    if "ab" + "c" == "abc" {
+        return 1;
+    }
+    return 0;
+}

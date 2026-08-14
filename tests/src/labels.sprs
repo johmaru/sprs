@@ -87,3 +87,65 @@ pub fn match_no_bind_block() >> int {
     }
     return flag;
 }
+
+pub fn match_expr_wildcard() >> int {
+    var r = match :ok {
+        case :ok => 1
+        case :error => 0
+        case _ => -1
+    };
+    return r;
+}
+
+pub fn match_expr_default() >> int {
+    var r = match :unknown {
+        case :ok => 1
+        case :error => 0
+        case _ => -1
+    };
+    return r;
+}
+
+pub fn match_expr_payload() >> int {
+    var r = match {:ok, 7} {
+        case {:ok, x} => x
+        case _ => 0
+    };
+    return r;
+}
+
+pub fn match_expr_payload_str() >> str {
+    var r = match {:ok, "hello"} {
+        case {:ok, x} => x
+        case _ => ""
+    };
+    return r;
+}
+
+pub fn match_expr_move_str() >> str {
+    var s = "hello";
+    var r = match :ok {
+        case :ok => s
+        case _ => "x"
+    };
+    return r;
+}
+
+pub fn match_expr_clone_str() >> str {
+    cp var s = "hello";
+    var r = match :ok {
+        case :ok => s
+        case _ => "x"
+    };
+    # `cp` keeps s usable; dropping both must not double-free.
+    var _keep = s;
+    return r;
+}
+
+pub fn match_stmt_payload_str() >> str {
+    match {:ok, "hello"} ?(var r) {
+        case {:ok, x} => x break;
+        case _ => "" break;
+    }
+    return r;
+}

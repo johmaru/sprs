@@ -16,6 +16,7 @@ use crate::front::ast::{
     MatchPat,
     MatchArm,
     MatchArmBody,
+    ExprMatchArm,
     parse_dynamic_label_template,
 };
 use crate::front::span::{Span, Spanned};
@@ -335,7 +336,7 @@ Stmts: Vec<Spanned<Stmt>> = {
 
 Stmt: Spanned<Stmt> = {
     <start:@L> <v:VarDecl> <end:@R> => Spanned::new(Stmt::Var(v), Span::new(start, end)),
-    <start:@L> <e:Expr> <tail:StmtTail> <end:@R> =>? {
+    <start:@L> <e:ExprNoMatch> <tail:StmtTail> <end:@R> =>? {
         match tail {
             None => Ok(Spanned::new(Stmt::Expr(e), Span::new(start, end))),
             Some(val) => {
@@ -446,15 +447,46 @@ MatchArmBlock: MatchArm = {
     },
 };
 
+MatchArmsExpr: Vec<ExprMatchArm> = {
+    <a:MatchArmExpr> => vec![a],
+    <a:MatchArmExpr> <rest:MatchArmsExpr> => {
+        let mut v = vec![a];
+        v.extend(rest);
+        v
+    }
+};
+
+MatchArmExpr: ExprMatchArm = {
+    <start:@L> Case <pat:MatchPatNode> FatArrow <e:Expr> <end:@R> => ExprMatchArm {
+        pat,
+        value: e,
+        span: Span::new(start, end),
+    },
+};
+
 MatchPatNode: MatchPat = {
     Colon <id:Ident> => MatchPat::Name(LabelName::Static(id)),
     LBrace Colon <id:Ident> Comma <binder:Ident> RBrace =>
         MatchPat::LabelPayload { name: LabelName::Static(id), binder },
+    <id:Ident> =>? {
+        if id == "_" {
+            Ok(MatchPat::Wildcard)
+        } else {
+            Err(ParseError::User {
+                error: "match pattern must be :name, {:name, binder}, or _".into(),
+            })
+        }
+    },
 };
 
 StmtTail: Option<Spanned<Expr>> = {
     Semi => None,
-    Assign <e:Expr> Semi => Some(e),
+    Assign <e:AssignExpr> Semi => Some(e),
+};
+
+AssignExpr: Spanned<Expr> = {
+    <start:@L> <id:Ident> Assign <e:AssignExpr> <end:@R> => Spanned::new(Expr::Assign(id, Box::new(e)), Span::new(start, end)),
+    <e:Expr> => e,
 };
 
 
@@ -494,9 +526,16 @@ BooleanLiteral: bool = {
 };
 
 
-Expr: Spanned<Expr> = RangeExpr;
+Expr: Spanned<Expr> = {
+    <e:ExprNoMatch> => e,
+    <start:@L> Match <e:Expr> LBrace <arms:MatchArmsExpr> RBrace <end:@R> =>
+        Spanned::new(Expr::Match {
+            scrutinee: Box::new(e),
+            arms,
+        }, Span::new(start, end)),
+};
 
-RangeExpr: Spanned<Expr> = {
+ExprNoMatch: Spanned<Expr> = {
     <start:@L> <l:Comparison> DotDot <r:Comparison> <end:@R> => Spanned::new(Expr::Range(Box::new(l), Box::new(r)), Span::new(start, end)),
     <e:Comparison> => e,
 }
@@ -533,20 +572,20 @@ Postfix: Spanned<Expr> = {
     <start:@L> <base:Postfix> LBracket <index:Expr> RBracket <end:@R> => Spanned::new(Expr::Index(Box::new(base), Box::new(index)), Span::new(start, end)),
     <start:@L> <e:Postfix> PlusPlus <end:@R> => Spanned::new(Expr::Increment(Box::new(e)), Span::new(start, end)),
     <start:@L> <e:Postfix> MinusMinus <end:@R> => Spanned::new(Expr::Decrement(Box::new(e)), Span::new(start, end)),
-    <start:@L> <base:Postfix> Dot <field:Ident> LParen RParen <end:@R> => {
+    <start:@L> <base:Postfix> Dot <field:Ident> LParen RParen <end:@R> =>? {
         if let Expr::Var(mod_name) = base.node {
-            Spanned::new(Expr::ModuleAccess(mod_name, field, vec![]), Span::new(start, end))
+            Ok(Spanned::new(Expr::ModuleAccess(mod_name, field, vec![]), Span::new(start, end)))
         } else {
-            Spanned::new(Expr::Call(field, vec![]), Span::new(start, end))
+            Err(ParseError::User { error: "method call on non-module expression is not supported".to_string() })
         }
     },
-    <start:@L> <base:Postfix> Dot <field:Ident> LParen <first:Expr> <rest:(Comma <Expr>)*> RParen <end:@R> => {
+    <start:@L> <base:Postfix> Dot <field:Ident> LParen <first:Expr> <rest:(Comma <Expr>)*> RParen <end:@R> =>? {
         let mut args = vec![first];
         args.extend(rest);
         if let Expr::Var(mod_name) = base.node {
-            Spanned::new(Expr::ModuleAccess(mod_name, field, args), Span::new(start, end))
+            Ok(Spanned::new(Expr::ModuleAccess(mod_name, field, args), Span::new(start, end)))
         } else {
-            Spanned::new(Expr::Call(field, args), Span::new(start, end))
+            Err(ParseError::User { error: "method call on non-module expression is not supported".to_string() })
         }
     },
     <start:@L> <base:Postfix> Dot <field:Ident> <end:@R> => {
