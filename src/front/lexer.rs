@@ -161,6 +161,8 @@ enum RawTok {
     MacroIdent(String),
     #[regex(r"[A-Za-z_][A-Za-z0-9_]*!?")]
     Ident,
+    #[regex(r"\^[A-Za-z_][A-Za-z0-9_]*!?", |lex| lex.slice()[1..].to_string())]
+    EscapedIdent(String),
     #[regex(r"[0-9]+\.[0-9]+([eE][+-]?[0-9]+)?")]
     #[regex(r"[0-9]+[eE][+-]?[0-9]+")]
     Float,
@@ -344,6 +346,7 @@ impl<'input> Iterator for Lexer<'input> {
             RawTok::Else => Token::Else,
             RawTok::While => Token::While,
             RawTok::Ident => Token::Ident(text.to_string()),
+            RawTok::EscapedIdent(name) => Token::Ident(name),
             RawTok::MacroIdent(name) => Token::Macro(name),
             RawTok::Num => match text.parse::<i64>() {
                 Ok(integer_value) => Token::Num(integer_value),

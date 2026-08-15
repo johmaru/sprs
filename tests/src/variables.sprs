@@ -119,6 +119,12 @@ pub fn str_eq_same() >> i64 {
     return 0;
 }
 
+pub fn escaped_keyword_var() >> i64 {
+    var ^fn = 41;
+    ^fn = ^fn + 1;
+    return ^fn;
+}
+
 pub fn chained_assign_string() >> str {
     var a;
     var b;

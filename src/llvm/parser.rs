@@ -618,6 +618,39 @@ fn buffer(new >> int) >> int {
     }
 
     #[test]
+    fn parses_escaped_keywords_as_idents() {
+        let src = r#"
+fn ^fn(^if) { var ^return = ^if; ^return = ^return + 1; return ^return; }
+"#;
+        let items = parse_only(src, "escaped_keyword_idents.sprs").expect("parse");
+        let Item::FunctionItem(function_item) = &items[0] else {
+            panic!("expected function");
+        };
+        assert_eq!(function_item.ident, "fn");
+        assert_eq!(function_item.params[0].ident, "if");
+        let Stmt::Var(var_decl) = &function_item.blk[0].node else {
+            panic!("expected var statement");
+        };
+        assert_eq!(var_decl.ident, "return");
+        let init = var_decl.expr.as_ref().expect("var has initializer");
+        assert!(matches!(&init.node, Expr::Var(name) if name == "if"));
+        let Stmt::Assign(assign) = &function_item.blk[1].node else {
+            panic!("expected assign statement");
+        };
+        assert_eq!(assign.name, "return");
+        assert!(matches!(
+            &assign.expr.node,
+            Expr::Add(lhs, rhs)
+                if matches!(&lhs.node, Expr::Var(name) if name == "return")
+                    && matches!(&rhs.node, Expr::Number(1))
+        ));
+        let Stmt::Return(Some(ret)) = &function_item.blk[2].node else {
+            panic!("expected return statement");
+        };
+        assert!(matches!(&ret.node, Expr::Var(name) if name == "return"));
+    }
+
+    #[test]
     fn keyword_type_annotation_still_type() {
         let src = "fn f(x >> buffer) >> rawptr { return x; }";
         let items = parse_only(src, "test.sprs").expect("parse");

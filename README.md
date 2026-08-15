@@ -62,17 +62,23 @@ type parameters (`Param`) are not user-facing yet.
 Keywords stay lexer tokens, but many parse as names wherever an identifier is expected
 (`pkg`, `import`, `fn` name, parameters, `var`, fields, calls, variable references).
 
-Usable as names (e.g. `pkg buffer;`, `fn buffer(new >> int)`, `var rawptr = new;`):
+Usable as names without escaping (e.g. `pkg buffer;`, `fn buffer(new >> int)`,
+`var rawptr = new;`):
 `fn`, `case`, `break`, `pkg`, `import`, `var`, `pub`, `enum`, `struct`, `cp`, `ambi`,
 `unsafe`, `int`, `fp`, `bool`, `str`, `list`, `buffer`, `rawptr`, `range`, `unit`,
 `err`, `label`, `atom`. Parameter names may also be `new` / `destroy` / `exist`.
 `var defer = …` is allowed. A bare `new` / `destroy` / `exist` in an expression is a
 variable; `new(4)` / `destroy(x)` / `exist(x)` stay the heap forms.
 
-Still syntax, not names: `if`, `else`, `while`, `match`, `return`, `true`, `false`.
-`defer` is a `var` name only (not an expression identifier). `i8`…`u64` / `fp16`…
-`fp64` stay type atoms for `@cast`. In `>>` position a type keyword is still the type
-(`>> buffer` is Buffer, not a named type).
+Still syntax when written bare: `if`, `else`, `while`, `match`, `return`, `true`,
+`false`. `defer` is a `var` name only (not an expression identifier). `i8`…`u64` /
+`fp16`…`fp64` stay type atoms for `@cast`. In `>>` position a type keyword is still
+the type (`>> buffer` is Buffer, not a named type).
+
+Prefix any identifier with `^` to treat it as a normal name, including keywords
+that cannot appear bare. The `^` is not part of the name: `^fn` and `fn` are the
+same identifier. Examples: `var ^fn = 1;` / `^fn = ^fn + 1;`. A lone `^`, `^1`,
+or `^^fn` is a lexer error.
 
 - Variables and assignments
 ```sprs

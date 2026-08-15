@@ -66,6 +66,7 @@ fn main() {
     @println(variables.chained_assign());
     @println(variables.chained_assign_string());
     @println(variables.str_eq_same());
+    @println(variables.escaped_keyword_var());
 
     @println("=== cp / @move ===");
     @println(variables.cp_print_twice());
