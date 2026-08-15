@@ -1,5 +1,10 @@
 pkg labels;
 
+pub label :ready;
+label :Color{:red, :blue}
+label :local_atom;
+
+
 # Dynamic label name + payload
 pub fn dynamic_payload() >> int {
     var item_index = 10;
@@ -148,4 +153,46 @@ pub fn match_stmt_payload_str() >> str {
         case _ => "" break;
     }
     return r;
+}
+
+pub fn color_frame_identity() >> bool {
+    var color = Color.red;
+    if color == Color.red {
+        if color != :red {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn local_atom_arg(value) >> bool {
+    return value == :local_atom;
+}
+
+fn local_atom_return() {
+    return local_atom;
+}
+
+pub fn local_atom_paths() >> bool {
+    var initialized = local_atom;
+    var returned = local_atom_return();
+    var listed = [local_atom];
+    var wrapped = {:wrapped, local_atom};
+    if initialized == :local_atom {
+        if returned == :local_atom {
+            if local_atom_arg(local_atom) {
+                if listed[0] == :local_atom {
+                    if @label_payload(wrapped) == :local_atom {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    return false;
+}
+
+pub fn shadow_local_atom() >> int {
+    var local_atom = 7;
+    return local_atom;
 }

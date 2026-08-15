@@ -59,17 +59,17 @@ pub fn call_builtin_macro_list_push<'ctx>(
         .compile_expr(&args[1], module)?
         .into_pointer_value();
     let (val_ptr, source_var) = if let ast::Expr::Var(name) = &args[1].node {
-        let src = self_compiler
-            .get_variables(name)
-            .ok_or_else(|| format!("Undefined variable: {}", name))?;
-
-        if src.always_clone {
-            (
-                clone_runtime_value(self_compiler, src.value.into_pointer_value(), module)?,
-                None,
-            )
+        if let Some(src) = self_compiler.get_variables(name) {
+            if src.always_clone {
+                (
+                    clone_runtime_value(self_compiler, src.value.into_pointer_value(), module)?,
+                    None,
+                )
+            } else {
+                (compiled_val_ptr, Some((src.value, name)))
+            }
         } else {
-            (compiled_val_ptr, Some((src.value, name)))
+            (compiled_val_ptr, None)
         }
     } else {
         (compiled_val_ptr, None)

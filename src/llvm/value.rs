@@ -196,17 +196,17 @@ pub fn create_list_from_expr<'ctx>(
             .compile_expr(elem, module)?
             .into_pointer_value();
         let (val_ptr, source_var) = if let ast::Expr::Var(name) = &elem.node {
-            let src = self_compiler
-                .get_variables(name)
-                .ok_or_else(|| format!("Undefined variable: {}", name))?;
-
-            if src.always_clone {
-                (
-                    clone_runtime_value(self_compiler, src.value.into_pointer_value(), module)?,
-                    None,
-                )
+            if let Some(src) = self_compiler.get_variables(name) {
+                if src.always_clone {
+                    (
+                        clone_runtime_value(self_compiler, src.value.into_pointer_value(), module)?,
+                        None,
+                    )
+                } else {
+                    (compiled_val_ptr, Some((src.value, name)))
+                }
             } else {
-                (compiled_val_ptr, Some((src.value, name)))
+                (compiled_val_ptr, None)
             }
         } else {
             (compiled_val_ptr, None)
@@ -365,13 +365,14 @@ pub fn create_label<'ctx>(
 
     let mut source_to_move: Option<(BasicValueEnum<'ctx>, String)> = None;
     let final_payload_ptr = if let ast::Expr::Var(source_name) = &payload.node {
-        let source = self_compiler
-            .get_variables(source_name)
-            .ok_or_else(|| format!("Undefined variable: {}", source_name))?;
-        if source.always_clone {
-            clone_runtime_value(self_compiler, source.value.into_pointer_value(), module)?
+        if let Some(source) = self_compiler.get_variables(source_name) {
+            if source.always_clone {
+                clone_runtime_value(self_compiler, source.value.into_pointer_value(), module)?
+            } else {
+                source_to_move = Some((source.value, source_name.clone()));
+                initial_payload_ptr
+            }
         } else {
-            source_to_move = Some((source.value, source_name.clone()));
             initial_payload_ptr
         }
     } else {
@@ -1041,17 +1042,17 @@ pub fn prepare_call_args<'ctx>(
             .compile_expr(arg, module)?
             .into_pointer_value();
         let (arg_ptr, source_var) = if let ast::Expr::Var(name) = &arg.node {
-            let src = self_compiler
-                .get_variables(name)
-                .ok_or_else(|| format!("Undefined variable: {}", name))?;
-
-            if src.always_clone {
-                (
-                    clone_runtime_value(self_compiler, src.value.into_pointer_value(), module)?,
-                    None,
-                )
+            if let Some(src) = self_compiler.get_variables(name) {
+                if src.always_clone {
+                    (
+                        clone_runtime_value(self_compiler, src.value.into_pointer_value(), module)?,
+                        None,
+                    )
+                } else {
+                    (compiled_arg_ptr, Some((src.value, name)))
+                }
             } else {
-                (compiled_arg_ptr, Some((src.value, name)))
+                (compiled_arg_ptr, None)
             }
         } else {
             (compiled_arg_ptr, None)

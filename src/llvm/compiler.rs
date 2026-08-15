@@ -81,6 +81,10 @@ pub struct Compiler<'ctx> {
     /// Variants of non-public enums, filled after the defining module's
     /// functions are compiled so same-module functions still see them.
     pub private_enum_variants: HashSet<String>,
+    /// Standalone `label :name;` declarations (module-global Atom constants).
+    pub atom_defs: HashSet<String>,
+    /// Non-public atom names, filled after the defining module compiles.
+    pub private_atom_defs: HashSet<String>,
     pub sources: HashMap<String, String>, // module name → source text
     /// Values captured by @attach within the current function.
     pub attachments: HashMap<String, PointerValue<'ctx>>,
@@ -408,6 +412,8 @@ impl<'ctx> Compiler<'ctx> {
             struct_defs: HashMap::new(),
             enum_frames: HashMap::new(),
             private_enum_variants: HashSet::new(),
+            atom_defs: HashSet::new(),
+            private_atom_defs: HashSet::new(),
             sources: HashMap::new(),
             attachments: HashMap::new(),
             unsafe_depth: 0,
@@ -416,6 +422,10 @@ impl<'ctx> Compiler<'ctx> {
 
     pub(crate) fn location(&self, span: crate::front::span::Span) -> Location {
         Location::new(self.current_file.clone(), span)
+    }
+
+    pub(crate) fn is_visible_atom_def(&self, name: &str) -> bool {
+        self.atom_defs.contains(name) && !self.private_atom_defs.contains(name)
     }
 
     pub(crate) fn enter_scope(&mut self) {

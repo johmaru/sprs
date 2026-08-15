@@ -7,7 +7,8 @@ use crate::front::ast::{
     Stmt, 
     Function, 
     FunctionParam, 
-    Enum, 
+    Enum,
+    AtomDef,
     AssignStmt,
     Struct,
     StructField,
@@ -130,6 +131,8 @@ ItemNode: Item = {
     <start:@L> <p:PackageDirective> <end:@R> => Item::Package(p),
     <start:@L> <e:EnumDef> <end:@R> => Item::EnumItem(e),
     <start:@L> <s:StructDef> <end:@R> => Item::StructItem(s),
+    LabelAtomDef,
+    LabelGroupedDef,
 };
 
 PreprocessorDirective: String = {
@@ -153,6 +156,45 @@ EnumDef: Enum =
             span: Span::new(start, end),
         }
     };
+
+LabelAtomDef: Item =
+    <start:@L> <is_pub:PublicKw> TypeLabel Colon <name:Ident> Semi <end:@R> => Item::AtomItem(AtomDef {
+        ident: name,
+        is_public: is_pub,
+        span: Span::new(start, end),
+    });
+
+LabelGroupedDef: Item =
+    <start:@L> <is_pub:PublicKw> TypeLabel Colon <name:Ident> LBrace <variants:LabelVariantList> RBrace <end:@R> => Item::EnumItem(Enum {
+        ident: name,
+        variants,
+        is_public: is_pub,
+        span: Span::new(start, end),
+    });
+
+LabelVariant: String = Colon <id:Ident> => id;
+
+LabelVariantList: Vec<String> = {
+    <first:LabelVariant> <rest:MoreLabelVariants> => {
+        let mut v = vec![first];
+        v.extend(rest);
+        v
+    }
+};
+
+MoreLabelVariants: Vec<String> = {
+    => vec![],
+    Comma <tail:LabelVariantTail> => tail,
+};
+
+LabelVariantTail: Vec<String> = {
+    => vec![],
+    <v:LabelVariant> <rest:MoreLabelVariants> => {
+        let mut v = vec![v];
+        v.extend(rest);
+        v
+    }
+};
 
 
 StructDef: Struct =

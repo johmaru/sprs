@@ -209,6 +209,10 @@ fn main() {
     @println(labels.match_expr_move_str());
     @println(labels.match_expr_clone_str());
     @println(labels.match_stmt_payload_str());
+    @println(ready == :ready);
+    @println(labels.color_frame_identity());
+    @println(labels.local_atom_paths());
+    @println(labels.shadow_local_atom());
 
     @println("=== Buffer ===");
     @println(buffers.buf_macro_roundtrip());

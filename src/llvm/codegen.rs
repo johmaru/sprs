@@ -164,10 +164,15 @@ impl<'ctx> Compiler<'ctx> {
             ast::Expr::Str(_) => Type::Str,
             ast::Expr::Bool(_) => Type::Bool,
             ast::Expr::Unit() => Type::Unit,
-            ast::Expr::Var(name) => self
-                .get_variables(name)
-                .map(|binding| binding.ty)
-                .unwrap_or(Type::Any),
+            ast::Expr::Var(name) => {
+                if let Some(binding) = self.get_variables(name) {
+                    binding.ty
+                } else if self.is_visible_atom_def(name) {
+                    Type::App("Atom".into(), vec![Type::Atom(name.clone())])
+                } else {
+                    Type::Any
+                }
+            }
             ast::Expr::TypeI8 => Type::TypeI8,
             ast::Expr::TypeU8 => Type::TypeU8,
             ast::Expr::TypeI16 => Type::TypeI16,
@@ -468,15 +473,9 @@ impl<'ctx> Compiler<'ctx> {
         let Some(name) = owned_name else {
             return Ok(compiled);
         };
-        let binding = self.get_variables(&name).ok_or_else(|| SprsError::Semantic {
-            code: ErrorCode {
-                category: ErrorCategory::Semantic,
-                number: 2,
-            },
-            location: self.location(expr.span),
-            message: format!("Undefined variable: {}", name),
-            help: None,
-        })?;
+        let Some(binding) = self.get_variables(&name) else {
+            return Ok(compiled);
+        };
         if binding.always_clone {
             builder_helper::clone_runtime_value(self, binding.value.into_pointer_value(), module)
         } else {
@@ -760,24 +759,28 @@ impl<'ctx> Compiler<'ctx> {
                     }
 
                     let init_val = if let ast::Expr::Var(src_val_name) = &init_expr.node {
-                        let src = self
-                            .get_variables(src_val_name)
-                            .ok_or_else(|| format!("Undefined variable: {}", src_val_name))?;
-
-                        if src.always_clone {
-                            builder_helper::clone_runtime_value(
-                                self,
-                                src.value.into_pointer_value(),
-                                module,
-                            )?
+                        if let Some(src) = self.get_variables(src_val_name) {
+                            if src.always_clone {
+                                builder_helper::clone_runtime_value(
+                                    self,
+                                    src.value.into_pointer_value(),
+                                    module,
+                                )?
+                            } else {
+                                let copied_val = builder_helper::var_load_at_init_variable(
+                                    self,
+                                    compiled_init_val,
+                                    &var.ident,
+                                )?;
+                                builder_helper::move_variable(self, &src.value, &var.ident);
+                                copied_val
+                            }
                         } else {
-                            let copied_val = builder_helper::var_load_at_init_variable(
+                            builder_helper::var_load_at_init_variable(
                                 self,
                                 compiled_init_val,
                                 &var.ident,
-                            )?;
-                            builder_helper::move_variable(self, &src.value, &var.ident);
-                            copied_val
+                            )?
                         }
                     } else {
                         builder_helper::var_load_at_init_variable(
@@ -1004,6 +1007,12 @@ impl<'ctx> Compiler<'ctx> {
             ast::Expr::Var(ident) => {
                 if let Some(binding) = self.get_variables(ident) {
                     Ok(binding.value)
+                } else if self.is_visible_atom_def(ident) {
+                    Ok(create_atom(
+                        self,
+                        &LabelName::Static(ident.clone()),
+                        module,
+                    )?)
                 } else {
                     Err(SprsError::Semantic {
                         code: ErrorCode { category: ErrorCategory::Semantic, number: 2 },

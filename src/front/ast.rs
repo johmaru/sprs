@@ -77,6 +77,7 @@ pub enum Item {
     FunctionItem(Function),
     Preprocessor(String),
     EnumItem(Enum),
+    AtomItem(AtomDef),
     StructItem(Struct),
     HeapAllocItem(HeapAlloc),
 }
@@ -117,6 +118,13 @@ pub struct AssignStmt {
 pub struct Enum {
     pub ident: String,
     pub variants: Vec<String>,
+    pub is_public: bool,
+    pub span: Span,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct AtomDef {
+    pub ident: String,
     pub is_public: bool,
     pub span: Span,
 }

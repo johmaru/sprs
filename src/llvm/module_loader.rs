@@ -82,6 +82,7 @@ impl<'ctx> Compiler<'ctx> {
 
         let mut private_enum_variants: Vec<String> = Vec::new();
         let mut private_struct_fields: Vec<String> = Vec::new();
+        let mut private_atom_defs: Vec<String> = Vec::new();
 
         // get enums and structs first
         for item in &items {
@@ -119,6 +120,12 @@ impl<'ctx> Compiler<'ctx> {
                             let full_name = format!("{}.{}", enm.ident, variant);
                             private_enum_variants.push(full_name);
                         }
+                    }
+                }
+                ast::Item::AtomItem(def) => {
+                    self.register_atom_def(def)?;
+                    if !def.is_public {
+                        private_atom_defs.push(def.ident.clone());
                     }
                 }
                 _ => {}
@@ -248,6 +255,10 @@ impl<'ctx> Compiler<'ctx> {
             self.private_enum_variants.insert(private_variant);
         }
 
+        for private_atom in private_atom_defs {
+            self.private_atom_defs.insert(private_atom);
+        }
+
         Ok(())
     }
 
@@ -261,6 +272,22 @@ impl<'ctx> Compiler<'ctx> {
                 }
             }
         }
+    }
+
+    pub(crate) fn register_atom_def(&mut self, def: &ast::AtomDef) -> Result<(), SprsError> {
+        if self.atom_defs.contains(&def.ident) {
+            return Err(SprsError::Semantic {
+                code: ErrorCode {
+                    category: ErrorCategory::Semantic,
+                    number: 4,
+                },
+                location: self.location(def.span),
+                message: format!("Duplicate label: {}", def.ident),
+                help: None,
+            });
+        }
+        self.atom_defs.insert(def.ident.clone());
+        Ok(())
     }
 
     pub(crate) fn register_enum(&mut self, enm: &ast::Enum) -> Result<(), SprsError> {

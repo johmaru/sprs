@@ -91,44 +91,44 @@ pub fn struct_in_function() >> i64 {
 
 # === Enum ===
 
-enum Color {
+enum Palette {
     Red,
     Green,
     Blue
 }
 
 pub fn enum_access() >> i64 {
-    var c = Color.Red;
+    var c = Palette.Red;
     return 1;
 }
 
 pub fn enum_multiple() >> i64 {
-    var a = Color.Red;
-    var b = Color.Green;
-    var c = Color.Blue;
+    var a = Palette.Red;
+    var b = Palette.Green;
+    var c = Palette.Blue;
     return 3;
 }
 
 pub fn enum_in_list() >> i64 {
     var y = [];
-    @list_push(y, Color.Green);
+    @list_push(y, Palette.Green);
     return 1;
 }
 
 pub fn enum_eq_same() >> bool {
-    return Color.Red == Color.Red;
+    return Palette.Red == Palette.Red;
 }
 
 pub fn enum_eq_other() >> bool {
-    return Color.Red == Color.Green;
+    return Palette.Red == Palette.Green;
 }
 
 pub fn enum_eq_bare_atom() >> bool {
-    return Color.Red == :Red;
+    return Palette.Red == :Red;
 }
 
 pub fn enum_match_red() >> int {
-    var r = match Color.Red {
+    var r = match Palette.Red {
         case :Red => 1
         case :Green => 2
         case :Blue => 3
@@ -137,7 +137,7 @@ pub fn enum_match_red() >> int {
 }
 
 pub fn enum_print() {
-    @println(Color.Red);
+    @println(Palette.Red);
 }
 
 pub struct Flag {

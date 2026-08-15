@@ -16,7 +16,7 @@ pub fn parse_only(input: &str, file_path: &str) -> Result<Vec<ast::Item>, SprsEr
 mod tests {
     use super::parse_only;
     use crate::front::ast::{
-        Expr, Function, Item, MatchArmBody, MatchPat, Stmt,
+        AtomDef, Enum, Expr, Function, Item, MatchArmBody, MatchPat, Stmt,
     };
     use crate::front::label_name::LabelName;
     use crate::front::type_helper::{Type, TypeAnnot};
@@ -692,6 +692,53 @@ fn ^fn(^if) { var ^return = ^if; ^return = ^return + 1; return ^return; }
         let items = parse_only(src, "test.sprs").expect("parse");
         assert_eq!(items.len(), 1);
         assert!(matches!(&items[0], Item::FunctionItem(_)));
+    }
+
+    #[test]
+    fn parses_standalone_label_atom_def() {
+        let src = "label :ready;\n";
+        let items = parse_only(src, "label_atom.sprs").expect("parse");
+        match &items[0] {
+            Item::AtomItem(AtomDef {
+                ident,
+                is_public,
+                ..
+            }) => {
+                assert_eq!(ident, "ready");
+                assert!(!*is_public);
+            }
+            other => panic!("expected AtomItem, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parses_pub_grouped_label_enum_def() {
+        let src = "pub label :Color{:red, :blue,}\n";
+        let items = parse_only(src, "label_enum.sprs").expect("parse");
+        match &items[0] {
+            Item::EnumItem(Enum {
+                ident,
+                variants,
+                is_public,
+                ..
+            }) => {
+                assert_eq!(ident, "Color");
+                assert_eq!(variants, &["red".to_string(), "blue".to_string()]);
+                assert!(*is_public);
+            }
+            other => panic!("expected EnumItem, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn rejects_empty_grouped_inner_and_old_var_label() {
+        assert!(parse_only("label :Color{}\n", "empty_grouped.sprs").is_err());
+        assert!(parse_only("fn f() { label :red; }\n", "inner_label.sprs").is_err());
+        assert!(parse_only(
+            "var Color = :Color{:red, :blue};\n",
+            "old_var_label.sprs"
+        )
+        .is_err());
     }
 
 }

@@ -250,10 +250,24 @@ while x < 10 {
 Labels are a core feature for tagging values (`Tag::Label`), not an error-only type.
 A label always has a name plus one payload: `{:name, payload}`.
 A bare `:name` is an immutable Atom (`Tag::Atom`) with no payload.
+Declare module-global Atom constants with `label :ready;` and namespaced
+Atoms with `label :Color{:red, :blue}`. Refer to them as bare `ready` and
+`Color.red`. Use `pub label ...` to export a declaration; otherwise it stays
+module-local. A local variable of the same name shadows a standalone Atom
+constant. `Color.red` uses intern key `"Color.red"` and `Color.red == :red`
+is false.
 
 ```rust
+pub label :ready;                     # exported Atom constant
+label :Color{:red, :blue}             # namespaced Atoms (same frame as enum)
+label :local_atom;                    # module-local Atom constant
+
 var success_label = :ok;              # Atom
 var labeled_value = {:ok, 42};        # Label with payload
+var color = Color.red;                # intern key "Color.red"
+@println(ready == :ready);            # true
+@println(color == Color.red);         # true
+@println(color == :red);              # false
 
 var item_index = 10;
 var dynamic_label = {:"{item_index}-item", 42};   # name becomes "10-item"
