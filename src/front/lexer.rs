@@ -46,7 +46,7 @@ pub enum Token {
     Float(f64),
     Function,
     Return,
-    Preprocessor,
+    Preprocessor(String),
     Package,
     Import,
     Var,
@@ -192,8 +192,8 @@ enum RawTok {
     FatArrow,
     #[token("return")]
     Return,
-    #[regex(r"#[a-z]+")]
-    Preprocessor,
+    #[regex(r"#[a-z]+[ \t]+[A-Za-z_][A-Za-z0-9_]*", |lex| lex.slice().split_ascii_whitespace().nth(1).unwrap().to_owned(), priority = 4)]
+    Preprocessor(String),
     #[token("pkg")]
     Package,
     #[token("import")]
@@ -368,7 +368,7 @@ impl<'input> Iterator for Lexer<'input> {
             RawTok::WS => unreachable!(),
             RawTok::Function => Token::Function,
             RawTok::Return => Token::Return,
-            RawTok::Preprocessor => Token::Preprocessor,
+            RawTok::Preprocessor(value) => Token::Preprocessor(value),
             RawTok::Package => Token::Package,
             RawTok::Import => Token::Import,
             RawTok::Var => Token::Var,

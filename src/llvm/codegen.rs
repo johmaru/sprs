@@ -275,6 +275,13 @@ impl<'ctx> Compiler<'ctx> {
                 "label_name" => Type::Str,
                 "label_payload" => Type::Any,
                 "init" => Type::Any,
+                "clone" => {
+                    if !args.is_empty() {
+                        self.infer_type(&args[0])
+                    } else {
+                        Type::Any
+                    }
+                }
                 _ => Type::Any,
             },
             ast::Expr::List(_) => Type::List,
@@ -315,6 +322,14 @@ impl<'ctx> Compiler<'ctx> {
                 }
             }
             ast::Expr::AttachSlot(_) => Type::Any,
+            ast::Expr::FieldAccess(lhs, rhs) => {
+                if let ast::Expr::Var(name) = &lhs.node {
+                    if self.enum_frames.contains_key(name) {
+                        return Type::Enum(name.clone());
+                    }
+                }
+                Type::Any
+            }
             _ => Type::Any,
         }
     }
@@ -439,6 +454,39 @@ impl<'ctx> Compiler<'ctx> {
         }
     }
 
+    pub(crate) fn compile_owned_expr(
+        &mut self,
+        expr: &Spanned<ast::Expr>,
+        module: &Module<'ctx>,
+        temp_name: &str,
+    ) -> Result<PointerValue<'ctx>, SprsError> {
+        let compiled = self.compile_expr(expr, module)?.into_pointer_value();
+        let owned_name = match &expr.node {
+            ast::Expr::Var(name) | ast::Expr::Assign(name, _) => Some(name.clone()),
+            _ => None,
+        };
+        let Some(name) = owned_name else {
+            return Ok(compiled);
+        };
+        let binding = self.get_variables(&name).ok_or_else(|| SprsError::Semantic {
+            code: ErrorCode {
+                category: ErrorCategory::Semantic,
+                number: 2,
+            },
+            location: self.location(expr.span),
+            message: format!("Undefined variable: {}", name),
+            help: None,
+        })?;
+        if binding.always_clone {
+            builder_helper::clone_runtime_value(self, binding.value.into_pointer_value(), module)
+        } else {
+            let val_ptr = binding.value.into_pointer_value();
+            let copied = builder_helper::var_load_at_init_variable(self, val_ptr, temp_name)?;
+            builder_helper::move_variable(self, &val_ptr.into(), &name);
+            Ok(copied)
+        }
+    }
+
     /// Process a `return` statement: type-check the expression, convert it
     /// to the function's return type, emit drops, and build the `ret` instr.
     fn compile_return(
@@ -447,26 +495,7 @@ impl<'ctx> Compiler<'ctx> {
         module: &Module<'ctx>,
     ) -> Result<(), SprsError> {
         let ret_val = if let Some(expr) = expr_opt {
-            let mut ptr = self.compile_expr(expr, module)?.into_pointer_value();
-
-            if let ast::Expr::Var(name) = &expr.node {
-                let binding = self.get_variables(name).ok_or_else(|| SprsError::Semantic {
-                    code: ErrorCode { category: ErrorCategory::Semantic, number: 2 },
-                    location: self.location(expr.span),
-                    message: format!("Undefined variable: {}", name),
-                    help: None,
-                })?;
-                let val_ptr = binding.value.into_pointer_value();
-
-                if binding.always_clone {
-                    ptr = builder_helper::clone_runtime_value(self, val_ptr, module)?;
-                } else {
-                    // Copy first, then invalidate the binding. Unit-ing before
-                    // convert_return_value would return Unit.
-                    ptr = builder_helper::var_load_at_init_variable(self, val_ptr, "ret_move")?;
-                    builder_helper::var_return_store(self, &val_ptr.into(), name);
-                };
-            }
+            let ptr = self.compile_owned_expr(expr, module, "ret_owned")?;
 
             let current_fn = self.function_signatures.unwrap();
             let return_type = current_fn.get_type().get_return_type();
@@ -715,7 +744,7 @@ impl<'ctx> Compiler<'ctx> {
                     let var_type = self.infer_type(init_expr);
 
                     if var.always_clone {
-                        let expensive_cp = matches!(var_type, Type::Struct(_) | Type::Enum(_))
+                        let expensive_cp = matches!(var_type, Type::Struct(_))
                             || matches!(
                                 &init_expr.node,
                                 ast::Expr::List(_)
@@ -804,7 +833,7 @@ impl<'ctx> Compiler<'ctx> {
                     self.compile_expr(expr, module)?;
                 }
                 ast::Stmt::EnumItem(enm) => {
-                    self.register_enum(enm, &module, false);
+                    self.register_enum(enm)?;
                 }
                 ast::Stmt::Assign(assign_stmt) => {
                     self.emit_named_assign(
@@ -896,26 +925,7 @@ impl<'ctx> Compiler<'ctx> {
             }
         }
 
-        let mut val_ptr = self.compile_expr(rhs, module)?.into_pointer_value();
-
-        // For non-cp sources, move must happen AFTER we copy bits into the
-        // target. Moving first would Unit the source while val_ptr still
-        // aliases it, so the assignment stores Unit.
-        let mut source_to_move: Option<(BasicValueEnum<'ctx>, String)> = None;
-        if let ast::Expr::Var(src_val_name) = &rhs.node {
-            let src = self
-                .get_variables(src_val_name)
-                .ok_or_else(|| format!("Undefined variable: {}", src_val_name))?;
-            if src.always_clone {
-                val_ptr = builder_helper::clone_runtime_value(
-                    self,
-                    src.value.into_pointer_value(),
-                    module,
-                )?;
-            } else {
-                source_to_move = Some((src.value, src_val_name.clone()));
-            }
-        }
+        let val_ptr = self.compile_owned_expr(rhs, module, "assign_owned")?;
 
         let target = self.get_variables(name).ok_or_else(|| SprsError::Semantic {
             code: ErrorCode {
@@ -958,10 +968,6 @@ impl<'ctx> Compiler<'ctx> {
             .build_load(self.runtime_value_type, val_ptr, "assign_load")
             .unwrap();
         self.builder.build_store(target_ptr, new_val).unwrap();
-
-        if let Some((val, src_name)) = source_to_move {
-            builder_helper::move_variable(self, &val, &src_name);
-        }
 
         // Update static type: ambi / unannotated bindings track the RHS.
         if !target.is_annotated || target.is_ambi {
@@ -1046,11 +1052,13 @@ impl<'ctx> Compiler<'ctx> {
             }
             ast::Expr::FieldAccess(lhs, rhs) => {
                 if let ast::Expr::Var(name) = &lhs.node {
-                    if self.enum_names.contains(name) {
+                    if self.enum_frames.contains_key(name) {
                         let full_name = format!("{}.{}", name, rhs);
-                        if let Some(binding) = self.get_variables(&full_name) {
-                            return Ok(binding.value);
-                        } else {
+                        let variant_known = self.enum_frames[name]
+                            .variants
+                            .iter()
+                            .any(|variant| variant == rhs);
+                        if self.private_enum_variants.contains(&full_name) || !variant_known {
                             return Err(SprsError::Semantic {
                                 code: ErrorCode { category: ErrorCategory::Semantic, number: 4 },
                                 location: self.location(expr.span),
@@ -1058,6 +1066,11 @@ impl<'ctx> Compiler<'ctx> {
                                 help: None,
                             });
                         }
+                        return Ok(create_atom(
+                            self,
+                            &LabelName::Static(full_name),
+                            module,
+                        )?);
                     }
                 }
 
@@ -1228,7 +1241,7 @@ impl<'ctx> Compiler<'ctx> {
             }
             ast::Expr::StructInit(struct_name, fields) => Ok(builder_helper::create_struct_init(self, struct_name, fields, module)?),
             ast::Expr::Try(inner_expr) => {
-                let inner_ptr = self.compile_expr(inner_expr, module)?.into_pointer_value();
+                let inner_ptr = self.compile_owned_expr(inner_expr, module, "try_owned")?;
 
                 // Load the tag and data of the inner result.
                 let tag_ptr = self

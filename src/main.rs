@@ -40,7 +40,7 @@
 //!  * List (dynamic array) — annotation keyword `list` (also `List(T)` application form)
 //!  * Range — `range`
 //!  * Unit — `unit`
-//!  * Enum
+//!  * Enum — compile-time frame; variants are Atoms (`Color.Red`)
 //!  * Struct
 //!  * Buffer — fixed-size zero-initialized byte array; annotation keyword `buffer`
 //!  * RawPtr — bare address from `@raw(buf)`; annotation keyword `rawptr`
@@ -55,8 +55,20 @@
 //! Everyday code keeps the flat keywords (`list`, `err`, `atom`, `label`, `buffer`, `rawptr`). Generics /
 //! type parameters (`Param`) are not user-facing yet.
 //!
-//! `buffer` and `rawptr` are type keywords and cannot be used as identifiers (same for `new`,
-//! `destroy`, `exist`, `unsafe`, and `defer`).
+//! Keywords stay lexer tokens, but many parse as names wherever an identifier is expected
+//! (`pkg`, `import`, `fn` name, parameters, `var`, fields, calls, variable references).
+//!
+//! Usable as names (e.g. `pkg buffer;`, `fn buffer(new >> int)`, `var rawptr = new;`):
+//! `fn`, `case`, `break`, `pkg`, `import`, `var`, `pub`, `enum`, `struct`, `cp`, `ambi`,
+//! `unsafe`, `int`, `fp`, `bool`, `str`, `list`, `buffer`, `rawptr`, `range`, `unit`,
+//! `err`, `label`, `atom`. Parameter names may also be `new` / `destroy` / `exist`.
+//! `var defer = …` is allowed. A bare `new` / `destroy` / `exist` in an expression is a
+//! variable; `new(4)` / `destroy(x)` / `exist(x)` stay the heap forms.
+//!
+//! Still syntax, not names: `if`, `else`, `while`, `match`, `return`, `true`, `false`.
+//! `defer` is a `var` name only (not an expression identifier). `i8`…`u64` / `fp16`…
+//! `fp64` stay type atoms for `@cast`. In `>>` position a type keyword is still the type
+//! (`>> buffer` is Buffer, not a named type).
 //!
 //! - Variables and assignments
 //! ```sprs
@@ -159,6 +171,35 @@
 //!
 //! }
 //!
+//! ```
+//!
+//! A source `enum` is a compile-time frame only. `Color.Red` is a runtime Atom whose
+//! intern key is `"Color.Red"` (immediate intern id, not a slab handle). Runtime tag
+//! `7` (former `Tag::Enum`) is unused.
+//!
+//! - `Color.Red == Color.Red` is true; `Color.Red == :Red` is false (keys `"Color.Red"` vs `"Red"`).
+//! - `match` on an enum-typed scrutinee uses `case :Red` (bare variant). The compiler
+//!   compares against the framed key and requires every variant or a trailing `case _`
+//!   (error `non-exhaustive match on Color; missing Green, Blue`). Open Atom / Label
+//!   matches stay runtime-checked (`Match failed`).
+//! - Duplicate `enum` names in one compilation are a semantic error. Non-`pub`
+//!   variants are not visible from other modules.
+//!
+//! ```sprs
+//! pub enum Color {
+//!   Red,
+//!   Green,
+//!   Blue,
+//! }
+//!
+//! fn enum_match_red() >> int {
+//!   var r = match Color.Red {
+//!     case :Red => 1
+//!     case :Green => 2
+//!     case :Blue => 3
+//!   };
+//!   return r;
+//! }
 //! ```
 //!
 //! - struct
@@ -305,7 +346,7 @@
 //! Notes:
 //! - Unmatched scrutinees panic with `Match failed` (process exits non-zero)
 //!   unless a trailing `case _` catches everything.
-//! - Dynamic name patterns such as `case :"{i}-item"` are rejected at compile
+//! - An enum-typed scrutinee is checked at compile time: every variant or `case _`.
 //! - Dynamic name patterns such as `case :"{i}-item"` are rejected at compile
 //!   time. Prefer `@label_is` with `if` for dynamic names.
 //! - The bind marker is the single token `?(`; it does not collide with
@@ -570,7 +611,7 @@
 //!
 //! ## Memory Management
 //!
-//! Sprs uses **move semantics** for heap values (`str`, `list`, `range`, `struct`, `enum`, `label`, `buffer`).
+//! Sprs uses **move semantics** for heap values (`str`, `list`, `range`, `struct`, `label`, `buffer`).
 //! Assigning or passing one of these values transfers ownership; the old binding becomes invalid
 //! (`Unit`). Integers, floats, and bools are copied instead.
 //!
@@ -583,7 +624,7 @@
 //! and `return`. It does **not** rewrite every expression operand (for example `a + b`).
 //!
 //! **Phase 1:** `cp` is intended mainly for `str`. Other heap types still work, but each use
-//! deep-copies; the compiler warns when `cp` is clearly applied to `list` / `range` / `struct` / `enum`.
+//! deep-copies; the compiler warns when `cp` is clearly applied to `list` / `range` / `struct`.
 //!
 //! **Move on assignment:**
 //! ```rust

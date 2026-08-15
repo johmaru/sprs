@@ -64,6 +64,7 @@ fn main() {
     @println(variables.var_in_loop());
     @println(variables.var_math());
     @println(variables.chained_assign());
+    @println(variables.chained_assign_string());
     @println(variables.str_eq_same());
 
     @println("=== cp / @move ===");
@@ -157,11 +158,19 @@ fn main() {
     @println(data_structures.struct_in_function());
     @println(data_structures.flag_true());
     @println(data_structures.flag_false());
+    @println(data_structures.struct_owned_string());
+    @println(data_structures.struct_clone_string());
+    @println(data_structures.struct_move_invalid_field());
 
     @println("=== Enum ===");
     @println(data_structures.enum_access());
     @println(data_structures.enum_multiple());
     @println(data_structures.enum_in_list());
+    @println(data_structures.enum_eq_same());
+    @println(data_structures.enum_eq_other());
+    @println(data_structures.enum_eq_bare_atom());
+    @println(data_structures.enum_match_red());
+    data_structures.enum_print();
 
     @println("=== Module Import ===");
     @println(test.test());
@@ -177,6 +186,8 @@ fn main() {
     @println(errors.mod_zero_is_error());
     @println(errors.not_an_error());
     @println(errors.question_keeps_ok());
+    @println(errors.question_moves_string());
+    @println(errors.stored_error_message());
 
     @println("=== Labels ===");
     @println(labels.dynamic_payload());

@@ -1,6 +1,6 @@
 //! Sprs runtime — slab (handle table) based memory management.
 //!
-//! All heap values (List/Range/String/Struct/Enum) are stored in a global slot
+//! All heap values (List/Range/String/Struct) are stored in a global slot
 //! pool and addressed by a 64-bit *handle* packed as `(index:u32, generation:u32)`.
 //! The C ABI never exchanges raw pointers across the boundary, which eliminates
 //! NULL dereferences, dangling pointers (Vec reallocation), and use-after-free
@@ -46,7 +46,6 @@ pub enum Tag {
     List = 4,
     Range = 5,
     Unit = 6,
-    Enum = 7,
     Struct = 8,
     Atom = 9, // immediate: data = interned atom id (u32 as u64). NOT a slab handle
     Label = 10,
@@ -78,7 +77,6 @@ const fn is_heap_tag(tag: i32) -> bool {
             || tag_value == Tag::List as i32
             || tag_value == Tag::Range as i32
             || tag_value == Tag::Struct as i32
-            || tag_value == Tag::Enum as i32
             || tag_value == Tag::Label as i32
             || tag_value == Tag::Buffer as i32
     )
@@ -133,14 +131,6 @@ pub struct SprsRange {
     pub end: i64,
 }
 
-#[repr(C)]
-pub struct EnumInfo {
-    /// Owned C string (NUL-terminated). Freed when the slot is dropped.
-    pub name: *mut u8,
-    pub name_len: usize,
-    pub variant_index: i64,
-}
-
 /// Safe enum: the variant acts as the tag, `Drop` frees the inner allocation
 /// automatically. No `ManuallyDrop`, no `unsafe`.
 enum SlotData {
@@ -156,8 +146,8 @@ enum SlotData {
         /// Whether the runtime owns this allocation (false for empty/dangling
         /// sentinels so `Drop` won't dealloc a non-allocated pointer).
         owned: bool,
+        owned_values: Vec<StructOwnedValue>,
     },
-    Enum(EnumInfo),
     Label {
         name: String,
         payload: SprsValue,
@@ -167,27 +157,31 @@ enum SlotData {
     Empty,
 }
 
+#[derive(Clone)]
+struct StructOwnedValue {
+    offset: usize,
+    value: SprsValue,
+    data_only: bool,
+}
+
 impl Drop for SlotData {
     fn drop(&mut self) {
         match self {
             // Vec / String / SprsRange / Buffer drop themselves.
             SlotData::List(_) | SlotData::String(_) | SlotData::Range(_) | SlotData::Buffer(_) => {}
             SlotData::Label { payload, .. } => __drop(payload.tag, payload.data),
-            SlotData::Struct { ptr, layout, owned } => {
+            SlotData::Struct {
+                ptr,
+                layout,
+                owned,
+                owned_values,
+            } => {
+                let tracked = std::mem::take(owned_values);
+                for tracked_value in tracked {
+                    __drop(tracked_value.value.tag, tracked_value.value.data);
+                }
                 if *owned && !ptr.is_null() {
                     unsafe { std::alloc::dealloc(*ptr as *mut u8, *layout) };
-                }
-            }
-            SlotData::Enum(info) => {
-                if !info.name.is_null() {
-                    unsafe {
-                        std::alloc::dealloc(
-                            info.name,
-                            std::alloc::Layout::array::<u8>(info.name_len)
-                                .unwrap_or_else(|_| std::alloc::Layout::new::<u8>()),
-                        );
-                    }
-                    info.name = std::ptr::null_mut();
                 }
             }
             SlotData::Empty => {}
@@ -716,6 +710,7 @@ pub extern "C" fn __struct_new(size: i64) -> u64 {
             ptr: std::mem::align_of::<u8>() as *mut u8, // non-null sentinel
             layout: std::alloc::Layout::new::<u8>(),
             owned: false, // dangling sentinel, never dealloc'd
+            owned_values: Vec::new(),
         });
     }
     let size_us = size as usize;
@@ -731,6 +726,7 @@ pub extern "C" fn __struct_new(size: i64) -> u64 {
         ptr,
         layout,
         owned: true,
+        owned_values: Vec::new(),
     })
 }
 
@@ -757,35 +753,82 @@ pub extern "C" fn __struct_borrow(handle: u64) -> *mut u8 {
     })
 }
 
-// ---------------------------------------------------------------------------
-// C ABI: Enum
-// ---------------------------------------------------------------------------
 
-/// Allocate an enum slot. `name_ptr`/`name_len` describe the variant name
-/// (copied into the slot). `variant_index` is the numeric variant.
+/// Register a field value so struct drop/clone owns it independently of
+/// the original variable binding.
 #[unsafe(no_mangle)]
-pub extern "C" fn __enum_new(name_ptr: *const u8, name_len: i64, variant_index: i64) -> u64 {
-    if name_ptr.is_null() || name_len < 0 {
-        return INVALID_HANDLE;
+pub extern "C" fn __struct_track_value(
+    handle: u64,
+    field_ptr: *mut u8,
+    tag: i32,
+    data: u64,
+    data_only: i32,
+) -> i32 {
+    if handle == INVALID_HANDLE || field_ptr.is_null() {
+        return 0;
     }
-    let name_len_us = name_len as usize;
-    let layout = match std::alloc::Layout::array::<u8>(name_len_us) {
-        Ok(layout_value) => layout_value,
-        Err(_) => return INVALID_HANDLE,
+    let nbytes = if data_only != 0 {
+        8usize
+    } else {
+        std::mem::size_of::<SprsValue>()
     };
-    let name_buf = unsafe { std::alloc::alloc(layout) };
-    if name_buf.is_null() {
-        return INVALID_HANDLE;
+    let field_addr = field_ptr as usize;
+    let outcome: Option<Option<SprsValue>> = SLOTS.with(|slots_cell| {
+        let mut slots = slots_cell.borrow_mut();
+        let idx = handle_index(handle) as usize;
+        let Some(slot) = slots.get_mut(idx) else {
+            return None;
+        };
+        if slot.generation != handle_gen(handle) {
+            return None;
+        }
+        let SlotData::Struct {
+            ptr,
+            layout,
+            owned_values,
+            ..
+        } = &mut slot.data
+        else {
+            return None;
+        };
+        let base = *ptr as usize;
+        if field_addr < base {
+            return None;
+        }
+        let offset = field_addr - base;
+        if offset
+            .checked_add(nbytes)
+            .map(|end| end > layout.size())
+            .unwrap_or(true)
+        {
+            return None;
+        }
+        let incoming = StructOwnedValue {
+            offset,
+            value: SprsValue { tag, data },
+            data_only: data_only != 0,
+        };
+        let previous = if let Some(pos) = owned_values.iter().position(|v| v.offset == offset) {
+            let old = owned_values[pos].value;
+            owned_values[pos] = incoming;
+            Some(old)
+        } else {
+            owned_values.push(incoming);
+            None
+        };
+        Some(previous)
+    });
+    match outcome {
+        None => 0,
+        Some(previous) => {
+            if let Some(old) = previous {
+                __drop(old.tag, old.data);
+            }
+            1
+        }
     }
-    unsafe {
-        std::ptr::copy_nonoverlapping(name_ptr, name_buf, name_len_us);
-    }
-    slot_insert(SlotData::Enum(EnumInfo {
-        name: name_buf,
-        name_len: name_len_us,
-        variant_index,
-    }))
 }
+
 /// Create a label slot containing a copied name and one runtime payload.
 #[unsafe(no_mangle)]
 pub extern "C" fn __label_new(
@@ -1014,14 +1057,6 @@ pub extern "C" fn __clone(tag: i32, data: u64) -> SprsValue {
         };
     }
 
-    if tag == Tag::Enum as i32 {
-        let new_handle = enum_clone(data);
-        return SprsValue {
-            tag,
-            data: new_handle,
-        };
-    }
-
     if tag == Tag::Label as i32 {
         let new_handle = label_clone(data);
         return SprsValue {
@@ -1099,20 +1134,28 @@ fn slot_is_list(handle: u64) -> bool {
 }
 
 fn struct_clone(handle: u64) -> u64 {
-    // Read the layout+bytes out, then insert a fresh slot with a copy.
-    let (ptr, layout, size): (*mut u8, std::alloc::Layout, usize) = slot_with(
+    let snapshot: Option<(*mut u8, std::alloc::Layout, usize, Vec<StructOwnedValue>)> = slot_with(
         handle,
-        (std::ptr::null_mut(), std::alloc::Layout::new::<u8>(), 0),
+        None,
         |slot_data| match slot_data {
-            SlotData::Struct { ptr, layout, .. } => (*ptr, *layout, layout.size()),
-            _ => (std::ptr::null_mut(), std::alloc::Layout::new::<u8>(), 0),
+            SlotData::Struct {
+                ptr,
+                layout,
+                owned_values,
+                ..
+            } => Some((*ptr, *layout, layout.size(), owned_values.clone())),
+            _ => None,
         },
     );
+    let Some((ptr, layout, size, owned_values)) = snapshot else {
+        return INVALID_HANDLE;
+    };
     if ptr.is_null() || size == 0 {
         return slot_insert(SlotData::Struct {
             ptr: std::mem::align_of::<u8>() as *mut u8,
             layout: std::alloc::Layout::new::<u8>(),
             owned: false,
+            owned_values: Vec::new(),
         });
     }
     let new_ptr = unsafe { std::alloc::alloc(layout) };
@@ -1122,26 +1165,41 @@ fn struct_clone(handle: u64) -> u64 {
     unsafe {
         std::ptr::copy_nonoverlapping(ptr, new_ptr, size);
     }
+
+    let mut new_owned = Vec::with_capacity(owned_values.len());
+    let mut cloned_so_far: Vec<SprsValue> = Vec::new();
+    for tracked in owned_values {
+        let cloned = __clone(tracked.value.tag, tracked.value.data);
+        if is_heap_tag(tracked.value.tag) && cloned.data == INVALID_HANDLE {
+            for previous in cloned_so_far {
+                __drop(previous.tag, previous.data);
+            }
+            unsafe {
+                std::alloc::dealloc(new_ptr, layout);
+            }
+            return INVALID_HANDLE;
+        }
+        cloned_so_far.push(cloned);
+        unsafe {
+            if tracked.data_only {
+                std::ptr::write(new_ptr.add(tracked.offset) as *mut u64, cloned.data);
+            } else {
+                std::ptr::write(new_ptr.add(tracked.offset) as *mut SprsValue, cloned);
+            }
+        }
+        new_owned.push(StructOwnedValue {
+            offset: tracked.offset,
+            value: cloned,
+            data_only: tracked.data_only,
+        });
+    }
+
     slot_insert(SlotData::Struct {
         ptr: new_ptr,
         layout,
         owned: true,
+        owned_values: new_owned,
     })
-}
-
-fn enum_clone(handle: u64) -> u64 {
-    let (name_ptr, name_len, variant_index) = slot_with(
-        handle,
-        (std::ptr::null_mut(), 0usize, 0i64),
-        |slot_data| match slot_data {
-            SlotData::Enum(info) => (info.name, info.name_len, info.variant_index),
-            _ => (std::ptr::null_mut(), 0, 0),
-        },
-    );
-    if name_ptr.is_null() {
-        return INVALID_HANDLE;
-    }
-    __enum_new(name_ptr, name_len as i64, variant_index)
 }
 
 fn label_clone(handle: u64) -> u64 {
@@ -1373,27 +1431,6 @@ fn format_sprs_value(val: &SprsValue, out: &mut String) {
         tag_value if tag_value == Tag::Unit as i32 => {
             out.push_str("()");
         }
-        tag_value if tag_value == Tag::Enum as i32 => {
-            use std::fmt::Write;
-            let (name, idx) = slot_with(
-                val.data,
-                (String::new(), 0i64),
-                |slot_data| match slot_data {
-                    SlotData::Enum(info) => {
-                        let name = if info.name.is_null() {
-                            String::new()
-                        } else {
-                            let slice =
-                                unsafe { std::slice::from_raw_parts(info.name, info.name_len) };
-                            String::from_utf8_lossy(slice).into_owned()
-                        };
-                        (name, info.variant_index)
-                    }
-                    _ => (String::new(), 0),
-                },
-            );
-            let _ = write!(out, "<enum {} variant {}>", name, idx);
-        }
         tag_value if tag_value == Tag::Struct as i32 => {
             use std::fmt::Write;
             let _ = write!(out, "<struct handle {:016x}>", val.data);
@@ -1471,7 +1508,7 @@ mod tests {
         __buffer_get, __buffer_into_raw, __buffer_len, __buffer_new, __buffer_set, __clone,
         __drop, __error_label_from_str, __error_message_from_label, __label_is_error, __label_name,
         __label_name_eq, __label_new, __label_new_from_string, __label_payload, __raw_free,
-        __string_eq, __string_new, __value_to_string, atom_name, intern_atom, INVALID_HANDLE, RAW_LAYOUTS,
+        __string_eq, __string_new, __struct_borrow, __struct_new, __struct_track_value, __value_to_string, atom_name, intern_atom, INVALID_HANDLE, RAW_LAYOUTS,
         SlotData, SprsValue, Tag, format_sprs_value, slot_with,
     };
 
@@ -1851,5 +1888,68 @@ mod tests {
         let empty = __buffer_new(0);
         assert_eq!(__buffer_into_raw(empty), 0);
         __drop(Tag::Buffer as i32, empty);
+    }
+
+
+    #[test]
+    fn struct_drop_invalidates_tracked_string() {
+        let payload = b"owned";
+        let string_handle = __string_new(payload.as_ptr(), payload.len() as i64);
+        let struct_handle = __struct_new(8);
+        let field_ptr = __struct_borrow(struct_handle);
+        assert!(!field_ptr.is_null());
+        unsafe {
+            std::ptr::write(field_ptr as *mut u64, string_handle);
+        }
+        assert_eq!(
+            __struct_track_value(struct_handle, field_ptr, Tag::String as i32, string_handle, 1),
+            1
+        );
+        __drop(Tag::Struct as i32, struct_handle);
+        let live = slot_with(string_handle, false, |_| true);
+        assert!(!live);
+    }
+
+    #[test]
+    fn struct_clone_deep_copies_tracked_string() {
+        let payload = b"copy";
+        let string_handle = __string_new(payload.as_ptr(), payload.len() as i64);
+        let struct_handle = __struct_new(8);
+        let field_ptr = __struct_borrow(struct_handle);
+        unsafe {
+            std::ptr::write(field_ptr as *mut u64, string_handle);
+        }
+        assert_eq!(
+            __struct_track_value(struct_handle, field_ptr, Tag::String as i32, string_handle, 1),
+            1
+        );
+        let cloned = __clone(Tag::Struct as i32, struct_handle);
+        assert_eq!(cloned.tag, Tag::Struct as i32);
+        let cloned_field = __struct_borrow(cloned.data);
+        let cloned_string = unsafe { std::ptr::read(cloned_field as *const u64) };
+        assert_ne!(cloned_string, string_handle);
+        __drop(Tag::Struct as i32, struct_handle);
+        let text = slot_with(cloned_string, String::new(), |slot_data| match slot_data {
+            SlotData::String(value) => value.clone(),
+            _ => String::new(),
+        });
+        assert_eq!(text, "copy");
+        __drop(Tag::Struct as i32, cloned.data);
+    }
+
+    #[test]
+    fn struct_track_rejects_out_of_range_pointer() {
+        let struct_handle = __struct_new(8);
+        let field_ptr = __struct_borrow(struct_handle);
+        let bad = unsafe { field_ptr.add(64) };
+        assert_eq!(
+            __struct_track_value(struct_handle, bad, Tag::String as i32, 1, 1),
+            0
+        );
+        assert_eq!(
+            __struct_track_value(INVALID_HANDLE, field_ptr, Tag::String as i32, 1, 1),
+            0
+        );
+        __drop(Tag::Struct as i32, struct_handle);
     }
 }

@@ -12,6 +12,7 @@ use crate::{
     llvm::compiler::{Compiler, StrConstantResult, StoreTag, StoreValue, Tag},
 };
 use crate::llvm::builder_helper;
+use std::collections::HashSet;
 use crate::llvm::value::create_entry_block_alloca;
 
 pub fn create_if_condition<'ctx>(
@@ -389,6 +390,81 @@ fn validate_match_patterns<'a, 'ctx>(
     Ok(())
 }
 
+/// Intern key for a static `:name` match pattern against a scrutinee.
+///
+/// An `Enum`-typed scrutinee compares against the framed intern key
+/// (`Color.Red`); everything else uses the bare name (`:ok` → `"ok"`), which
+/// is also the fallback when the frame does not list the variant.
+fn atom_match_intern_key(compiler: &Compiler, scrut_ty: &Type, pat_name: &str) -> String {
+    if let Type::Enum(frame) = scrut_ty {
+        if let Some(frame_info) = compiler.enum_frames.get(frame) {
+            if frame_info.variants.iter().any(|variant| variant == pat_name) {
+                return format!("{}.{}", frame, pat_name);
+            }
+        }
+    }
+    pat_name.to_string()
+}
+
+/// Require a `Type::Enum` scrutinee's `:Variant` arms to cover every variant.
+///
+/// Open Atom / Label matches stay runtime-checked (`Match failed` panic);
+/// only framed enums get a compile-time exhaustiveness check. `case _`
+/// satisfies it. Missing variants are listed in declaration order.
+fn check_enum_match_exhaustiveness<'a>(
+    compiler: &Compiler,
+    scrut_ty: &Type,
+    arms: impl Iterator<Item = (&'a ast::MatchPat, Span)>,
+) -> Result<(), SprsError> {
+    let Type::Enum(frame) = scrut_ty else {
+        return Ok(());
+    };
+    let Some(frame_info) = compiler.enum_frames.get(frame) else {
+        return Ok(());
+    };
+    if frame_info.variants.is_empty() {
+        return Ok(());
+    }
+
+    let mut covered: HashSet<&str> = HashSet::new();
+    let mut first_span: Option<Span> = None;
+    for (pat, span) in arms {
+        if first_span.is_none() {
+            first_span = Some(span);
+        }
+        match pat {
+            ast::MatchPat::Wildcard => return Ok(()),
+            ast::MatchPat::Name(LabelName::Static(name)) => {
+                covered.insert(name.as_str());
+            }
+            _ => {}
+        }
+    }
+
+    let missing: Vec<&String> = frame_info
+        .variants
+        .iter()
+        .filter(|variant| !covered.contains(variant.as_str()))
+        .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    let missing_str = missing
+        .iter()
+        .map(|variant| variant.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(SprsError::Semantic {
+        code: ErrorCode {
+            category: ErrorCategory::Semantic,
+            number: 17,
+        },
+        location: compiler.location(first_span.unwrap_or(Span::DUMMY)),
+        message: format!("non-exhaustive match on {}; missing {}", frame, missing_str),
+        help: Some("add the missing variants or a final case _".to_string()),
+    })
+}
+
 /// Build the i1 condition for one arm pattern from the scrutinee's tag/data.
 ///
 /// Static types prune the check: an `Atom`-typed scrutinee emits only the atom
@@ -397,6 +473,7 @@ fn validate_match_patterns<'a, 'ctx>(
 /// tag so mixed Atom/Label arms work. `case _` is always true.
 fn match_arm_condition<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
+    scrut_ty: &Type,
     pat: &ast::MatchPat,
     tag_val: IntValue<'ctx>,
     data_val: IntValue<'ctx>,
@@ -431,11 +508,12 @@ fn match_arm_condition<'ctx>(
                 (None, Some(eq_bool))
             } else {
                 // Atom branch: data holds an interned atom id.
+                let intern_key = atom_match_intern_key(self_compiler, scrut_ty, name);
                 let idx = self_compiler.string_counter;
                 self_compiler.string_counter += 1;
                 let name_ptr = self_compiler
                     .builder
-                    .build_global_string_ptr(name, &format!("match_atom_name_{}", idx))
+                    .build_global_string_ptr(&intern_key, &format!("match_atom_name_{}", idx))
                     .unwrap()
                     .as_pointer_value();
                 let atom_from_bytes = self_compiler.get_runtime_fn(module, "__atom_from_bytes")?;
@@ -448,7 +526,7 @@ fn match_arm_condition<'ctx>(
                             self_compiler
                                 .context
                                 .i64_type()
-                                .const_int(name.len() as u64, false)
+                                .const_int(intern_key.len() as u64, false)
                                 .into(),
                         ],
                         "match_expected_atom",
@@ -656,25 +734,7 @@ fn store_expr_into_dest<'ctx>(
     bind_name: Option<&str>,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<(), SprsError> {
-    // Same clone/move rules as Stmt::Assign.
-    let mut val_ptr = self_compiler
-        .compile_expr(expr, module)?
-        .into_pointer_value();
-    let mut source_to_move: Option<(BasicValueEnum<'ctx>, String)> = None;
-    if let ast::Expr::Var(src_val_name) = &expr.node {
-        let src = self_compiler
-            .get_variables(src_val_name)
-            .ok_or_else(|| format!("Undefined variable: {}", src_val_name))?;
-        if src.always_clone {
-            val_ptr = builder_helper::clone_runtime_value(
-                self_compiler,
-                src.value.into_pointer_value(),
-                module,
-            )?;
-        } else {
-            source_to_move = Some((src.value, src_val_name.clone()));
-        }
-    }
+    let val_ptr = self_compiler.compile_owned_expr(expr, module, "match_bind_owned")?;
     let drop_fn = self_compiler.get_runtime_fn(module, "__drop")?;
     builder_helper::drop_var(self_compiler, dest_ptr, drop_fn, dest_name);
     let new_val = self_compiler
@@ -682,9 +742,6 @@ fn store_expr_into_dest<'ctx>(
         .build_load(self_compiler.runtime_value_type, val_ptr, "match_bind_load")
         .unwrap();
     self_compiler.builder.build_store(dest_ptr, new_val).unwrap();
-    if let Some((val, src_name)) = source_to_move {
-        builder_helper::move_variable(self_compiler, &val, &src_name);
-    }
     if let Some(bind_name) = bind_name {
         let target = self_compiler
             .get_variables(bind_name)
@@ -718,7 +775,7 @@ pub fn create_match_stmt<'ctx>(
 ) -> Result<(), SprsError> {
     // --- Semantic validation (SEM-017) ---
     let scrut_ty = self_compiler.infer_type(scrutinee);
-    let is_atom_static = matches!(scrut_ty, Type::AtomVal)
+    let is_atom_static = matches!(scrut_ty, Type::AtomVal | Type::Enum(_))
         || matches!(&scrut_ty, Type::App(name, _) if name == "Atom");
     let is_label_static = matches!(scrut_ty, Type::Label)
         || matches!(&scrut_ty, Type::App(name, _) if name == "Label");
@@ -726,6 +783,11 @@ pub fn create_match_stmt<'ctx>(
         self_compiler,
         arms.iter().map(|arm| (&arm.pat, arm.span)),
         is_atom_static,
+    )?;
+    check_enum_match_exhaustiveness(
+        self_compiler,
+        &scrut_ty,
+        arms.iter().map(|arm| (&arm.pat, arm.span)),
     )?;
 
     for arm in arms {
@@ -831,6 +893,7 @@ pub fn create_match_stmt<'ctx>(
         } else {
             let cond = match_arm_condition(
                 self_compiler,
+                &scrut_ty,
                 &arm.pat,
                 tag_val,
                 data_val,
@@ -939,7 +1002,7 @@ pub fn create_match_expr<'ctx>(
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
     // --- Semantic validation (SEM-017) ---
     let scrut_ty = self_compiler.infer_type(scrutinee);
-    let is_atom_static = matches!(scrut_ty, Type::AtomVal)
+    let is_atom_static = matches!(scrut_ty, Type::AtomVal | Type::Enum(_))
         || matches!(&scrut_ty, Type::App(name, _) if name == "Atom");
     let is_label_static = matches!(scrut_ty, Type::Label)
         || matches!(&scrut_ty, Type::App(name, _) if name == "Label");
@@ -947,6 +1010,11 @@ pub fn create_match_expr<'ctx>(
         self_compiler,
         arms.iter().map(|arm| (&arm.pat, arm.span)),
         is_atom_static,
+    )?;
+    check_enum_match_exhaustiveness(
+        self_compiler,
+        &scrut_ty,
+        arms.iter().map(|arm| (&arm.pat, arm.span)),
     )?;
 
     let parent_fn = self_compiler
@@ -1042,6 +1110,7 @@ pub fn create_match_expr<'ctx>(
         } else {
             let cond = match_arm_condition(
                 self_compiler,
+                &scrut_ty,
                 &arm.pat,
                 tag_val,
                 data_val,

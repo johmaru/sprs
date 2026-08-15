@@ -208,7 +208,7 @@ pub fn build_and_run(dest: Option<&str>, mode: ExecuteMode, cli_error_format: Op
         .map_err(|e| format!("Failed to invoke clang: {}", e))?;
 
     if status_link.success() {
-        println!("Successfully created executable: ./{}", exec_filename);
+        println!("Successfully created executable: {}/{}", out_dir, exec_filename);
         if mode == ExecuteMode::Run {
             println!("--- Running ---");
             let can_run = match compiler.target_os {

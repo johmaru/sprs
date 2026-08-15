@@ -15,8 +15,9 @@
 /// | List            | List         | 4            |
 /// | Range           | Range        | 5            |
 /// | Unit            | Unit         | 6            |
-/// | Enum            | Enum         | 7            |
+/// | Enum(_)        | Atom         | 9            |
 /// | Struct(_)       | Struct       | 8            |
+/// | 7              | (unused)     | (was Enum)   |
 /// | Label           | Label        | 10           |
 /// | AtomVal         | Atom         | 9            |
 /// | Buffer          | Buffer       | 11           |
@@ -109,7 +110,7 @@ impl Type {
             Type::List => Some(4),
             Type::Range => Some(5),
             Type::Unit => Some(6),
-            Type::Enum(_) => Some(7),
+            Type::Enum(_) => Some(9),
             Type::Struct(_) => Some(8),
             Type::AtomVal => Some(9),
             Type::Label => Some(10),
@@ -146,7 +147,7 @@ impl Type {
             4 => Some(Type::List),
             5 => Some(Type::Range),
             6 => Some(Type::Unit),
-            7 => Some(Type::Enum(String::new())),
+            7 => None,
             8 => Some(Type::Struct(String::new())),
             9 => Some(Type::AtomVal),
             10 => Some(Type::Label),
@@ -175,6 +176,7 @@ impl Type {
 /// - `Int` ≡ `TypeI64` (language default integer is i64)
 /// - `Float` ≡ `TypeF64` (language default float is f64)
 /// - `Struct` names must match; empty name (from tag recovery) matches any struct
+/// - `Enum` frame names must match (`Color.Red` is an Atom at runtime)
 /// - `App(n1, a1)` ≡ `App(n2, a2)` when names and arities match and each
 ///   argument pair is compatible (recursively)
 /// - `Param(n1)` ≡ `Param(n2)` only when names match (no substitution yet; #29)
@@ -212,6 +214,7 @@ pub fn types_compatible(expected: &Type, actual: &Type) -> bool {
     }
     match (expected, actual) {
         (Type::Struct(a), Type::Struct(b)) => a.is_empty() || b.is_empty() || a == b,
+        (Type::Enum(a), Type::Enum(b)) => a == b,
         (Type::Atom(a), Type::Atom(b)) => a == b,
         (Type::App(n1, a1), Type::App(n2, a2)) if n1 == "Label" && n2 == "Label" => {
             label_args_compatible(a1, a2)
@@ -510,6 +513,23 @@ mod tests {
         // bare Label stays incompatible with named forms
         assert!(!types_compatible(&Type::Label, &label_ok));
         assert!(!types_compatible(&label_ok_int, &Type::Label));
+    }
+
+    #[test]
+    fn types_compatible_enum_frames_by_name() {
+        assert!(types_compatible(
+            &Type::Enum("Color".into()),
+            &Type::Enum("Color".into())
+        ));
+        assert!(!types_compatible(
+            &Type::Enum("Color".into()),
+            &Type::Enum("Status".into())
+        ));
+        assert!(!types_compatible(&Type::Enum("Color".into()), &Type::AtomVal));
+        assert!(!types_compatible(
+            &Type::Enum("Color".into()),
+            &Type::App("Atom".into(), vec![])
+        ));
     }
 
     #[test]

@@ -65,7 +65,7 @@ extern {
         If     => Token::If,
         Else   => Token::Else,
         While  => Token::While,
-        IDENT  => Token::Ident(String),
+        IDENT  => Token::Ident(<String>),
         MACRO  => Token::Macro(String),
         NUM    => Token::Num(i64),
         FLOAT  => Token::Float(f64),
@@ -75,7 +75,7 @@ extern {
         Colon  => Token::Colon,
         Function => Token::Function,
         Return => Token::Return,
-        Preprocessor => Token::Preprocessor,
+        PREPROCESSOR => Token::Preprocessor(<String>),
         Import => Token::Import,
         Package => Token::Package,
         Var => Token::Var,
@@ -133,7 +133,7 @@ ItemNode: Item = {
 };
 
 PreprocessorDirective: String = {
-    Preprocessor <id:Ident> => id,
+    PREPROCESSOR,
 };
 
 ImportDirective: String = {
@@ -245,8 +245,8 @@ ParamList: Vec<FunctionParam> = {
 };
 
 FunctionParamNode: FunctionParam = {
-    <start:@L> <id:Ident> GtGt <t:TypeAnnot> <end:@R> => FunctionParam { ident: id, ty: Some(t), span: Span::new(start, end) },
-    <start:@L> <id:Ident> <end:@R> => FunctionParam { ident: id, ty: None, span: Span::new(start, end) },
+    <start:@L> <id:ParamIdent> GtGt <t:TypeAnnot> <end:@R> => FunctionParam { ident: id, ty: Some(t), span: Span::new(start, end) },
+    <start:@L> <id:ParamIdent> <end:@R> => FunctionParam { ident: id, ty: None, span: Span::new(start, end) },
 };
 
 
@@ -491,13 +491,49 @@ AssignExpr: Spanned<Expr> = {
 
 
 VarDecl: VarDecl = {
- <start:@L> Var <id:Ident> Assign <e:Expr> Semi <end:@R> => VarDecl { ident: id, expr: Some(e), always_clone: false, span: Span::new(start, end) },
- <start:@L> Var <id:Ident> Semi <end:@R> => VarDecl { ident: id, expr: None, always_clone: false, span: Span::new(start, end) },
- <start:@L> Copy Var <id:Ident> Assign <e:Expr> Semi <end:@R> => VarDecl { ident: id, expr: Some(e), always_clone: true, span: Span::new(start, end) },
+ <start:@L> Var <id:VarIdent> Assign <e:Expr> Semi <end:@R> => VarDecl { ident: id, expr: Some(e), always_clone: false, span: Span::new(start, end) },
+ <start:@L> Var <id:VarIdent> Semi <end:@R> => VarDecl { ident: id, expr: None, always_clone: false, span: Span::new(start, end) },
+ <start:@L> Copy Var <id:VarIdent> Assign <e:Expr> Semi <end:@R> => VarDecl { ident: id, expr: Some(e), always_clone: true, span: Span::new(start, end) },
 };
 
-Ident: String = <tok:IDENT> =>? {
-    match tok { Token::Ident(s) => Ok(s), _ => Err(ParseError::User { error: "Expected IDENT token".to_string() }) }
+Ident: String = {
+    IDENT,
+    Function => "fn".to_string(),
+    Case => "case".to_string(),
+    Break => "break".to_string(),
+    Package => "pkg".to_string(),
+    Import => "import".to_string(),
+    Var => "var".to_string(),
+    Public => "pub".to_string(),
+    Enum => "enum".to_string(),
+    Struct => "struct".to_string(),
+    Copy => "cp".to_string(),
+    Ambi => "ambi".to_string(),
+    Unsafe => "unsafe".to_string(),
+    TypeInt => "int".to_string(),
+    TypeFloat => "fp".to_string(),
+    TypeBool => "bool".to_string(),
+    TypeStr => "str".to_string(),
+    TypeList => "list".to_string(),
+    TypeBuffer => "buffer".to_string(),
+    TypeRawPtr => "rawptr".to_string(),
+    TypeRange => "range".to_string(),
+    TypeUnit => "unit".to_string(),
+    TypeError => "err".to_string(),
+    TypeLabel => "label".to_string(),
+    TypeAtomKw => "atom".to_string(),
+};
+
+ParamIdent: String = {
+    Ident,
+    InstanceCreate => "new".to_string(),
+    Destroy => "destroy".to_string(),
+    Exist => "exist".to_string(),
+};
+
+VarIdent: String = {
+    Ident,
+    Defer => "defer".to_string(),
 };
 
 MacroName: String = <tok:MACRO> =>? {
@@ -612,6 +648,12 @@ Atom: Spanned<Expr> = {
         Spanned::new(Expr::Destroy(Box::new(e)), Span::new(start, end)),
     <start:@L> Exist LParen <e:Expr> RParen <end:@R> =>
         Spanned::new(Expr::Exist(Box::new(e)), Span::new(start, end)),
+    <start:@L> InstanceCreate <end:@R> =>
+        Spanned::new(Expr::Var("new".to_string()), Span::new(start, end)),
+    <start:@L> Destroy <end:@R> =>
+        Spanned::new(Expr::Var("destroy".to_string()), Span::new(start, end)),
+    <start:@L> Exist <end:@R> =>
+        Spanned::new(Expr::Var("exist".to_string()), Span::new(start, end)),
     <start:@L> <m:MacroName> LParen <name:Ident> LBrace <fields:StructInitFields> RBrace RParen <end:@R> =>? {
         if m == "init" {
             Ok(Spanned::new(Expr::StructInit(name, fields), Span::new(start, end)))

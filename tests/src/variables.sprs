@@ -118,3 +118,12 @@ pub fn str_eq_same() >> i64 {
     }
     return 0;
 }
+
+pub fn chained_assign_string() >> str {
+    var a;
+    var b;
+    var c = "chain";
+    a = b = c;
+    return a;
+}
+

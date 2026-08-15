@@ -70,3 +70,22 @@ pub fn question_keeps_ok() >> int {
     var ok_value = make_ok()?;
     return @label_payload(ok_value);
 }
+
+fn make_try_ok() >> str {
+    return "try-ok";
+}
+
+pub fn question_moves_string() >> str {
+    var text = make_try_ok()?;
+    return text;
+}
+
+fn stored_error() >> err {
+    var stored = @error("stored");
+    return stored?;
+}
+
+pub fn stored_error_message() >> str {
+    return @error_message(stored_error());
+}
+

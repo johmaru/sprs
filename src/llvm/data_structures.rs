@@ -1,4 +1,5 @@
-use crate::llvm::value::{box_return_value, create_entry_block_alloca};
+use crate::llvm::value::{box_return_value, create_entry_block_alloca, create_error_label_from_str};
+use crate::llvm::variable::clone_runtime_value;
 use crate::{
     front::ast,
     front::error::{ErrorCategory, ErrorCode, Location, SprsError},
@@ -372,6 +373,85 @@ pub fn create_module_access<'ctx>(
     box_return_value(self_compiler, module, return_type, result_val)
 }
 
+
+fn copy_runtime_ptr<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+    dest: PointerValue<'ctx>,
+    src: PointerValue<'ctx>,
+    name: &str,
+) {
+    let val = self_compiler
+        .builder
+        .build_load(self_compiler.runtime_value_type, src, name)
+        .unwrap();
+    self_compiler.builder.build_store(dest, val).unwrap();
+}
+
+fn ptr_is_null<'ctx>(
+    self_compiler: &Compiler<'ctx>,
+    ptr: PointerValue<'ctx>,
+    name: &str,
+) -> inkwell::values::IntValue<'ctx> {
+    let addr = self_compiler
+        .builder
+        .build_ptr_to_int(ptr, self_compiler.context.i64_type(), &format!("{name}_addr"))
+        .unwrap();
+    self_compiler
+        .builder
+        .build_int_compare(
+            inkwell::IntPredicate::EQ,
+            addr,
+            self_compiler.context.i64_type().const_zero(),
+            &format!("{name}_is_null"),
+        )
+        .unwrap()
+}
+
+fn emit_struct_track<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+    module: &inkwell::module::Module<'ctx>,
+    struct_handle: inkwell::values::IntValue<'ctx>,
+    field_ptr: PointerValue<'ctx>,
+    tag: inkwell::values::IntValue<'ctx>,
+    data: inkwell::values::IntValue<'ctx>,
+    data_only: bool,
+) -> Result<inkwell::values::IntValue<'ctx>, SprsError> {
+    let track_fn = self_compiler.get_runtime_fn(module, "__struct_track_value")?;
+    let field_i8 = self_compiler
+        .builder
+        .build_pointer_cast(
+            field_ptr,
+            self_compiler.context.ptr_type(AddressSpace::default()),
+            "struct_field_i8",
+        )
+        .unwrap();
+    let data_only_val = self_compiler
+        .context
+        .i32_type()
+        .const_int(if data_only { 1 } else { 0 }, false);
+    let call = self_compiler
+        .builder
+        .build_call(
+            track_fn,
+            &[
+                struct_handle.into(),
+                field_i8.into(),
+                tag.into(),
+                data.into(),
+                data_only_val.into(),
+            ],
+            "struct_track_call",
+        )
+        .unwrap();
+    match call.try_as_basic_value() {
+        ValueKind::Basic(val) => Ok(val.into_int_value()),
+        _ => Err(SprsError::Internal {
+            message: "Expected i32 from __struct_track_value".to_string(),
+            location: None,
+        }),
+    }
+}
+
 pub fn create_field_access<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
     struct_expr: &Spanned<ast::Expr>,
@@ -379,9 +459,56 @@ pub fn create_field_access<'ctx>(
     struct_name: &str,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
+    let result_ptr = create_entry_block_alloca(self_compiler, "field_access_result")?;
+    let parent_fn = self_compiler.get_current_function();
+    let invalid_bb = self_compiler
+        .context
+        .append_basic_block(parent_fn, "field_access_invalid");
+    let body_bb = self_compiler
+        .context
+        .append_basic_block(parent_fn, "field_access_body");
+    let merge_bb = self_compiler
+        .context
+        .append_basic_block(parent_fn, "field_access_merge");
+
     let struct_ptr = self_compiler
         .compile_expr(struct_expr, module)?
         .into_pointer_value();
+
+    let struct_tag_ptr = self_compiler
+        .builder
+        .build_struct_gep(
+            self_compiler.runtime_value_type,
+            struct_ptr,
+            0,
+            "struct_tag_ptr",
+        )
+        .unwrap();
+    let struct_tag = self_compiler
+        .builder
+        .build_load(
+            self_compiler.context.i32_type(),
+            struct_tag_ptr,
+            "struct_tag",
+        )
+        .unwrap()
+        .into_int_value();
+    let is_struct = self_compiler
+        .builder
+        .build_int_compare(
+            inkwell::IntPredicate::EQ,
+            struct_tag,
+            self_compiler.context.i32_type().const_int(Tag::Struct as u64, false),
+            "is_struct_tag",
+        )
+        .unwrap();
+    let tag_ok_bb = self_compiler
+        .context
+        .append_basic_block(parent_fn, "field_access_tag_ok");
+    let _ = self_compiler
+        .builder
+        .build_conditional_branch(is_struct, tag_ok_bb, invalid_bb);
+    self_compiler.builder.position_at_end(tag_ok_bb);
 
     let struct_data_ptr = self_compiler
         .builder
@@ -403,8 +530,6 @@ pub fn create_field_access<'ctx>(
         .unwrap()
         .into_int_value();
 
-    // `data` is an i64 slab handle — call `__struct_borrow(handle)` to get the
-    // raw pointer for field access.
     let struct_borrow_fn = self_compiler.get_runtime_fn(module, "__struct_borrow")?;
     let borrow_call = self_compiler
         .builder
@@ -423,6 +548,18 @@ pub fn create_field_access<'ctx>(
             });
         }
     };
+
+    let is_null = ptr_is_null(self_compiler, heap_ptr, "struct_borrow");
+    let _ = self_compiler
+        .builder
+        .build_conditional_branch(is_null, invalid_bb, body_bb);
+
+    self_compiler.builder.position_at_end(invalid_bb);
+    let err_ptr = create_error_label_from_str(self_compiler, "Invalid struct handle", module)?;
+    copy_runtime_ptr(self_compiler, result_ptr, err_ptr, "invalid_handle_err");
+    let _ = self_compiler.builder.build_unconditional_branch(merge_bb);
+
+    self_compiler.builder.position_at_end(body_bb);
 
     let struct_def =
         self_compiler
@@ -454,7 +591,7 @@ pub fn create_field_access<'ctx>(
             help: None,
         });
     }
-    let field_def = &struct_def.fields[field_index as usize];
+    let field_def_ty = struct_def.fields[field_index as usize].ty.clone();
 
     let struct_ptr_typed = self_compiler
         .builder
@@ -470,7 +607,7 @@ pub fn create_field_access<'ctx>(
         .build_struct_gep(llvm_type, struct_ptr_typed, field_index, "field_ptr")
         .unwrap();
 
-    if let Some(ty) = &field_def.ty {
+    if let Some(ty) = &field_def_ty {
         match ty {
             crate::front::type_helper::Type::Int
             | crate::front::type_helper::Type::TypeI64
@@ -480,16 +617,12 @@ pub fn create_field_access<'ctx>(
                     .build_load(self_compiler.context.i64_type(), field_ptr, "field_val")
                     .unwrap()
                     .into_int_value();
-
-                let res_ptr =
-                    create_entry_block_alloca(self_compiler, "int_field_access_res_alloc")?;
                 self_compiler.build_runtime_value_store(
-                    res_ptr,
+                    result_ptr,
                     StoreTag::Int(Tag::Integer as u64),
                     StoreValue::Int(val),
                     "int_field_access_res",
                 );
-                return Ok(res_ptr.into());
             }
             crate::front::type_helper::Type::Bool => {
                 let val = self_compiler
@@ -501,16 +634,12 @@ pub fn create_field_access<'ctx>(
                     )
                     .unwrap()
                     .into_int_value();
-
-                let res_ptr =
-                    create_entry_block_alloca(self_compiler, "bool_field_access_res_alloc")?;
                 self_compiler.build_runtime_value_store(
-                    res_ptr,
+                    result_ptr,
                     StoreTag::Int(Tag::Boolean as u64),
                     StoreValue::Bool(val),
                     "bool_field_access_res",
                 );
-                return Ok(res_ptr.into());
             }
             crate::front::type_helper::Type::Float
             | crate::front::type_helper::Type::TypeF64 => {
@@ -519,19 +648,14 @@ pub fn create_field_access<'ctx>(
                     .build_load(self_compiler.context.i64_type(), field_ptr, "float_field_val")
                     .unwrap()
                     .into_int_value();
-                let res_ptr =
-                    create_entry_block_alloca(self_compiler, "float_field_access_res_alloc")?;
                 self_compiler.build_runtime_value_store(
-                    res_ptr,
+                    result_ptr,
                     StoreTag::Int(Tag::Float as u64),
                     StoreValue::Int(val),
                     "float_field_access_res",
                 );
-                return Ok(res_ptr.into());
             }
             crate::front::type_helper::Type::Str => {
-                // `data` is an i64 slab handle stored directly in the struct
-                // field — load as i64, no pointer conversion.
                 let str_handle = self_compiler
                     .builder
                     .build_load(
@@ -541,41 +665,38 @@ pub fn create_field_access<'ctx>(
                     )
                     .unwrap()
                     .into_int_value();
-                let res_ptr =
-                    create_entry_block_alloca(self_compiler, "str_field_access_res_alloc")?;
                 self_compiler.build_runtime_value_store(
-                    res_ptr,
+                    result_ptr,
                     StoreTag::Int(Tag::String as u64),
                     StoreValue::Int(str_handle),
                     "str_field_access_res",
                 );
-                return Ok(res_ptr.into());
+                let cloned = clone_runtime_value(self_compiler, result_ptr, module)?;
+                copy_runtime_ptr(self_compiler, result_ptr, cloned, "str_field_cloned");
             }
-            _ => { /* Fallback to generic field access */ }
+            _ => {
+                let field_val = self_compiler
+                    .builder
+                    .build_load(self_compiler.runtime_value_type, field_ptr, "field_val")
+                    .unwrap();
+                self_compiler.builder.build_store(result_ptr, field_val).unwrap();
+                let cloned = clone_runtime_value(self_compiler, result_ptr, module)?;
+                copy_runtime_ptr(self_compiler, result_ptr, cloned, "generic_field_cloned");
+            }
         }
+    } else {
+        let field_val = self_compiler
+            .builder
+            .build_load(self_compiler.runtime_value_type, field_ptr, "field_val")
+            .unwrap();
+        self_compiler.builder.build_store(result_ptr, field_val).unwrap();
+        let cloned = clone_runtime_value(self_compiler, result_ptr, module)?;
+        copy_runtime_ptr(self_compiler, result_ptr, cloned, "untyped_field_cloned");
     }
 
-    let field_val = self_compiler
-        .builder
-        .build_load(self_compiler.runtime_value_type, field_ptr, "field_val")
-        .unwrap();
-
-    let res_ptr = create_entry_block_alloca(self_compiler, "field_access_res_alloc")?;
-
-    self_compiler
-        .builder
-        .build_store(res_ptr, field_val)
-        .unwrap();
-
-    Ok(res_ptr.into())
-}
-
-pub fn create_unit<'ctx>(
-    self_compiler: &mut Compiler<'ctx>,
-) -> Result<BasicValueEnum<'ctx>, SprsError> {
-    let res_ptr = create_entry_block_alloca(self_compiler, "unit_res_alloc")?;
-    self_compiler.tag_only_runtime_value_store(res_ptr, Tag::Unit as u64, "unit_res");
-    Ok(res_ptr.into())
+    let _ = self_compiler.builder.build_unconditional_branch(merge_bb);
+    self_compiler.builder.position_at_end(merge_bb);
+    Ok(result_ptr.into())
 }
 
 pub fn create_struct_init<'ctx>(
@@ -584,6 +705,21 @@ pub fn create_struct_init<'ctx>(
     field_exprs: &[(String, Spanned<ast::Expr>)],
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
+    let result_ptr = create_entry_block_alloca(self_compiler, "struct_init_result")?;
+    let parent_fn = self_compiler.get_current_function();
+    let invalid_bb = self_compiler
+        .context
+        .append_basic_block(parent_fn, "struct_init_invalid");
+    let body_bb = self_compiler
+        .context
+        .append_basic_block(parent_fn, "struct_init_body");
+    let field_err_bb = self_compiler
+        .context
+        .append_basic_block(parent_fn, "struct_init_field_err");
+    let merge_bb = self_compiler
+        .context
+        .append_basic_block(parent_fn, "struct_init_merge");
+
     let struct_def =
         self_compiler
             .struct_defs
@@ -600,8 +736,6 @@ pub fn create_struct_init<'ctx>(
 
     let llvm_type = struct_def.llvm_type;
 
-    // Allocate the struct through the slab runtime so `__drop`/`__clone`
-    // recognize it as a slab-owned Struct (not a raw malloc pointer).
     let struct_size = llvm_type.size_of().ok_or_else(|| SprsError::Internal {
         message: "struct type has no size".to_string(),
         location: None,
@@ -638,21 +772,28 @@ pub fn create_struct_init<'ctx>(
             });
         }
     };
-    // `__struct_borrow` returns `*mut u8`; cast to the struct's typed pointer
-    // so `build_struct_gep` can index fields.
+
+    let is_null = ptr_is_null(self_compiler, struct_ptr, "struct_init_borrow");
+    let _ = self_compiler
+        .builder
+        .build_conditional_branch(is_null, invalid_bb, body_bb);
+
+    self_compiler.builder.position_at_end(invalid_bb);
+    let err_ptr = create_error_label_from_str(self_compiler, "Invalid struct handle", module)?;
+    copy_runtime_ptr(self_compiler, result_ptr, err_ptr, "init_invalid_handle");
+    let _ = self_compiler.builder.build_unconditional_branch(merge_bb);
+
+    self_compiler.builder.position_at_end(body_bb);
     let struct_ptr = self_compiler
         .builder
         .build_pointer_cast(
             struct_ptr,
-            llvm_type.ptr_type(AddressSpace::default()),
+            self_compiler.context.ptr_type(AddressSpace::default()),
             "struct_ptr_typed",
         )
         .unwrap();
 
     for (field_name, field_expr) in field_exprs {
-        // Re-fetch inside the loop so the immutable borrow ends before
-        // `compile_expr`'s mutable borrow (NLL does not end loop-carried
-        // borrows between iterations).
         let struct_def = self_compiler
             .struct_defs
             .get(struct_name)
@@ -692,7 +833,7 @@ pub fn create_struct_init<'ctx>(
                 help: None,
             })?;
 
-        let value = self_compiler.compile_expr(field_expr, module)?;
+        let value = self_compiler.compile_owned_expr(field_expr, module, "struct_field_owned")?;
 
         let field_ptr = self_compiler
             .builder
@@ -702,6 +843,7 @@ pub fn create_struct_init<'ctx>(
                 location: None,
             })?;
 
+        let mut track: Option<(inkwell::values::IntValue, inkwell::values::IntValue, bool)> = None;
         if let Some(ty) = &field_ty {
             match ty {
                 crate::front::type_helper::Type::Int
@@ -710,12 +852,11 @@ pub fn create_struct_init<'ctx>(
                 | crate::front::type_helper::Type::Bool
                 | crate::front::type_helper::Type::Float
                 | crate::front::type_helper::Type::TypeF64 => {
-                    let val_ptr = value.into_pointer_value();
                     let data_ptr = self_compiler
                         .builder
                         .build_struct_gep(
                             self_compiler.runtime_value_type,
-                            val_ptr,
+                            value,
                             1,
                             "int_field_data_ptr",
                         )
@@ -729,21 +870,17 @@ pub fn create_struct_init<'ctx>(
                         .builder
                         .build_store(field_ptr, int_val)
                         .unwrap();
-                    continue;
                 }
                 crate::front::type_helper::Type::Str => {
-                    let val_ptr = value.into_pointer_value();
                     let data_ptr = self_compiler
                         .builder
                         .build_struct_gep(
                             self_compiler.runtime_value_type,
-                            val_ptr,
+                            value,
                             1,
                             "str_field_data_ptr",
                         )
                         .unwrap();
-                    // `data` is an i64 slab handle — store it directly in the
-                    // struct field (no pointer conversion).
                     let str_handle = self_compiler
                         .builder
                         .build_load(
@@ -757,55 +894,160 @@ pub fn create_struct_init<'ctx>(
                         .builder
                         .build_store(field_ptr, str_handle)
                         .unwrap();
-                    continue;
+                    let tag = self_compiler
+                        .context
+                        .i32_type()
+                        .const_int(Tag::String as u64, false);
+                    track = Some((tag, str_handle, true));
                 }
-                _ => { /* Fallback to generic field store */ }
+                _ => {
+                    let val_to_store = self_compiler
+                        .builder
+                        .build_load(
+                            self_compiler.runtime_value_type,
+                            value,
+                            "field_value",
+                        )
+                        .unwrap();
+                    self_compiler
+                        .builder
+                        .build_store(field_ptr, val_to_store)
+                        .unwrap();
+                    let tag_ptr = self_compiler
+                        .builder
+                        .build_struct_gep(
+                            self_compiler.runtime_value_type,
+                            value,
+                            0,
+                            "generic_field_tag_ptr",
+                        )
+                        .unwrap();
+                    let tag = self_compiler
+                        .builder
+                        .build_load(self_compiler.context.i32_type(), tag_ptr, "generic_field_tag")
+                        .unwrap()
+                        .into_int_value();
+                    let data_ptr = self_compiler
+                        .builder
+                        .build_struct_gep(
+                            self_compiler.runtime_value_type,
+                            value,
+                            1,
+                            "generic_field_data_ptr",
+                        )
+                        .unwrap();
+                    let data = self_compiler
+                        .builder
+                        .build_load(self_compiler.context.i64_type(), data_ptr, "generic_field_data")
+                        .unwrap()
+                        .into_int_value();
+                    track = Some((tag, data, false));
+                }
             }
-        }
-
-        let val_to_store = if value.is_pointer_value() {
-            self_compiler
+        } else {
+            let val_to_store = self_compiler
                 .builder
                 .build_load(
                     self_compiler.runtime_value_type,
-                    value.into_pointer_value(),
+                    value,
                     "field_value",
                 )
+                .unwrap();
+            self_compiler
+                .builder
+                .build_store(field_ptr, val_to_store)
+                .unwrap();
+            let tag_ptr = self_compiler
+                .builder
+                .build_struct_gep(
+                    self_compiler.runtime_value_type,
+                    value,
+                    0,
+                    "untyped_field_tag_ptr",
+                )
+                .unwrap();
+            let tag = self_compiler
+                .builder
+                .build_load(self_compiler.context.i32_type(), tag_ptr, "untyped_field_tag")
                 .unwrap()
-        } else {
-            value
-        };
-        self_compiler
-            .builder
-            .build_store(field_ptr, val_to_store)
-            .unwrap();
+                .into_int_value();
+            let data_ptr = self_compiler
+                .builder
+                .build_struct_gep(
+                    self_compiler.runtime_value_type,
+                    value,
+                    1,
+                    "untyped_field_data_ptr",
+                )
+                .unwrap();
+            let data = self_compiler
+                .builder
+                .build_load(self_compiler.context.i64_type(), data_ptr, "untyped_field_data")
+                .unwrap()
+                .into_int_value();
+            track = Some((tag, data, false));
+        }
+
+        if let Some((tag, data, data_only)) = track {
+            let ok = emit_struct_track(
+                self_compiler,
+                module,
+                struct_handle,
+                field_ptr,
+                tag,
+                data,
+                data_only,
+            )?;
+            let failed = self_compiler
+                .builder
+                .build_int_compare(
+                    inkwell::IntPredicate::EQ,
+                    ok,
+                    self_compiler.context.i32_type().const_zero(),
+                    "struct_track_failed",
+                )
+                .unwrap();
+            let cont_bb = self_compiler
+                .context
+                .append_basic_block(parent_fn, "struct_field_track_ok");
+            let _ = self_compiler
+                .builder
+                .build_conditional_branch(failed, field_err_bb, cont_bb);
+            self_compiler.builder.position_at_end(cont_bb);
+        }
     }
 
-    let allloca = self_compiler
-        .builder
-        .build_alloca(self_compiler.runtime_value_type, "struct_init_res_alloc")
-        .unwrap();
+    self_compiler.build_runtime_value_store(
+        result_ptr,
+        StoreTag::Int(Tag::Struct as u64),
+        StoreValue::Int(struct_handle),
+        "struct_init_res",
+    );
+    let _ = self_compiler.builder.build_unconditional_branch(merge_bb);
 
-    let tag = self_compiler
+    self_compiler.builder.position_at_end(field_err_bb);
+    let drop_fn = self_compiler.get_runtime_fn(module, "__drop")?;
+    let struct_tag = self_compiler
         .context
         .i32_type()
         .const_int(Tag::Struct as u64, false);
-    let tag_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, allloca, 0, "tag_ptr")
-        .unwrap();
-    self_compiler.builder.build_store(tag_ptr, tag).unwrap();
+    let _ = self_compiler.builder.build_call(
+        drop_fn,
+        &[struct_tag.into(), struct_handle.into()],
+        "drop_invalid_struct_field",
+    );
+    let err_ptr = create_error_label_from_str(self_compiler, "Invalid struct field storage", module)?;
+    copy_runtime_ptr(self_compiler, result_ptr, err_ptr, "init_field_err");
+    let _ = self_compiler.builder.build_unconditional_branch(merge_bb);
 
-    let data_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, allloca, 1, "data_ptr")
-        .unwrap();
-    // Store the slab handle (not the raw pointer) so `__drop`/`__clone`
-    // recognize this as a slab-owned Struct.
-    self_compiler
-        .builder
-        .build_store(data_ptr, struct_handle)
-        .unwrap();
+    self_compiler.builder.position_at_end(merge_bb);
+    Ok(result_ptr.into())
+}
 
-    Ok(allloca.into())
+pub fn create_unit<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
+    let res_ptr = create_entry_block_alloca(self_compiler, "unit_res_alloc")?;
+    self_compiler.tag_only_runtime_value_store(res_ptr, Tag::Unit as u64, "unit_res");
+    Ok(res_ptr.into())
 }

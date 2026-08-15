@@ -115,6 +115,31 @@ pub fn enum_in_list() >> i64 {
     return 1;
 }
 
+pub fn enum_eq_same() >> bool {
+    return Color.Red == Color.Red;
+}
+
+pub fn enum_eq_other() >> bool {
+    return Color.Red == Color.Green;
+}
+
+pub fn enum_eq_bare_atom() >> bool {
+    return Color.Red == :Red;
+}
+
+pub fn enum_match_red() >> int {
+    var r = match Color.Red {
+        case :Red => 1
+        case :Green => 2
+        case :Blue => 3
+    };
+    return r;
+}
+
+pub fn enum_print() {
+    @println(Color.Red);
+}
+
 pub struct Flag {
     ok >> bool
 }
@@ -132,3 +157,32 @@ pub fn flag_false() >> bool {
     });
     return p.ok;
 }
+
+pub struct Box {
+    value >> str
+}
+
+pub fn struct_owned_string() >> str {
+    var s = "owned";
+    var box = @init(Box {
+        value = s
+    });
+    return box.value;
+}
+
+pub fn struct_clone_string() >> str {
+    var box = @init(Box {
+        value = "copy"
+    });
+    var other = @clone(box);
+    return other.value;
+}
+
+pub fn struct_move_invalid_field() >> bool {
+    var a = @init(Box {
+        value = "x"
+    });
+    var b = a;
+    return @is_error(a.value);
+}
+

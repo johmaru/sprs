@@ -584,4 +584,81 @@ fn f() >> int {
         assert_eq!(arms[1].pat, MatchPat::Wildcard);
     }
 
+    #[test]
+    fn parses_keywords_as_idents() {
+        let src = r#"
+pkg buffer;
+import rawptr;
+fn buffer(new >> int) >> int {
+    var rawptr = new;
+    var defer = rawptr;
+    return rawptr;
+}
+"#;
+        let items = parse_only(src, "keyword_idents.sprs").expect("parse");
+        assert!(matches!(&items[0], Item::Package(name) if name == "buffer"));
+        assert!(matches!(&items[1], Item::Import(name) if name == "rawptr"));
+        let Item::FunctionItem(function_item) = &items[2] else {
+            panic!("expected function");
+        };
+        assert_eq!(function_item.ident, "buffer");
+        assert_eq!(function_item.params[0].ident, "new");
+        assert_eq!(
+            function_item.params[0].ty.as_ref().map(|t| &t.ty),
+            Some(&Type::Int)
+        );
+        let Stmt::Var(first_var) = &function_item.blk[0].node else {
+            panic!("expected var statement");
+        };
+        assert_eq!(first_var.ident, "rawptr");
+        let Stmt::Var(second_var) = &function_item.blk[1].node else {
+            panic!("expected var statement");
+        };
+        assert_eq!(second_var.ident, "defer");
+    }
+
+    #[test]
+    fn keyword_type_annotation_still_type() {
+        let src = "fn f(x >> buffer) >> rawptr { return x; }";
+        let items = parse_only(src, "test.sprs").expect("parse");
+        let Item::FunctionItem(function_item) = &items[0] else {
+            panic!("expected function");
+        };
+        assert_eq!(
+            function_item.params[0].ty.as_ref().map(|t| &t.ty),
+            Some(&Type::Buffer)
+        );
+        assert_eq!(function_item.ret_ty.as_ref(), Some(&Type::RawPtr));
+    }
+
+    #[test]
+    fn new_call_still_heap_alloc() {
+        let src = "fn f() { var a = new(4); }";
+        let items = parse_only(src, "test.sprs").expect("parse");
+        let Item::FunctionItem(function_item) = &items[0] else {
+            panic!("expected function");
+        };
+        let Stmt::Var(var_decl) = &function_item.blk[0].node else {
+            panic!("expected var statement");
+        };
+        let init = var_decl.expr.as_ref().expect("var has initializer");
+        assert!(matches!(init.node, Expr::HeapAlloc(_)));
+    }
+
+    #[test]
+    fn parses_preprocessor_directive_before_comment_rule() {
+        let src = "#define Windows\nfn main() {}\n";
+        let items = parse_only(src, "test.sprs").expect("parse");
+        assert!(matches!(&items[0], Item::Preprocessor(name) if name == "Windows"));
+        assert!(matches!(&items[1], Item::FunctionItem(_)));
+    }
+
+    #[test]
+    fn hash_comments_are_skipped_without_define() {
+        let src = "#comment\n# ordinary comment\nfn main() {}\n";
+        let items = parse_only(src, "test.sprs").expect("parse");
+        assert_eq!(items.len(), 1);
+        assert!(matches!(&items[0], Item::FunctionItem(_)));
+    }
+
 }

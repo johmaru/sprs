@@ -2,9 +2,8 @@ use crate::front::ast;
 use crate::front::error::{ErrorCategory, ErrorCode, Location, SprsError};
 use crate::front::span::Span;
 use crate::front::type_helper;
-use crate::front::type_helper::Type;
 use crate::llvm::builder_helper;
-use crate::llvm::compiler::{Compiler, FnTypeInfo, LINUX_STR, OS, StructDef, Tag, WINDOWS_STR};
+use crate::llvm::compiler::{Compiler, EnumFrame, FnTypeInfo, LINUX_STR, OS, StructDef, WINDOWS_STR};
 use crate::llvm::parser::parse_only;
 use crate::llvm::value::build_label_is_error;
 use crate::naming;
@@ -113,7 +112,7 @@ impl<'ctx> Compiler<'ctx> {
                     }
                 }
                 ast::Item::EnumItem(enm) => {
-                    self.register_enum(enm, &module, true);
+                    self.register_enum(enm)?;
 
                     if !enm.is_public {
                         for variant in &enm.variants {
@@ -246,7 +245,7 @@ impl<'ctx> Compiler<'ctx> {
         }
 
         for private_variant in private_enum_variants {
-            self.remove_variable(&private_variant);
+            self.private_enum_variants.insert(private_variant);
         }
 
         Ok(())
@@ -264,152 +263,31 @@ impl<'ctx> Compiler<'ctx> {
         }
     }
 
-    pub(crate) fn register_enum(
-        &mut self,
-        enm: &ast::Enum,
-        module: &Module<'ctx>,
-        is_global: bool,
-    ) {
+    pub(crate) fn register_enum(&mut self, enm: &ast::Enum) -> Result<(), SprsError> {
         if enm.variants.is_empty() {
-            return;
+            return Ok(());
         }
 
-        self.enum_names.insert(enm.ident.clone());
+        if self.enum_frames.contains_key(&enm.ident) {
+            return Err(SprsError::Semantic {
+                code: ErrorCode {
+                    category: ErrorCategory::Semantic,
+                    number: 4,
+                },
+                location: self.location(enm.span),
+                message: format!("Duplicate enum: {}", enm.ident),
+                help: None,
+            });
+        }
 
-        // For the runtime EnumInfo struct type : { i8*, i64 }
-        let i8_ptr_type = self.context.ptr_type(AddressSpace::default());
-        let enum_info_type = self.context.struct_type(
-            &[
-                i8_ptr_type.into(),             // name
-                self.context.i64_type().into(), // variant_index
-            ],
-            false,
+        self.enum_frames.insert(
+            enm.ident.clone(),
+            EnumFrame {
+                variants: enm.variants.clone(),
+                is_public: enm.is_public,
+            },
         );
-
-        for (idx, variant) in enm.variants.iter().enumerate() {
-            let full_name = format!("{}.{}", enm.ident, variant);
-
-            let enum_tag = self.context.i32_type().const_int(Tag::Enum as u64, false);
-
-            let ptr = if !is_global {
-                let current_block = self.builder.get_insert_block().unwrap();
-                let function = current_block.get_parent().unwrap();
-                let entry_block = function.get_first_basic_block().unwrap();
-
-                if let Some(first_instr) = entry_block.get_first_instruction() {
-                    self.builder.position_before(&first_instr)
-                } else {
-                    self.builder.position_at_end(entry_block)
-                };
-
-                let name_ptr = self
-                    .builder
-                    .build_global_string_ptr(&full_name, &format!("enum_name_{}", full_name))
-                    .unwrap();
-
-                let enum_info_ptr = self
-                    .builder
-                    .build_malloc(enum_info_type, &format!("enum_info_{}", full_name))
-                    .unwrap();
-
-                let name_gep = self
-                    .builder
-                    .build_struct_gep(enum_info_type, enum_info_ptr, 0, "name_ptr")
-                    .unwrap();
-                self.builder
-                    .build_store(name_gep, name_ptr.as_pointer_value())
-                    .unwrap();
-
-                let idx_gep = self
-                    .builder
-                    .build_struct_gep(enum_info_type, enum_info_ptr, 1, "variant_index_ptr")
-                    .unwrap();
-                let idx_val = self.context.i64_type().const_int(idx as u64, false);
-                self.builder.build_store(idx_gep, idx_val).unwrap();
-
-                let enum_info_int = self
-                    .builder
-                    .build_ptr_to_int(enum_info_ptr, self.context.i64_type(), "enum_info_as_int")
-                    .unwrap();
-
-                let alloca = self
-                    .builder
-                    .build_alloca(self.runtime_value_type, &full_name)
-                    .unwrap();
-
-                let tag_ptr = self
-                    .builder
-                    .build_struct_gep(self.runtime_value_type, alloca, 0, "enum_tag_ptr")
-                    .unwrap();
-                self.builder.build_store(tag_ptr, enum_tag).unwrap();
-
-                let data_ptr = self
-                    .builder
-                    .build_struct_gep(self.runtime_value_type, alloca, 1, "enum_data_ptr")
-                    .unwrap();
-                self.builder.build_store(data_ptr, enum_info_int).unwrap();
-
-                self.builder.position_at_end(current_block);
-                alloca
-            } else {
-                let global_name = format!("enum_name_str_{}", full_name.replace(".", "_"));
-                let str_const = self.context.const_string(full_name.as_bytes(), true);
-                let global_str = module.add_global(
-                    str_const.get_type(),
-                    Some(AddressSpace::default()),
-                    &global_name,
-                );
-                global_str.set_initializer(&str_const);
-                global_str.set_constant(true);
-                global_str.set_linkage(Linkage::Internal);
-
-                let zero = self.context.i32_type().const_int(0, false);
-                let name_ptr = unsafe {
-                    global_str
-                        .as_pointer_value()
-                        .const_gep(self.context.i8_type(), &[zero, zero])
-                };
-
-                let idx_val = self.context.i64_type().const_int(idx as u64, false);
-                let enum_info_const =
-                    enum_info_type.const_named_struct(&[name_ptr.into(), idx_val.into()]);
-
-                let global_info_name = format!("enum_info_const_{}", full_name.replace(".", "_"));
-
-                let global_enum_info = module.add_global(
-                    enum_info_type,
-                    Some(AddressSpace::default()),
-                    &global_info_name,
-                );
-                global_enum_info.set_initializer(&enum_info_const);
-                global_enum_info.set_constant(true);
-                global_enum_info.set_linkage(Linkage::Internal);
-
-                let enum_info_ptr = global_enum_info.as_pointer_value();
-                let enum_info_int = enum_info_ptr.const_to_int(self.context.i64_type());
-
-                let global = module.add_global(
-                    self.runtime_value_type,
-                    Some(AddressSpace::default()),
-                    &full_name,
-                );
-                let const_val = self
-                    .runtime_value_type
-                    .const_named_struct(&[enum_tag.into(), enum_info_int.into()]);
-                global.set_initializer(&const_val);
-                global.set_constant(true);
-                global.as_pointer_value()
-            };
-
-            self.add_variable(
-                full_name.to_string(),
-                ptr.into(),
-                Type::Enum(enm.ident.clone()),
-                false,
-                false,
-                false,
-            );
-        }
+        Ok(())
     }
 
     pub(crate) fn inject_runtime_constants(&self, module: &Module<'ctx>) {

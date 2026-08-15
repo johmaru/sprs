@@ -29,6 +29,16 @@ pub struct StructDef<'ctx> {
     pub llvm_type: StructType<'ctx>,
 }
 
+/// Compiler-local frame for a source `enum` declaration.
+///
+/// Variants are kept in source order; the frame only exists at compile time.
+/// Runtime values of `Color.Red` are `Tag::Atom` with intern key `"Color.Red"`
+/// (immediate, not a slab handle), so no runtime enum table is emitted.
+pub struct EnumFrame {
+    pub variants: Vec<String>,
+    pub is_public: bool,
+}
+
 /// Sprs-level function signature (not the LLVM ABI).
 #[derive(Debug, Clone)]
 pub struct FnTypeInfo {
@@ -67,7 +77,10 @@ pub struct Compiler<'ctx> {
     /// Used for type/semantic error locations (was previously left empty).
     pub current_file: String,
     pub struct_defs: HashMap<String, StructDef<'ctx>>, // struct name -> struct definition
-    pub enum_names: HashSet<String>,
+    pub enum_frames: HashMap<String, EnumFrame>,
+    /// Variants of non-public enums, filled after the defining module's
+    /// functions are compiled so same-module functions still see them.
+    pub private_enum_variants: HashSet<String>,
     pub sources: HashMap<String, String>, // module name → source text
     /// Values captured by @attach within the current function.
     pub attachments: HashMap<String, PointerValue<'ctx>>,
@@ -282,7 +295,6 @@ pub enum Tag {
     List = 4,
     Range = 5,
     Unit = 6,
-    Enum = 7,
     Struct = 8,
     Atom = 9, // immediate: data = interned atom id (u32 as u64). NOT a slab handle
     Label = 10,
@@ -322,7 +334,7 @@ impl Tag {
             4 => Some(Tag::List),
             5 => Some(Tag::Range),
             6 => Some(Tag::Unit),
-            7 => Some(Tag::Enum),
+            7 => None,
             8 => Some(Tag::Struct),
             9 => Some(Tag::Atom),
             10 => Some(Tag::Label),
@@ -394,7 +406,8 @@ impl<'ctx> Compiler<'ctx> {
             source_path,
             current_file: String::new(),
             struct_defs: HashMap::new(),
-            enum_names: HashSet::new(),
+            enum_frames: HashMap::new(),
+            private_enum_variants: HashSet::new(),
             sources: HashMap::new(),
             attachments: HashMap::new(),
             unsafe_depth: 0,
@@ -554,6 +567,7 @@ impl<'ctx> Compiler<'ctx> {
                     | Type::Struct(_)
                     | Type::Label
                     | Type::AtomVal
+                    | Type::Enum(_)
                     | Type::Buffer
                     | Type::RawPtr
                     | Type::App(_, _)
@@ -566,7 +580,6 @@ impl<'ctx> Compiler<'ctx> {
                     | Type::Str
                     | Type::Float
                     | Type::TypeF64
-                    | Type::Enum(_)
                     | Type::TypeI8
                     | Type::TypeU8
                     | Type::TypeI16
@@ -816,12 +829,13 @@ impl<'ctx> Compiler<'ctx> {
             // Struct slot construction (runtime owns the allocation).
             "__struct_new" => i64_type.fn_type(&[i64_type.into()], false),
             "__struct_borrow" => i8_ptr_type.fn_type(&[i64_type.into()], false),
-            // Enum slot construction.
-            "__enum_new" => i64_type.fn_type(
+            "__struct_track_value" => i32_type.fn_type(
                 &[
-                    i8_ptr_type.into(), // variant name bytes
-                    i64_type.into(),    // name length
-                    i64_type.into(),    // variant index
+                    i64_type.into(),    // struct handle
+                    i8_ptr_type.into(), // field pointer
+                    i32_type.into(),    // value tag
+                    i64_type.into(),    // value data
+                    i32_type.into(),    // data_only
                 ],
                 false,
             ),
@@ -857,7 +871,7 @@ mod tag_type_sync_tests {
             (Type::List, Tag::List),
             (Type::Range, Tag::Range),
             (Type::Unit, Tag::Unit),
-            (Type::Enum("Point".into()), Tag::Enum),
+            (Type::Enum("Point".into()), Tag::Atom),
             (Type::Struct("Point".into()), Tag::Struct),
             (Type::Label, Tag::Label),
             (Type::Buffer, Tag::Buffer),
