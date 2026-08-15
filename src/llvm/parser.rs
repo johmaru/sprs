@@ -741,4 +741,21 @@ fn ^fn(^if) { var ^return = ^if; ^return = ^return + 1; return ^return; }
         .is_err());
     }
 
+    #[test]
+    fn rejects_method_calls_on_non_module_expressions() {
+        for source in [
+            "fn main() { get_obj().method(); }\n",
+            "fn main() { get_obj().method(1); }\n",
+        ] {
+            let error = parse_only(source, "method_call.sprs")
+                .expect_err("non-module method call must be rejected");
+            assert!(
+                error
+                    .to_string()
+                    .contains("method call on non-module expression is not supported"),
+                "unexpected error: {error}"
+            );
+        }
+    }
+
 }
