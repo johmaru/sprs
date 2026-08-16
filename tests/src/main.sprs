@@ -189,6 +189,10 @@ fn main() {
     @println(errors.question_keeps_ok());
     @println(errors.question_moves_string());
     @println(errors.stored_error_message());
+    @println(errors.overflow_add_boundaries());
+    @println(errors.overflow_other_ops());
+    @println(errors.overflow_label_contract());
+    @println(errors.overflow_normal_boundaries());
 
     @println("=== Labels ===");
     @println(labels.dynamic_payload());

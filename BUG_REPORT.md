@@ -45,13 +45,16 @@
 
 | バグ ID | 深刻度 | 内容 | issue |
 |---|---|---|---|
-| **BUG-L06** | Medium | 整数加算で `nsw`/`nuw` フラグ未使用、オーバーフロー時に wrap-around。`nsw`/`nuw` 付けると UB になるため却下。Zig ライクな `Result` ベース（`@AnyError(x)` / `@WhatError(x) == OVERFLOW`）で設計中。#26（catchable エラー機構）に依存。→ catchable エラー機構（Tag::Error / `?` / `@is_error` 等）は実装済み。オーバーフロー検知自体は未実装で #27 継続。 | [#27](https://github.com/johmaru/sprs/issues/27) |
 | **BUG-L04** | Medium | ~~`create_panic_err` が `build_unreachable` を生成しない~~ → **解消**: `create_error_value` に置換し、エラーは `Tag::Error` 値として通常制御フローで伝播。`build_unreachable` は不要になった。 | [#26](https://github.com/johmaru/sprs/issues/26) |
 | **BUG-F09** | Medium | `Postfix` 規則で `base` が `Expr::Var` 以外のとき、レシーバが破棄されて `Expr::Call` に変換される。メソッドチェーン（`list[0].method()` 等）が使えない。現在は `ModuleAccess`（`test.hello()`）のみ使い、メソッドチェーンを使わないため発火しない。メソッド呼び出しのセマンティクス（`self` の有無等）を決める設計判断が必要。 | [#28](https://github.com/johmaru/sprs/issues/28) |
 
 ---
 
 ## 5. 解消済みバグ (参照用)
+
+### 整数オーバーフロー処理 (#27) で解消
+
+- **BUG-L06**: 整数演算のオーバーフロー時に wrap-around していた問題 → `+` `-` `*` は LLVM の checked overflow intrinsic と狭い整数型の範囲検査で検出し、`/` `%` は符号付き最小値と `-1` の組み合わせを演算前に分岐して検出。オーバーフローは完全ラベル `{:error, :overflow}` として返し、既存の `?` とエラー短絡（`@is_error` / `@label_payload` / `@error_message`）へ統合した。異なる整数タグ同士は従来どおり既定 `int` へ昇格する。`++` / `--` は対象外、ゼロ除算は従来の `{:error, "Division by zero"}` を維持。なお旧設計の `Tag::Error` / wrap 値保持 / `@AnyError` / `@WhatError` は採用しなかった。`src/llvm/arithmetic.rs`, `src/llvm/codegen.rs`, `src/llvm/value.rs`
 
 ### catchable エラー機構 (#26) で解消
 

@@ -1,17 +1,17 @@
-use crate::front::error::{SprsError, ErrorCode, ErrorCategory, Location};
-use crate::front::span::Span;
+use crate::front::error::SprsError;
 use inkwell::{
     AddressSpace,
+    intrinsics::Intrinsic,
     values::{BasicValueEnum, IntValue, PointerValue, ValueKind},
 };
 use crate::{
     front::ast,
     front::span::Spanned,
-    front::type_helper,
     llvm::compiler::{Compiler, StoreTag, StoreValue, Tag},
 };
 use crate::llvm::value::{
-    build_label_is_error, create_entry_block_alloca, create_error_label_from_str,
+    build_label_is_error, create_entry_block_alloca, create_error_label_from_atom,
+    create_error_label_from_str,
 };
 use crate::llvm::variable::move_variable;
 
@@ -52,12 +52,6 @@ fn create_binary_dispatch<'ctx>(
     module: &inkwell::module::Module<'ctx>,
     op: BinOpKind,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
-    if op == BinOpKind::Add {
-        if let Ok(val) = create_add_expr_type_check(self_compiler, lhs, rhs, module) {
-            return Ok(val);
-        }
-    }
-
     let l_ptr = self_compiler
         .compile_expr(lhs, module)?
         .into_pointer_value();
@@ -289,66 +283,6 @@ fn create_binary_dispatch<'ctx>(
     Ok(phi.as_basic_value())
 }
 
-fn create_add_expr_type_check<'ctx>(
-    self_compiler: &mut Compiler<'ctx>,
-    lhs: &Spanned<ast::Expr>,
-    rhs: &Spanned<ast::Expr>,
-    module: &inkwell::module::Module<'ctx>,
-) -> Result<BasicValueEnum<'ctx>, SprsError> {
-    let is_type = |expr: &Spanned<ast::Expr>, ty: &str| -> bool {
-        match self_compiler.get_known_type_from_expr(expr) {
-            Ok(known_type) => known_type == ty,
-            Err(_) => false,
-        }
-    };
-
-    if is_type(lhs, "i8") && is_type(rhs, "i8") {
-        return create_int8_add_logic(self_compiler, lhs, rhs, module);
-    }
-
-    if is_type(lhs, "u8") && is_type(rhs, "u8") {
-        return create_uint8_add_logic(self_compiler, lhs, rhs, module);
-    }
-
-    if is_type(lhs, "i16") && is_type(rhs, "i16") {
-        return create_int16_add_logic(self_compiler, lhs, rhs, module);
-    }
-
-    if is_type(lhs, "u16") && is_type(rhs, "u16") {
-        return create_uint16_add_logic(self_compiler, lhs, rhs, module);
-    }
-
-    if is_type(lhs, "i32") && is_type(rhs, "i32") {
-        return create_int32_add_logic(self_compiler, lhs, rhs, module);
-    }
-
-    if is_type(lhs, "u32") && is_type(rhs, "u32") {
-        return create_uint32_add_logic(self_compiler, lhs, rhs, module);
-    }
-
-    if is_type(lhs, "i64") && is_type(rhs, "i64") {
-        return create_int64_add_logic(self_compiler, lhs, rhs, module);
-    }
-
-    if is_type(lhs, "u64") && is_type(rhs, "u64") {
-        return create_uint64_add_logic(self_compiler, lhs, rhs, module);
-    }
-
-    if is_type(lhs, "f16") && is_type(rhs, "f16") {
-        return create_float16_add_logic(self_compiler, lhs, rhs, module);
-    }
-
-    if is_type(lhs, "f32") && is_type(rhs, "f32") {
-        return create_float32_add_logic(self_compiler, lhs, rhs, module);
-    }
-
-    if is_type(lhs, "f64") && is_type(rhs, "f64") {
-        return create_float64_add_logic(self_compiler, lhs, rhs, module);
-    }
-
-    Err(SprsError::Semantic { code: ErrorCode { category: ErrorCategory::Semantic, number: 14 }, location: Location::new(String::new(), Span::DUMMY), message: "Unsupported types for addition".to_string(), help: None })
-}
-
 fn tag_eq_const<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
     tag: IntValue<'ctx>,
@@ -475,6 +409,193 @@ fn create_add_expr_check_float<'ctx>(
         .unwrap())
 }
 
+
+fn llvm_overflow_intrinsic_name(op: BinOpKind, signed: bool) -> Result<&'static str, SprsError> {
+    match (op, signed) {
+        (BinOpKind::Add, true) => Ok("llvm.sadd.with.overflow"),
+        (BinOpKind::Add, false) => Ok("llvm.uadd.with.overflow"),
+        (BinOpKind::Sub, true) => Ok("llvm.ssub.with.overflow"),
+        (BinOpKind::Sub, false) => Ok("llvm.usub.with.overflow"),
+        (BinOpKind::Mul, true) => Ok("llvm.smul.with.overflow"),
+        (BinOpKind::Mul, false) => Ok("llvm.umul.with.overflow"),
+        _ => Err(SprsError::Internal {
+            message: format!("checked integer intrinsic is not defined for {:?}", op.name()),
+            location: None,
+        }),
+    }
+}
+
+fn build_checked_int_op<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+    module: &inkwell::module::Module<'ctx>,
+    lhs: IntValue<'ctx>,
+    rhs: IntValue<'ctx>,
+    op: BinOpKind,
+    signed: bool,
+) -> Result<(IntValue<'ctx>, IntValue<'ctx>), SprsError> {
+    let name = llvm_overflow_intrinsic_name(op, signed)?;
+    let intrinsic = Intrinsic::find(name).ok_or_else(|| SprsError::Internal {
+        message: format!("LLVM intrinsic `{name}` was not found"),
+        location: None,
+    })?;
+    let i64_type = self_compiler.context.i64_type();
+    let declaration = intrinsic
+        .get_declaration(module, &[i64_type.into()])
+        .ok_or_else(|| SprsError::Internal {
+            message: format!("failed to declare LLVM intrinsic `{name}` for i64"),
+            location: None,
+        })?;
+    let call = self_compiler
+        .builder
+        .build_call(declaration, &[lhs.into(), rhs.into()], "checked_int_call")
+        .unwrap();
+    let struct_value = match call.try_as_basic_value() {
+        ValueKind::Basic(val) => val.into_struct_value(),
+        ValueKind::Instruction(_) => {
+            return Err(SprsError::Internal {
+                message: format!("LLVM intrinsic `{name}` returned void"),
+                location: None,
+            });
+        }
+    };
+    let modulo = self_compiler
+        .builder
+        .build_extract_value(struct_value, 0, "checked_int_result")
+        .map_err(|err| SprsError::Internal {
+            message: format!("extract overflow result failed: {err}"),
+            location: None,
+        })?
+        .into_int_value();
+    let overflow = self_compiler
+        .builder
+        .build_extract_value(struct_value, 1, "checked_int_overflow")
+        .map_err(|err| SprsError::Internal {
+            message: format!("extract overflow flag failed: {err}"),
+            location: None,
+        })?
+        .into_int_value();
+    Ok((modulo, overflow))
+}
+
+fn signed_bounds_for_result_tag<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+    result_tag: IntValue<'ctx>,
+) -> (IntValue<'ctx>, IntValue<'ctx>) {
+    let i64_type = self_compiler.context.i64_type();
+    let mut min = i64_type.const_int(i64::MIN as u64, true);
+    let mut max = i64_type.const_int(i64::MAX as u64, true);
+    let is_i8 = tag_eq_const(self_compiler, result_tag, Tag::Int8, "result_is_i8");
+    min = self_compiler
+        .builder
+        .build_select(is_i8, i64_type.const_int((-128i64) as u64, true), min, "signed_min_i8")
+        .unwrap()
+        .into_int_value();
+    max = self_compiler
+        .builder
+        .build_select(is_i8, i64_type.const_int(127, true), max, "signed_max_i8")
+        .unwrap()
+        .into_int_value();
+    let is_i16 = tag_eq_const(self_compiler, result_tag, Tag::Int16, "result_is_i16");
+    min = self_compiler
+        .builder
+        .build_select(
+            is_i16,
+            i64_type.const_int((-32768i64) as u64, true),
+            min,
+            "signed_min_i16",
+        )
+        .unwrap()
+        .into_int_value();
+    max = self_compiler
+        .builder
+        .build_select(is_i16, i64_type.const_int(32767, true), max, "signed_max_i16")
+        .unwrap()
+        .into_int_value();
+    let is_i32 = tag_eq_const(self_compiler, result_tag, Tag::Int32, "result_is_i32");
+    min = self_compiler
+        .builder
+        .build_select(
+            is_i32,
+            i64_type.const_int(i32::MIN as i64 as u64, true),
+            min,
+            "signed_min_i32",
+        )
+        .unwrap()
+        .into_int_value();
+    max = self_compiler
+        .builder
+        .build_select(
+            is_i32,
+            i64_type.const_int(i32::MAX as i64 as u64, true),
+            max,
+            "signed_max_i32",
+        )
+        .unwrap()
+        .into_int_value();
+    (min, max)
+}
+
+fn build_signed_range_overflow<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+    result_tag: IntValue<'ctx>,
+    result: IntValue<'ctx>,
+) -> IntValue<'ctx> {
+    let (min, max) = signed_bounds_for_result_tag(self_compiler, result_tag);
+    let too_small = self_compiler
+        .builder
+        .build_int_compare(inkwell::IntPredicate::SLT, result, min, "signed_too_small")
+        .unwrap();
+    let too_large = self_compiler
+        .builder
+        .build_int_compare(inkwell::IntPredicate::SGT, result, max, "signed_too_large")
+        .unwrap();
+    self_compiler
+        .builder
+        .build_or(too_small, too_large, "signed_range_overflow")
+        .unwrap()
+}
+
+fn build_unsigned_range_overflow<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+    result_tag: IntValue<'ctx>,
+    result: IntValue<'ctx>,
+) -> IntValue<'ctx> {
+    let i64_type = self_compiler.context.i64_type();
+    let mut max = i64_type.const_int(u64::MAX, false);
+    let is_u8 = tag_eq_const(self_compiler, result_tag, Tag::Uint8, "result_is_u8");
+    max = self_compiler
+        .builder
+        .build_select(is_u8, i64_type.const_int(u8::MAX as u64, false), max, "unsigned_max_u8")
+        .unwrap()
+        .into_int_value();
+    let is_u16 = tag_eq_const(self_compiler, result_tag, Tag::Uint16, "result_is_u16");
+    max = self_compiler
+        .builder
+        .build_select(
+            is_u16,
+            i64_type.const_int(u16::MAX as u64, false),
+            max,
+            "unsigned_max_u16",
+        )
+        .unwrap()
+        .into_int_value();
+    let is_u32 = tag_eq_const(self_compiler, result_tag, Tag::Uint32, "result_is_u32");
+    max = self_compiler
+        .builder
+        .build_select(
+            is_u32,
+            i64_type.const_int(u32::MAX as u64, false),
+            max,
+            "unsigned_max_u32",
+        )
+        .unwrap()
+        .into_int_value();
+    self_compiler
+        .builder
+        .build_int_compare(inkwell::IntPredicate::UGT, result, max, "unsigned_range_overflow")
+        .unwrap()
+}
+
 fn create_add_expr_build_int_branch<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
     module: &inkwell::module::Module<'ctx>,
@@ -527,29 +648,105 @@ fn create_add_expr_build_int_branch<'ctx>(
         .into_int_value();
 
     if matches!(op, BinOpKind::Add | BinOpKind::Sub | BinOpKind::Mul) {
-        let int_sum = match op {
-            BinOpKind::Add => self_compiler
-                .builder
-                .build_int_add(l_int_val, r_int_val, "int_sum")
-                .unwrap(),
-            BinOpKind::Sub => self_compiler
-                .builder
-                .build_int_sub(l_int_val, r_int_val, "int_diff")
-                .unwrap(),
-            BinOpKind::Mul => self_compiler
-                .builder
-                .build_int_mul(l_int_val, r_int_val, "int_prod")
-                .unwrap(),
-            _ => unreachable!(),
-        };
-        let int_res_ptr = create_entry_block_alloca(self_compiler, "int_res_alloc")?;
+        let parent_fn = self_compiler
+            .builder
+            .get_insert_block()
+            .unwrap()
+            .get_parent()
+            .unwrap();
+        let op_name = op.name();
+        let unsigned_bb = self_compiler
+            .context
+            .append_basic_block(parent_fn, &format!("{op_name}_int_unsigned"));
+        let signed_bb = self_compiler
+            .context
+            .append_basic_block(parent_fn, &format!("{op_name}_int_signed"));
+        let unsigned_ok_bb = self_compiler
+            .context
+            .append_basic_block(parent_fn, &format!("{op_name}_int_unsigned_ok"));
+        let signed_ok_bb = self_compiler
+            .context
+            .append_basic_block(parent_fn, &format!("{op_name}_int_signed_ok"));
+        let overflow_bb = self_compiler
+            .context
+            .append_basic_block(parent_fn, &format!("{op_name}_int_overflow"));
+        let merge_bb = self_compiler
+            .context
+            .append_basic_block(parent_fn, &format!("{op_name}_int_ovf_merge"));
+
+        let is_unsigned = is_unsigned_int_tag(self_compiler, result_tag)?;
+        let _ = self_compiler.builder.build_conditional_branch(
+            is_unsigned,
+            unsigned_bb,
+            signed_bb,
+        );
+
+        self_compiler.builder.position_at_end(unsigned_bb);
+        let (u_result, u_flag) =
+            build_checked_int_op(self_compiler, module, l_int_val, r_int_val, op, false)?;
+        let u_range = build_unsigned_range_overflow(self_compiler, result_tag, u_result);
+        let u_overflow = self_compiler
+            .builder
+            .build_or(u_flag, u_range, "unsigned_overflow")
+            .unwrap();
+        let _ = self_compiler.builder.build_conditional_branch(
+            u_overflow,
+            overflow_bb,
+            unsigned_ok_bb,
+        );
+
+        self_compiler.builder.position_at_end(unsigned_ok_bb);
+        let unsigned_ptr = create_entry_block_alloca(self_compiler, "int_res_alloc")?;
         self_compiler.build_runtime_value_store(
-            int_res_ptr,
+            unsigned_ptr,
             StoreTag::Dynamic(result_tag),
-            StoreValue::Int(int_sum),
+            StoreValue::Int(u_result),
             "int_res",
         );
-        return Ok(int_res_ptr);
+        let _ = self_compiler.builder.build_unconditional_branch(merge_bb);
+
+        self_compiler.builder.position_at_end(signed_bb);
+        let (s_result, s_flag) =
+            build_checked_int_op(self_compiler, module, l_int_val, r_int_val, op, true)?;
+        let s_range = build_signed_range_overflow(self_compiler, result_tag, s_result);
+        let s_overflow = self_compiler
+            .builder
+            .build_or(s_flag, s_range, "signed_overflow")
+            .unwrap();
+        let _ = self_compiler.builder.build_conditional_branch(
+            s_overflow,
+            overflow_bb,
+            signed_ok_bb,
+        );
+
+        self_compiler.builder.position_at_end(signed_ok_bb);
+        let signed_ptr = create_entry_block_alloca(self_compiler, "int_res_alloc")?;
+        self_compiler.build_runtime_value_store(
+            signed_ptr,
+            StoreTag::Dynamic(result_tag),
+            StoreValue::Int(s_result),
+            "int_res",
+        );
+        let _ = self_compiler.builder.build_unconditional_branch(merge_bb);
+
+        self_compiler.builder.position_at_end(overflow_bb);
+        let overflow_ptr = create_error_label_from_atom(self_compiler, "overflow", module)?;
+        let _ = self_compiler.builder.build_unconditional_branch(merge_bb);
+
+        self_compiler.builder.position_at_end(merge_bb);
+        let phi = self_compiler
+            .builder
+            .build_phi(
+                self_compiler.context.ptr_type(AddressSpace::default()),
+                "int_checked_res_phi",
+            )
+            .unwrap();
+        phi.add_incoming(&[
+            (&unsigned_ptr, unsigned_ok_bb),
+            (&signed_ptr, signed_ok_bb),
+            (&overflow_ptr, overflow_bb),
+        ]);
+        return Ok(phi.as_basic_value().into_pointer_value());
     }
 
     let parent_fn = self_compiler
@@ -568,9 +765,15 @@ fn create_add_expr_build_int_branch<'ctx>(
     let bb_unsigned = self_compiler
         .context
         .append_basic_block(parent_fn, &format!("{op_name}_int_unsigned"));
-    let bb_signed = self_compiler
+    let bb_signed_check = self_compiler
         .context
-        .append_basic_block(parent_fn, &format!("{op_name}_int_signed"));
+        .append_basic_block(parent_fn, &format!("{op_name}_int_signed_check"));
+    let bb_signed_ok = self_compiler
+        .context
+        .append_basic_block(parent_fn, &format!("{op_name}_int_signed_ok"));
+    let bb_overflow = self_compiler
+        .context
+        .append_basic_block(parent_fn, &format!("{op_name}_int_overflow"));
     let merge_bb = self_compiler
         .context
         .append_basic_block(parent_fn, &format!("{op_name}_int_merge"));
@@ -589,10 +792,10 @@ fn create_add_expr_build_int_branch<'ctx>(
     let _ = self_compiler.builder.build_unconditional_branch(merge_bb);
 
     self_compiler.builder.position_at_end(bb_ok);
-    let is_unsigned = is_unsigned_int_tag(self_compiler, l_tag)?;
+    let is_unsigned = is_unsigned_int_tag(self_compiler, result_tag)?;
     let _ = self_compiler
         .builder
-        .build_conditional_branch(is_unsigned, bb_unsigned, bb_signed);
+        .build_conditional_branch(is_unsigned, bb_unsigned, bb_signed_check);
 
     self_compiler.builder.position_at_end(bb_unsigned);
     let unsigned_res = match op {
@@ -614,7 +817,42 @@ fn create_add_expr_build_int_branch<'ctx>(
     );
     let _ = self_compiler.builder.build_unconditional_branch(merge_bb);
 
-    self_compiler.builder.position_at_end(bb_signed);
+    self_compiler.builder.position_at_end(bb_signed_check);
+    let (signed_min, _) = signed_bounds_for_result_tag(self_compiler, result_tag);
+    let is_min = self_compiler
+        .builder
+        .build_int_compare(
+            inkwell::IntPredicate::EQ,
+            l_int_val,
+            signed_min,
+            "div_lhs_is_min",
+        )
+        .unwrap();
+    let neg_one = self_compiler.context.i64_type().const_int((-1i64) as u64, true);
+    let is_neg_one = self_compiler
+        .builder
+        .build_int_compare(
+            inkwell::IntPredicate::EQ,
+            r_int_val,
+            neg_one,
+            "div_rhs_is_neg_one",
+        )
+        .unwrap();
+    let signed_overflow = self_compiler
+        .builder
+        .build_and(is_min, is_neg_one, "signed_div_overflow")
+        .unwrap();
+    let _ = self_compiler.builder.build_conditional_branch(
+        signed_overflow,
+        bb_overflow,
+        bb_signed_ok,
+    );
+
+    self_compiler.builder.position_at_end(bb_overflow);
+    let overflow_ptr = create_error_label_from_atom(self_compiler, "overflow", module)?;
+    let _ = self_compiler.builder.build_unconditional_branch(merge_bb);
+
+    self_compiler.builder.position_at_end(bb_signed_ok);
     let signed_res = match op {
         BinOpKind::Div => self_compiler
             .builder
@@ -644,8 +882,9 @@ fn create_add_expr_build_int_branch<'ctx>(
         .unwrap();
     phi.add_incoming(&[
         (&error_ptr, bb_zero),
+        (&overflow_ptr, bb_overflow),
         (&unsigned_ptr, bb_unsigned),
-        (&signed_ptr, bb_signed),
+        (&signed_ptr, bb_signed_ok),
     ]);
     Ok(phi.as_basic_value().into_pointer_value())
 }
@@ -1044,473 +1283,6 @@ fn create_add_expr_build_string_branch<'ctx>(
     );
 
     Ok(str_res_ptr)
-}
-
-fn create_int8_add_logic<'ctx>(
-    self_compiler: &mut Compiler<'ctx>,
-    lhs: &Spanned<ast::Expr>,
-    rhs: &Spanned<ast::Expr>,
-    module: &inkwell::module::Module<'ctx>,
-) -> Result<BasicValueEnum<'ctx>, SprsError> {
-    let l_ptr = self_compiler
-        .compile_expr(lhs, module)?
-        .into_pointer_value();
-    let r_ptr = self_compiler
-        .compile_expr(rhs, module)?
-        .into_pointer_value();
-
-    let l_data_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, l_ptr, 1, "l_data_ptr")
-        .unwrap();
-    let l_val_i64 = self_compiler
-        .builder
-        .build_load(self_compiler.context.i64_type(), l_data_ptr, "l_val_i64")
-        .unwrap()
-        .into_int_value();
-
-    let r_data_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, r_ptr, 1, "r_data_ptr")
-        .unwrap();
-    let r_val_i64 = self_compiler
-        .builder
-        .build_load(self_compiler.context.i64_type(), r_data_ptr, "r_val_i64")
-        .unwrap()
-        .into_int_value();
-
-    let l_i8 = self_compiler
-        .builder
-        .build_int_truncate(l_val_i64, self_compiler.context.i8_type(), "l_trunc_i8")
-        .unwrap();
-    let r_i8 = self_compiler
-        .builder
-        .build_int_truncate(r_val_i64, self_compiler.context.i8_type(), "r_trunc_i8")
-        .unwrap();
-
-    let res_i8 = self_compiler
-        .builder
-        .build_int_add(l_i8, r_i8, "i8_sum")
-        .unwrap();
-    let res_i64 = self_compiler
-        .builder
-        .build_int_s_extend(res_i8, self_compiler.context.i64_type(), "i8_sum_ext")
-        .unwrap();
-    let res_ptr = create_entry_block_alloca(self_compiler, "int8_add_res_alloc")?;
-
-    self_compiler.build_runtime_value_store(
-        res_ptr,
-        StoreTag::Int(Tag::Int8 as u64),
-        StoreValue::Int(res_i64),
-        "int8_add_res",
-    );
-
-    Ok(res_ptr.into())
-}
-
-fn create_uint8_add_logic<'ctx>(
-    self_compiler: &mut Compiler<'ctx>,
-    lhs: &Spanned<ast::Expr>,
-    rhs: &Spanned<ast::Expr>,
-    module: &inkwell::module::Module<'ctx>,
-) -> Result<BasicValueEnum<'ctx>, SprsError> {
-    let l_ptr = self_compiler
-        .compile_expr(lhs, module)?
-        .into_pointer_value();
-    let r_ptr = self_compiler
-        .compile_expr(rhs, module)?
-        .into_pointer_value();
-
-    let l_data_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, l_ptr, 1, "l_data_ptr")
-        .unwrap();
-    let l_val_i64 = self_compiler
-        .builder
-        .build_load(self_compiler.context.i64_type(), l_data_ptr, "l_val_i64")
-        .unwrap()
-        .into_int_value();
-
-    let r_data_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, r_ptr, 1, "r_data_ptr")
-        .unwrap();
-    let r_val_i64 = self_compiler
-        .builder
-        .build_load(self_compiler.context.i64_type(), r_data_ptr, "r_val_i64")
-        .unwrap()
-        .into_int_value();
-
-    let l_u8 = self_compiler
-        .builder
-        .build_int_truncate(l_val_i64, self_compiler.context.i8_type(), "l_trunc_u8")
-        .unwrap();
-    let r_u8 = self_compiler
-        .builder
-        .build_int_truncate(r_val_i64, self_compiler.context.i8_type(), "r_trunc_u8")
-        .unwrap();
-
-    let res_u8 = self_compiler
-        .builder
-        .build_int_add(l_u8, r_u8, "u8_sum")
-        .unwrap();
-    let res_i64 = self_compiler
-        .builder
-        .build_int_z_extend(res_u8, self_compiler.context.i64_type(), "u8_sum_ext")
-        .unwrap();
-    let res_ptr = create_entry_block_alloca(self_compiler, "uint8_add_res_alloc")?;
-
-    self_compiler.build_runtime_value_store(
-        res_ptr,
-        StoreTag::Int(Tag::Uint8 as u64),
-        StoreValue::Int(res_i64),
-        "uint8_add_res",
-    );
-
-    Ok(res_ptr.into())
-}
-
-fn create_int16_add_logic<'ctx>(
-    _self_compiler: &mut Compiler<'ctx>,
-    _lhs: &Spanned<ast::Expr>,
-    _rhs: &Spanned<ast::Expr>,
-    _module: &inkwell::module::Module<'ctx>,
-) -> Result<BasicValueEnum<'ctx>, SprsError> {
-    let l_ptr = _self_compiler
-        .compile_expr(_lhs, _module)?
-        .into_pointer_value();
-    let r_ptr = _self_compiler
-        .compile_expr(_rhs, _module)?
-        .into_pointer_value();
-
-    let l_data_ptr = _self_compiler
-        .builder
-        .build_struct_gep(_self_compiler.runtime_value_type, l_ptr, 1, "l_data_ptr")
-        .unwrap();
-    let l_val_i64 = _self_compiler
-        .builder
-        .build_load(_self_compiler.context.i64_type(), l_data_ptr, "l_val_i64")
-        .unwrap()
-        .into_int_value();
-
-    let r_data_ptr = _self_compiler
-        .builder
-        .build_struct_gep(_self_compiler.runtime_value_type, r_ptr, 1, "r_data_ptr")
-        .unwrap();
-    let r_val_i64 = _self_compiler
-        .builder
-        .build_load(_self_compiler.context.i64_type(), r_data_ptr, "r_val_i64")
-        .unwrap()
-        .into_int_value();
-
-    let l_i16 = _self_compiler
-        .builder
-        .build_int_truncate(l_val_i64, _self_compiler.context.i16_type(), "l_trunc_i16")
-        .unwrap();
-    let r_i16 = _self_compiler
-        .builder
-        .build_int_truncate(r_val_i64, _self_compiler.context.i16_type(), "r_trunc_i16")
-        .unwrap();
-
-    let res_i16 = _self_compiler
-        .builder
-        .build_int_add(l_i16, r_i16, "i16_sum")
-        .unwrap();
-    let res_i64 = _self_compiler
-        .builder
-        .build_int_s_extend(res_i16, _self_compiler.context.i64_type(), "i16_sum_ext")
-        .unwrap();
-    let res_ptr = create_entry_block_alloca(_self_compiler, "int16_add_res_alloc")?;
-    _self_compiler.build_runtime_value_store(
-        res_ptr,
-        StoreTag::Int(Tag::Int16 as u64),
-        StoreValue::Int(res_i64),
-        "int16_add_res",
-    );
-
-    Ok(res_ptr.into())
-}
-
-fn create_uint16_add_logic<'ctx>(
-    _self_compiler: &mut Compiler<'ctx>,
-    _lhs: &Spanned<ast::Expr>,
-    _rhs: &Spanned<ast::Expr>,
-    _module: &inkwell::module::Module<'ctx>,
-) -> Result<BasicValueEnum<'ctx>, SprsError> {
-    let l_ptr = _self_compiler
-        .compile_expr(_lhs, _module)?
-        .into_pointer_value();
-    let r_ptr = _self_compiler
-        .compile_expr(_rhs, _module)?
-        .into_pointer_value();
-
-    let l_data_ptr = _self_compiler
-        .builder
-        .build_struct_gep(_self_compiler.runtime_value_type, l_ptr, 1, "l_data_ptr")
-        .unwrap();
-    let l_val_i64 = _self_compiler
-        .builder
-        .build_load(_self_compiler.context.i64_type(), l_data_ptr, "l_val_i64")
-        .unwrap()
-        .into_int_value();
-
-    let r_data_ptr = _self_compiler
-        .builder
-        .build_struct_gep(_self_compiler.runtime_value_type, r_ptr, 1, "r_data_ptr")
-        .unwrap();
-    let r_val_i64 = _self_compiler
-        .builder
-        .build_load(_self_compiler.context.i64_type(), r_data_ptr, "r_val_i64")
-        .unwrap()
-        .into_int_value();
-
-    let l_u16 = _self_compiler
-        .builder
-        .build_int_truncate(l_val_i64, _self_compiler.context.i16_type(), "l_trunc_u16")
-        .unwrap();
-    let r_u16 = _self_compiler
-        .builder
-        .build_int_truncate(r_val_i64, _self_compiler.context.i16_type(), "r_trunc_u16")
-        .unwrap();
-
-    let res_u16 = _self_compiler
-        .builder
-        .build_int_add(l_u16, r_u16, "u16_sum")
-        .unwrap();
-    let res_i64 = _self_compiler
-        .builder
-        .build_int_z_extend(res_u16, _self_compiler.context.i64_type(), "u16_sum_ext")
-        .unwrap();
-    let res_ptr = create_entry_block_alloca(_self_compiler, "uint16_add_res_alloc")?;
-    _self_compiler.build_runtime_value_store(
-        res_ptr,
-        StoreTag::Int(Tag::Uint16 as u64),
-        StoreValue::Int(res_i64),
-        "uint16_add_res",
-    );
-
-    Ok(res_ptr.into())
-}
-
-fn create_int32_add_logic<'ctx>(
-    _self_compiler: &mut Compiler<'ctx>,
-    _lhs: &Spanned<ast::Expr>,
-    _rhs: &Spanned<ast::Expr>,
-    _module: &inkwell::module::Module<'ctx>,
-) -> Result<BasicValueEnum<'ctx>, SprsError> {
-    let l_ptr = _self_compiler
-        .compile_expr(_lhs, _module)?
-        .into_pointer_value();
-    let r_ptr = _self_compiler
-        .compile_expr(_rhs, _module)?
-        .into_pointer_value();
-
-    let l_data_ptr = _self_compiler
-        .builder
-        .build_struct_gep(_self_compiler.runtime_value_type, l_ptr, 1, "l_data_ptr")
-        .unwrap();
-    let l_val_i64 = _self_compiler
-        .builder
-        .build_load(_self_compiler.context.i64_type(), l_data_ptr, "l_val_i64")
-        .unwrap()
-        .into_int_value();
-
-    let r_data_ptr = _self_compiler
-        .builder
-        .build_struct_gep(_self_compiler.runtime_value_type, r_ptr, 1, "r_data_ptr")
-        .unwrap();
-    let r_val_i64 = _self_compiler
-        .builder
-        .build_load(_self_compiler.context.i64_type(), r_data_ptr, "r_val_i64")
-        .unwrap()
-        .into_int_value();
-
-    let l_i32 = _self_compiler
-        .builder
-        .build_int_truncate(l_val_i64, _self_compiler.context.i32_type(), "l_trunc_i32")
-        .unwrap();
-    let r_i32 = _self_compiler
-        .builder
-        .build_int_truncate(r_val_i64, _self_compiler.context.i32_type(), "r_trunc_i32")
-        .unwrap();
-
-    let res_i32 = _self_compiler
-        .builder
-        .build_int_add(l_i32, r_i32, "i32_sum")
-        .unwrap();
-    let res_i64 = _self_compiler
-        .builder
-        .build_int_s_extend(res_i32, _self_compiler.context.i64_type(), "i32_sum_ext")
-        .unwrap();
-    let res_ptr = create_entry_block_alloca(_self_compiler, "int32_add_res_alloc")?;
-    _self_compiler.build_runtime_value_store(
-        res_ptr,
-        StoreTag::Int(Tag::Int32 as u64),
-        StoreValue::Int(res_i64),
-        "int32_add_res",
-    );
-
-    Ok(res_ptr.into())
-}
-
-fn create_uint32_add_logic<'ctx>(
-    _self_compiler: &mut Compiler<'ctx>,
-    _lhs: &Spanned<ast::Expr>,
-    _rhs: &Spanned<ast::Expr>,
-    _module: &inkwell::module::Module<'ctx>,
-) -> Result<BasicValueEnum<'ctx>, SprsError> {
-    let l_ptr = _self_compiler
-        .compile_expr(_lhs, _module)?
-        .into_pointer_value();
-    let r_ptr = _self_compiler
-        .compile_expr(_rhs, _module)?
-        .into_pointer_value();
-
-    let l_data_ptr = _self_compiler
-        .builder
-        .build_struct_gep(_self_compiler.runtime_value_type, l_ptr, 1, "l_data_ptr")
-        .unwrap();
-    let l_val_i64 = _self_compiler
-        .builder
-        .build_load(_self_compiler.context.i64_type(), l_data_ptr, "l_val_i64")
-        .unwrap()
-        .into_int_value();
-
-    let r_data_ptr = _self_compiler
-        .builder
-        .build_struct_gep(_self_compiler.runtime_value_type, r_ptr, 1, "r_data_ptr")
-        .unwrap();
-    let r_val_i64 = _self_compiler
-        .builder
-        .build_load(_self_compiler.context.i64_type(), r_data_ptr, "r_val_i64")
-        .unwrap()
-        .into_int_value();
-
-    let l_u32 = _self_compiler
-        .builder
-        .build_int_truncate(l_val_i64, _self_compiler.context.i32_type(), "l_trunc_u32")
-        .unwrap();
-    let r_u32 = _self_compiler
-        .builder
-        .build_int_truncate(r_val_i64, _self_compiler.context.i32_type(), "r_trunc_u32")
-        .unwrap();
-
-    let res_u32 = _self_compiler
-        .builder
-        .build_int_add(l_u32, r_u32, "u32_sum")
-        .unwrap();
-    let res_i64 = _self_compiler
-        .builder
-        .build_int_z_extend(res_u32, _self_compiler.context.i64_type(), "u32_sum_ext")
-        .unwrap();
-    let res_ptr = create_entry_block_alloca(_self_compiler, "uint32_add_res_alloc")?;
-    _self_compiler.build_runtime_value_store(
-        res_ptr,
-        StoreTag::Int(Tag::Uint32 as u64),
-        StoreValue::Int(res_i64),
-        "uint32_add_res",
-    );
-
-    Ok(res_ptr.into())
-}
-
-fn create_int64_add_logic<'ctx>(
-    self_compiler: &mut Compiler<'ctx>,
-    lhs: &Spanned<ast::Expr>,
-    rhs: &Spanned<ast::Expr>,
-    module: &inkwell::module::Module<'ctx>,
-) -> Result<BasicValueEnum<'ctx>, SprsError> {
-    let l_ptr = self_compiler
-        .compile_expr(lhs, module)?
-        .into_pointer_value();
-    let r_ptr = self_compiler
-        .compile_expr(rhs, module)?
-        .into_pointer_value();
-
-    let l_data_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, l_ptr, 1, "l_data_ptr")
-        .unwrap();
-    let l_val = self_compiler
-        .builder
-        .build_load(self_compiler.context.i64_type(), l_data_ptr, "l_val")
-        .unwrap()
-        .into_int_value();
-
-    let r_data_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, r_ptr, 1, "r_data_ptr")
-        .unwrap();
-    let r_val = self_compiler
-        .builder
-        .build_load(self_compiler.context.i64_type(), r_data_ptr, "r_val")
-        .unwrap()
-        .into_int_value();
-
-    let res_val = self_compiler
-        .builder
-        .build_int_add(l_val, r_val, "i64_sum")
-        .unwrap();
-
-    let res_ptr = create_entry_block_alloca(self_compiler, "int64_add_res_alloc")?;
-
-    self_compiler.build_runtime_value_store(
-        res_ptr,
-        StoreTag::Int(Tag::Int64 as u64),
-        StoreValue::Int(res_val),
-        "int64_add_res",
-    );
-
-    Ok(res_ptr.into())
-}
-
-fn create_uint64_add_logic<'ctx>(
-    self_compiler: &mut Compiler<'ctx>,
-    lhs: &Spanned<ast::Expr>,
-    rhs: &Spanned<ast::Expr>,
-    module: &inkwell::module::Module<'ctx>,
-) -> Result<BasicValueEnum<'ctx>, SprsError> {
-    let l_ptr = self_compiler
-        .compile_expr(lhs, module)?
-        .into_pointer_value();
-    let r_ptr = self_compiler
-        .compile_expr(rhs, module)?
-        .into_pointer_value();
-
-    let l_data_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, l_ptr, 1, "l_data_ptr")
-        .unwrap();
-    let l_val = self_compiler
-        .builder
-        .build_load(self_compiler.context.i64_type(), l_data_ptr, "l_val")
-        .unwrap()
-        .into_int_value();
-
-    let r_data_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, r_ptr, 1, "r_data_ptr")
-        .unwrap();
-    let r_val = self_compiler
-        .builder
-        .build_load(self_compiler.context.i64_type(), r_data_ptr, "r_val")
-        .unwrap()
-        .into_int_value();
-
-    let res_val = self_compiler
-        .builder
-        .build_int_add(l_val, r_val, "u64_sum")
-        .unwrap();
-
-    let res_ptr = create_entry_block_alloca(self_compiler, "uint64_add_res_alloc")?;
-
-    self_compiler.build_runtime_value_store(
-        res_ptr,
-        StoreTag::Int(Tag::Uint64 as u64),
-        StoreValue::Int(res_val),
-        "uint64_add_res",
-    );
-    Ok(res_ptr.into())
 }
 
 fn create_float16_add_logic<'ctx>(

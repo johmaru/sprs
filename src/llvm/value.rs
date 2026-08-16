@@ -84,6 +84,26 @@ pub fn create_error_label_from_str<'ctx>(
     Ok(res_ptr)
 }
 
+/// Generate IR for `{:error, :reason}` via the existing label constructor.
+/// Payload is an Atom; name is the static label `"error"`.
+pub fn create_error_label_from_atom<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+    reason: &str,
+    module: &inkwell::module::Module<'ctx>,
+) -> Result<PointerValue<'ctx>, SprsError> {
+    let payload = Spanned::new(
+        ast::Expr::Atom(LabelName::Static(reason.into())),
+        Span::DUMMY,
+    );
+    let value = create_label(
+        self_compiler,
+        &LabelName::Static("error".into()),
+        &payload,
+        module,
+    )?;
+    Ok(value.into_pointer_value())
+}
+
 /// Emit `__label_is_error(tag, data)` and lower its i32 (0/1) result to an
 /// i1 predicate. True iff the value is a Label named "error".
 pub fn build_label_is_error<'ctx>(

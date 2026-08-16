@@ -63,34 +63,6 @@ fn infer_binary_arith_type(lhs: &Type, rhs: &Type) -> Type {
 }
 
 impl<'ctx> Compiler<'ctx> {
-    pub fn get_known_type_from_expr(&self, expr: &Spanned<ast::Expr>) -> Result<String, SprsError> {
-        match &expr.node {
-            ast::Expr::TypeI8 => Ok("i8".to_string()),
-            ast::Expr::TypeU8 => Ok("u8".to_string()),
-            ast::Expr::TypeI16 => Ok("i16".to_string()),
-            ast::Expr::TypeU16 => Ok("u16".to_string()),
-            ast::Expr::TypeI32 => Ok("i32".to_string()),
-            ast::Expr::TypeU32 => Ok("u32".to_string()),
-            ast::Expr::TypeI64 => Ok("i64".to_string()),
-            ast::Expr::TypeU64 => Ok("u64".to_string()),
-
-            ast::Expr::TypeF16 => Ok("fp16".to_string()),
-            ast::Expr::TypeF32 => Ok("fp32".to_string()),
-            ast::Expr::TypeF64 => Ok("fp64".to_string()),
-
-            ast::Expr::Number(_) => Ok("default(i64)".to_string()),
-            _ => Err(SprsError::Semantic {
-                code: ErrorCode {
-                    category: ErrorCategory::Semantic,
-                    number: 1,
-                },
-                location: self.location(expr.span),
-                message: format!("Unknown type expression for known type: {:?}", expr),
-                help: None,
-            }),
-        }
-    }
-
     pub fn get_expr_name(&self, expr: &Spanned<ast::Expr>) -> Option<String> {
         match &expr.node {
             ast::Expr::Var(name) => Some(name.clone()),

@@ -212,6 +212,19 @@ fn enum_match_red() >> int {
 }
 ```
 
+Grouped `label` declarations provide enum-compatible syntax for namespaced Atoms.
+`pub label :Color{:red, :blue}` creates the same kind of compile-time frame as a
+source `enum`, exports it, and exposes its variants as `Color.red` and `Color.blue`.
+Both declaration forms produce framed Atom intern keys at runtime.
+
+```sprs
+pub label :Color{:red, :blue}
+
+fn print_grouped_label_color() {
+  @println(Color.red);
+}
+```
+
 - struct
 
 ```rust
@@ -425,6 +438,33 @@ the subsequent thread-local slot cleanup may emit a TLS destruction warning:
 the cleanup of a label payload re-enters the same thread-local slot table after
 it has started being destroyed. This warning occurs during process termination,
 after the uncaught-error message, and does not change the error-label result.
+
+#### **Integer overflow**
+
+Integer `+`, `-` and `*` are checked against the sign and bit width of the
+integer type, and `/` and `%` additionally check the signed-minimum / `-1`
+combination before the operation runs. On success the result is the usual
+integer value; on overflow the full label `{:error, :overflow}` is returned.
+`@is_error`, `@label_payload`, `@error_message` and `?` all work on it in
+the same way as on any other error label.
+
+```sprs
+fn propagate_overflow() >> int {
+  var value = (9223372036854775807 + 1)?;
+  return value;
+}
+
+fn inspect_overflow() {
+  var value = 9223372036854775807 + 1;
+  @println(@is_error(value));       # true
+  @println(@label_payload(value));  # :overflow
+  @println(@error_message(value));  # :overflow
+}
+```
+
+Different integer tags still promote to the default `int` as before; `++`
+and `--` are not covered by this contract. Division by zero keeps the
+existing `{:error, "Division by zero"}` label.
 
 #### **Buffers**
 

@@ -89,3 +89,84 @@ pub fn stored_error_message() >> str {
     return @error_message(stored_error());
 }
 
+# Overflow: same-width + hits every integer tag max+1.
+pub fn overflow_add_boundaries() >> bool {
+    if @not(@is_error(@cast(127, i8) + @cast(1, i8))) {
+        return false;
+    }
+    if @not(@is_error(@cast(255, u8) + @cast(1, u8))) {
+        return false;
+    }
+    if @not(@is_error(@cast(32767, i16) + @cast(1, i16))) {
+        return false;
+    }
+    if @not(@is_error(@cast(65535, u16) + @cast(1, u16))) {
+        return false;
+    }
+    if @not(@is_error(@cast(2147483647, i32) + @cast(1, i32))) {
+        return false;
+    }
+    if @not(@is_error(@cast(4294967295, u32) + @cast(1, u32))) {
+        return false;
+    }
+    if @not(@is_error(9223372036854775807 + 1)) {
+        return false;
+    }
+    return true;
+}
+
+# Overflow: - * / % covering signed, unsigned, narrow, and 64-bit.
+pub fn overflow_other_ops() >> bool {
+    if @not(@is_error(@cast(-128, i8) - @cast(1, i8))) {
+        return false;
+    }
+    if @not(@is_error(@cast(0, u8) - @cast(1, u8))) {
+        return false;
+    }
+    if @not(@is_error(@cast(100, i8) * @cast(100, i8))) {
+        return false;
+    }
+    if @not(@is_error(@lshift(@cast(1, u64), 63) * @cast(2, u64))) {
+        return false;
+    }
+    if @not(@is_error(@lshift(@cast(1, i64), 63) / @cast(-1, i64))) {
+        return false;
+    }
+    if @not(@is_error(@lshift(@cast(1, i64), 63) % @cast(-1, i64))) {
+        return false;
+    }
+    return true;
+}
+
+pub fn propagate_overflow() >> int {
+    var value = (9223372036854775807 + 1)?;
+    return value;
+}
+
+pub fn overflow_label_contract() >> bool {
+    var value = 9223372036854775807 + 1;
+    if @not(@label_payload(value) == :overflow) {
+        return false;
+    }
+    if @not(@error_message(value) == ":overflow") {
+        return false;
+    }
+    if @not(@is_error(value + 1)) {
+        return false;
+    }
+    if @not(@label_payload(propagate_overflow()) == :overflow) {
+        return false;
+    }
+    return true;
+}
+
+pub fn overflow_normal_boundaries() >> bool {
+    if @not(@cast(126, i8) + @cast(1, i8) == @cast(127, i8)) {
+        return false;
+    }
+    if @not(@cast(127, i8) + @cast(1, i16) == 128) {
+        return false;
+    }
+    return true;
+}
+
