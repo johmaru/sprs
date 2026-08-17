@@ -228,6 +228,7 @@ impl<'ctx> Compiler<'ctx> {
                         Type::Any
                     }
                 }
+                "fcast" => Type::Str,
                 "lshift" | "rshift" => {
                     if !args.is_empty() {
                         self.infer_type(&args[0])
@@ -1007,6 +1008,7 @@ impl<'ctx> Compiler<'ctx> {
                     "raw" => Ok(builder_helper::call_builtin_macro_raw(self, args, module)?),
                     "free" => Ok(builder_helper::call_builtin_macro_free(self, args, module)?),
                     "cast" => Ok(builder_helper::call_builtin_macro_cast(self, args, module)?),
+                    "fcast" => Ok(builder_helper::call_builtin_macro_fcast(self, args, module)?),
                     "lshift" => Ok(builder_helper::call_builtin_macro_lshift(self, args, module)?),
                     "rshift" => Ok(builder_helper::call_builtin_macro_rshift(self, args, module)?),
                     "not" => Ok(builder_helper::call_builtin_macro_not(self, args, module)?),

@@ -551,6 +551,14 @@
 //! @println(b); # prints 100 as i8
 //! ```
 //!
+//! * `@fcast(value)`: Explicitly convert an `int`, `bool`, or `str` value to `str`.
+//!   Unsupported values return the catchable error `TypeError: unexpected tag in @fcast`;
+//!   an existing error is returned unchanged. No implicit string conversion is performed.
+//! ```rust
+//! var ok = 5 == 5;
+//! @println("bool test : " + @fcast(ok)); # bool test : true
+//! ```
+//!
 //! * `@attach(expr, <:name)`: Clone `expr` into the function-local attach slot `<:name`.
 //!   Read the captured value with `<:name` (not bare `:name`). Dynamic slot names are not supported.
 //! ```rust

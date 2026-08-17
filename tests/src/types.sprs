@@ -66,6 +66,13 @@ pub fn cast_int32_to_fp64() >> fp {
 
 pub fn cast_mixed() >> i64 { return @cast(1, i8) + @cast(2, i16) + @cast(3, i32); }
 
+pub fn fcast_int() >> str { return @fcast(42); }
+pub fn fcast_bool() >> str { return @fcast(true); }
+pub fn fcast_str() >> str { return @fcast("hello"); }
+pub fn fcast_unsupported_is_error() >> bool { return @is_error(@fcast([1])); }
+pub fn fcast_unsupported_message() >> str { return @error_message(@fcast([1])); }
+pub fn fcast_preserves_error() >> str { return @error_message(@fcast(@error("original"))); }
+
 
 # === Float ===
 

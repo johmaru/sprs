@@ -1212,6 +1212,165 @@ pub fn call_builtin_macro_cast<'ctx>(
     return Ok(final_phi.as_basic_value());
 }
 
+pub fn call_builtin_macro_fcast<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+    args: &[Spanned<ast::Expr>],
+    module: &inkwell::module::Module<'ctx>,
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
+    if args.len() != 1 {
+        return Err(SprsError::Semantic {
+            code: ErrorCode {
+                category: ErrorCategory::Semantic,
+                number: 13,
+            },
+            location: Location::new(String::new(), Span::DUMMY),
+            message: "@fcast expects exactly 1 argument".to_string(),
+            help: None,
+        });
+    }
+
+    let value_ptr = self_compiler
+        .compile_expr(&args[0], module)?
+        .into_pointer_value();
+
+    let tag_ptr = self_compiler
+        .builder
+        .build_struct_gep(
+            self_compiler.runtime_value_type,
+            value_ptr,
+            0,
+            "fcast_arg_tag_ptr",
+        )
+        .unwrap();
+    let current_tag = self_compiler
+        .builder
+        .build_load(self_compiler.context.i32_type(), tag_ptr, "fcast_arg_tag")
+        .unwrap()
+        .into_int_value();
+
+    let data_ptr = self_compiler
+        .builder
+        .build_struct_gep(
+            self_compiler.runtime_value_type,
+            value_ptr,
+            1,
+            "fcast_arg_data_ptr",
+        )
+        .unwrap();
+    let data = self_compiler
+        .builder
+        .build_load(self_compiler.context.i64_type(), data_ptr, "fcast_arg_data")
+        .unwrap()
+        .into_int_value();
+
+    let parent = self_compiler
+        .builder
+        .get_insert_block()
+        .unwrap()
+        .get_parent()
+        .unwrap();
+
+    let input_error_bb = self_compiler
+        .context
+        .append_basic_block(parent, "fcast_input_error");
+    let fcast_normal_bb = self_compiler
+        .context
+        .append_basic_block(parent, "fcast_normal");
+    let error_bb = self_compiler
+        .context
+        .append_basic_block(parent, "fcast_error_bb");
+    let success_bb = self_compiler
+        .context
+        .append_basic_block(parent, "fcast_success_bb");
+    let final_merge = self_compiler
+        .context
+        .append_basic_block(parent, "fcast_final_merge_bb");
+
+    let input_is_error = build_label_is_error(self_compiler, current_tag, data, module)?;
+    let _ = self_compiler.builder.build_conditional_branch(
+        input_is_error,
+        input_error_bb,
+        fcast_normal_bb,
+    );
+
+    self_compiler.builder.position_at_end(input_error_bb);
+    let _ = self_compiler
+        .builder
+        .build_unconditional_branch(final_merge);
+
+    self_compiler.builder.position_at_end(fcast_normal_bb);
+    let value_to_string = self_compiler.get_runtime_fn(module, "__value_to_string")?;
+    let converted = match self_compiler
+        .builder
+        .build_call(
+            value_to_string,
+            &[current_tag.into(), data.into()],
+            "fcast_to_string",
+        )
+        .unwrap()
+        .try_as_basic_value()
+    {
+        ValueKind::Basic(basic_value) => basic_value.into_int_value(),
+        _ => {
+            return Err(SprsError::Internal {
+                message: "__value_to_string returned void".to_string(),
+                location: None,
+            });
+        }
+    };
+
+    let is_invalid = self_compiler
+        .builder
+        .build_int_compare(
+            inkwell::IntPredicate::EQ,
+            converted,
+            self_compiler.context.i64_type().const_int(0, false),
+            "fcast_invalid",
+        )
+        .unwrap();
+    let _ = self_compiler
+        .builder
+        .build_conditional_branch(is_invalid, error_bb, success_bb);
+
+    self_compiler.builder.position_at_end(error_bb);
+    let error_ptr = create_error_label_from_str(
+        self_compiler,
+        "TypeError: unexpected tag in @fcast",
+        module,
+    )?;
+    let _ = self_compiler
+        .builder
+        .build_unconditional_branch(final_merge);
+
+    self_compiler.builder.position_at_end(success_bb);
+    let result_ptr = create_entry_block_alloca(self_compiler, "fcast_res_alloc")?;
+    self_compiler.build_runtime_value_store(
+        result_ptr,
+        StoreTag::Int(Tag::String as u64),
+        StoreValue::Int(converted),
+        "fcast_res",
+    );
+    let success_end_bb = self_compiler.builder.get_insert_block().unwrap();
+    let _ = self_compiler
+        .builder
+        .build_unconditional_branch(final_merge);
+
+    self_compiler.builder.position_at_end(final_merge);
+    let final_phi = self_compiler
+        .builder
+        .build_phi(
+            self_compiler.context.ptr_type(AddressSpace::default()),
+            "fcast_final_phi",
+        )
+        .unwrap();
+    final_phi.add_incoming(&[
+        (&value_ptr, input_error_bb),
+        (&error_ptr, error_bb),
+        (&result_ptr, success_end_bb),
+    ]);
+    return Ok(final_phi.as_basic_value());
+}
+
 pub fn call_builtin_macro_lshift<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
     args: &Vec<Spanned<ast::Expr>>,

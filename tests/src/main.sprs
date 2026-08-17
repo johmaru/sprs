@@ -105,6 +105,13 @@ fn main() {
     @println(types.cast_arithmetic());
     @println(types.cast_loop());
     @println(types.cast_mixed());
+    @println(types.fcast_int());
+    @println(types.fcast_bool());
+    @println(types.fcast_str());
+    @println(types.fcast_unsupported_is_error());
+    @println(types.fcast_unsupported_message());
+    @println(types.fcast_preserves_error());
+    @println("bool test : " + @fcast(comparison.eq_as_bool()));
     @println("=== BUG-L08 Verify ===");
     @println(types.cast_uint32_to_fp64());
     @println(types.cast_int32_to_fp64());
