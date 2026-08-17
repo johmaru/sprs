@@ -306,9 +306,22 @@ impl<'ctx> Compiler<'ctx> {
                         return Type::Enum(name.clone());
                     }
                 }
+                if let Type::Struct(struct_name) = self.infer_type(lhs) {
+                    if let Some(def) = self.struct_defs.get(&struct_name) {
+                        if let Some(field) = def.fields.iter().find(|field| field.ident == *rhs) {
+                            return field.ty.clone().unwrap_or(Type::Any);
+                        }
+                    }
+                }
                 Type::Any
             }
-            _ => Type::Any,
+            ast::Expr::Index(collection, _) => match self.infer_type(collection) {
+                Type::App(name, args) if name == "List" => match args.as_slice() {
+                    [element] => element.clone(),
+                    _ => Type::Any,
+                },
+                _ => Type::Any,
+            },
         }
     }
 

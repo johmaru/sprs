@@ -12,7 +12,7 @@ use inkwell::module::Linkage;
 use inkwell::module::Module;
 use inkwell::types::{BasicMetadataTypeEnum, BasicTypeEnum};
 use inkwell::values::FunctionValue;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 impl<'ctx> Compiler<'ctx> {
     pub fn load_and_compile_module(
@@ -45,7 +45,7 @@ impl<'ctx> Compiler<'ctx> {
         self.sources.insert(module_name.to_string(), source.clone());
         self.current_file = path.clone();
 
-        let items = parse_only(&source, &path)?;
+        let mut items = parse_only(&source, &path)?;
 
         self.process_preprocessors(&items);
 
@@ -69,6 +69,14 @@ impl<'ctx> Compiler<'ctx> {
         }
 
         self.builder.clear_insertion_position();
+
+        let mut known_structs: HashSet<String> = self.struct_defs.keys().cloned().collect();
+        for item in &items {
+            if let ast::Item::StructItem(struct_item) = item {
+                known_structs.insert(struct_item.ident.clone());
+            }
+        }
+        resolve_item_types(&mut items, &known_structs, &path)?;
 
         // Declare all function prototypes
         for item in &items {
@@ -103,7 +111,7 @@ impl<'ctx> Compiler<'ctx> {
                             )?;
                         }
                     }
-                    self.register_struct(items.ident.clone(), items.fields.clone());
+                    self.register_struct(items.ident.clone(), items.fields.clone())?;
 
                     if !items.is_public {
                         for field in &items.fields {
@@ -377,5 +385,157 @@ impl<'ctx> Compiler<'ctx> {
                 },
             );
         }
+    }
+}
+
+fn resolve_item_types(
+    items: &mut [ast::Item],
+    known_structs: &HashSet<String>,
+    path: &str,
+) -> Result<(), SprsError> {
+    fn semantic(path: &str, span: Span, message: String) -> SprsError {
+        SprsError::Semantic {
+            code: ErrorCode {
+                category: ErrorCategory::Semantic,
+                number: 11,
+            },
+            location: Location::new(path.to_string(), span),
+            message,
+            help: None,
+        }
+    }
+
+    for item in items.iter_mut() {
+        match item {
+            ast::Item::StructItem(struct_item) => {
+                for field in &mut struct_item.fields {
+                    if let Some(ty) = &mut field.ty {
+                        type_helper::resolve_type(ty, known_structs, Some(struct_item.ident.as_str()))
+                            .map_err(|message| semantic(path, field.span, message))?;
+                    }
+                }
+            }
+            ast::Item::FunctionItem(func) => {
+                for param in &mut func.params {
+                    if let Some(annot) = &mut param.ty {
+                        type_helper::resolve_type(&mut annot.ty, known_structs, None)
+                            .map_err(|message| semantic(path, param.span, message))?;
+                    }
+                }
+                if let Some(ret_ty) = &mut func.ret_ty {
+                    type_helper::resolve_type(ret_ty, known_structs, None)
+                        .map_err(|message| semantic(path, func.span, message))?;
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::front::ast::{Function, Item, Struct};
+    use crate::front::type_helper::Type;
+
+    fn collect_known_structs(items: &[Item]) -> HashSet<String> {
+        items
+            .iter()
+            .filter_map(|item| match item {
+                Item::StructItem(struct_item) => Some(struct_item.ident.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn resolves_forward_struct_annotations_before_registration() {
+        let mut items = parse_only(
+            "struct A { b >> B } struct B { a >> A }",
+            "forward.sprs",
+        )
+        .expect("parse");
+        let known = collect_known_structs(&items);
+        resolve_item_types(&mut items, &known, "forward.sprs").unwrap();
+
+        let Item::StructItem(Struct { fields: fields_a, .. }) = &items[0] else {
+            panic!("expected struct A");
+        };
+        assert_eq!(fields_a[0].ty.as_ref(), Some(&Type::Struct("B".into())));
+
+        let Item::StructItem(Struct { fields: fields_b, .. }) = &items[1] else {
+            panic!("expected struct B");
+        };
+        assert_eq!(fields_b[0].ty.as_ref(), Some(&Type::Struct("A".into())));
+
+        let mut items = parse_only(
+            "struct Node { next >> Self, children >> List(Self) }",
+            "self_nested.sprs",
+        )
+        .expect("parse");
+        let known = collect_known_structs(&items);
+        resolve_item_types(&mut items, &known, "self_nested.sprs").unwrap();
+        let Item::StructItem(Struct { fields, .. }) = &items[0] else {
+            panic!("expected struct Node");
+        };
+        assert_eq!(fields[0].ty.as_ref(), Some(&Type::Struct("Node".into())));
+        assert_eq!(
+            fields[1].ty.as_ref(),
+            Some(&Type::App("List".into(), vec![Type::Struct("Node".into())]))
+        );
+    }
+
+    #[test]
+    fn rejects_undefined_named_type_with_location() {
+        let mut items = parse_only(
+            "struct A { value >> DoesNotExist }",
+            "invalid_named.sprs",
+        )
+        .expect("parse");
+        let known = collect_known_structs(&items);
+        let err = resolve_item_types(&mut items, &known, "invalid_named.sprs").unwrap_err();
+        match err {
+            SprsError::Semantic {
+                code,
+                location,
+                message,
+                ..
+            } => {
+                assert_eq!(code.as_string(), "SPRS-SEM-011");
+                assert_eq!(message, "Undefined type: DoesNotExist");
+                assert_eq!(location.file, "invalid_named.sprs");
+                assert_ne!(location.span, Span::DUMMY);
+            }
+            other => panic!("expected semantic error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_self_outside_struct_with_location() {
+        let mut items = parse_only("fn f(x >> Self) {}", "invalid_self.sprs").expect("parse");
+        let known = collect_known_structs(&items);
+        let err = resolve_item_types(&mut items, &known, "invalid_self.sprs").unwrap_err();
+        match err {
+            SprsError::Semantic {
+                code,
+                location,
+                message,
+                ..
+            } => {
+                assert_eq!(code.as_string(), "SPRS-SEM-011");
+                assert_eq!(
+                    message,
+                    "`Self` is only valid in struct field type annotations"
+                );
+                assert_eq!(location.file, "invalid_self.sprs");
+                assert_ne!(location.span, Span::DUMMY);
+            }
+            other => panic!("expected semantic error, got {other:?}"),
+        }
+        let Item::FunctionItem(Function { params, .. }) = &items[0] else {
+            panic!("expected function");
+        };
+        assert!(params[0].ty.is_some());
     }
 }

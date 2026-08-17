@@ -223,6 +223,24 @@
 //!
 //! - struct
 //!
+//! A bare struct name can be used in type annotations for fields, function
+//! arguments, and return values. `Self` resolves to the struct currently being
+//! declared and is valid only inside that struct's field types, including
+//! nested type applications such as `List(Self)`. Struct types in the same
+//! module can be referenced regardless of declaration order. An undefined bare
+//! type name, or `Self` outside a struct field, is reported as `SPRS-SEM-011`.
+//!
+//! ```rust
+//! struct Tree {
+//!   value >> i64,
+//!   children >> List(Self)
+//! }
+//!
+//! fn identity(value >> Tree) >> Tree {
+//!   return value;
+//! }
+//! ```
+//!
 //! ```rust
 //! pub struct Point {
 //!   x >> i64,

@@ -169,6 +169,7 @@ fn main() {
     @println(data_structures.struct_owned_string());
     @println(data_structures.struct_clone_string());
     @println(data_structures.struct_move_invalid_field());
+    @println(data_structures.recursive_tree_child_value());
 
     @println("=== Enum ===");
     @println(data_structures.enum_access());

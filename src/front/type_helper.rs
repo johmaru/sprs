@@ -70,6 +70,10 @@ pub enum Type {
     App(String, Vec<Type>),
     Param(String),
     Atom(String), // compile-time only: `:name` in type args. No tag_discriminant.
+    /// Unresolved bare struct name from a type annotation. Compile-time only.
+    Named(String),
+    /// Unresolved `Self` in a struct field annotation. Compile-time only.
+    SelfType,
 
     // System types
     TypeI8,
@@ -119,6 +123,8 @@ impl Type {
             Type::App(_, _) => None,
             Type::Param(_) => None,
             Type::Atom(_) => None,
+            Type::Named(_) => None,
+            Type::SelfType => None,
             Type::TypeI8 => Some(100),
             Type::TypeU8 => Some(101),
             Type::TypeI16 => Some(102),
@@ -320,6 +326,43 @@ pub fn is_error_label_type(ty: &Type) -> bool {
     }
 }
 
+/// Resolve compile-time `Named` / `Self` annotations against known structs.
+///
+/// `App` arguments are rewritten recursively so `List(Self)` and
+/// `List(NamedStruct)` become `List(Struct(...))`. Constructor names themselves
+/// are not validated.
+pub fn resolve_type(
+    ty: &mut Type,
+    known_structs: &std::collections::HashSet<String>,
+    self_struct: Option<&str>,
+) -> Result<(), String> {
+    match ty {
+        Type::Named(name) => {
+            let name = name.clone();
+            if known_structs.contains(&name) {
+                *ty = Type::Struct(name);
+                Ok(())
+            } else {
+                Err(format!("Undefined type: {}", name))
+            }
+        }
+        Type::SelfType => match self_struct {
+            Some(name) => {
+                *ty = Type::Struct(name.to_string());
+                Ok(())
+            }
+            None => Err("`Self` is only valid in struct field type annotations".to_string()),
+        },
+        Type::App(_, args) => {
+            for arg in args {
+                resolve_type(arg, known_structs, self_struct)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
 fn is_default_int(ty: &Type) -> bool {
     matches!(ty, Type::Int | Type::TypeI64)
 }
@@ -367,6 +410,7 @@ pub fn is_float_type_in_llvm() -> Vec<Type> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
 
     #[test]
     fn tag_discriminants_match_known_tag_values() {
@@ -551,5 +595,39 @@ mod tests {
         assert!(!is_error_label_type(
             &Type::App("Result".into(), vec![Type::Int, err_sugar.clone()])
         ));
+    }
+
+    #[test]
+    fn resolves_named_self_and_nested_types() {
+        let mut known = HashSet::new();
+        known.insert("Node".to_string());
+        known.insert("A".to_string());
+
+        let mut self_ty = Type::SelfType;
+        resolve_type(&mut self_ty, &known, Some("Node")).unwrap();
+        assert_eq!(self_ty, Type::Struct("Node".into()));
+
+        let mut list_self = Type::App("List".into(), vec![Type::SelfType]);
+        resolve_type(&mut list_self, &known, Some("Node")).unwrap();
+        assert_eq!(
+            list_self,
+            Type::App("List".into(), vec![Type::Struct("Node".into())])
+        );
+
+        let mut named = Type::Named("A".into());
+        resolve_type(&mut named, &known, None).unwrap();
+        assert_eq!(named, Type::Struct("A".into()));
+
+        let mut unknown = Type::Named("Nope".into());
+        assert_eq!(
+            resolve_type(&mut unknown, &known, None).unwrap_err(),
+            "Undefined type: Nope"
+        );
+
+        let mut bad_self = Type::SelfType;
+        assert_eq!(
+            resolve_type(&mut bad_self, &known, None).unwrap_err(),
+            "`Self` is only valid in struct field type annotations"
+        );
     }
 }

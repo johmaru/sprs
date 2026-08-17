@@ -562,7 +562,11 @@ impl<'ctx> Compiler<'ctx> {
         Ok(())
     }
 
-    pub fn register_struct(&mut self, name: String, fields: Vec<ast::StructField>) {
+    pub fn register_struct(
+        &mut self,
+        name: String,
+        fields: Vec<ast::StructField>,
+    ) -> Result<(), SprsError> {
         let mut field_indices = HashMap::new();
         let mut llvm_field_types: Vec<BasicTypeEnum> = Vec::new();
         for (field_index, field) in fields.iter().enumerate() {
@@ -583,6 +587,15 @@ impl<'ctx> Compiler<'ctx> {
                     | Type::App(_, _)
                     | Type::Param(_)
                     | Type::Atom(_) => self.runtime_value_type.into(),
+                    Type::Named(_) | Type::SelfType => {
+                        return Err(SprsError::Internal {
+                            message: format!(
+                                "unresolved type in struct `{}` field `{}`",
+                                name, field.ident
+                            ),
+                            location: None,
+                        });
+                    }
                     Type::Int
                     | Type::TypeI64
                     | Type::TypeU64
@@ -615,6 +628,7 @@ impl<'ctx> Compiler<'ctx> {
                 llvm_type,
             },
         );
+        Ok(())
     }
 
     /// Returns the index of a field in a struct definition.

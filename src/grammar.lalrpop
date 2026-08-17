@@ -331,6 +331,15 @@ Type: Type = {
     // Type application: `List(int)`, `Result(int, err)`, `List()` …
     // Bare idents are not `Param` yet (generics / #29).
     <name:Ident> LParen <args:TypeArgList> RParen => Type::App(name, args),
+    // Lexer IDENT only: the Ident nonterminal also matches type keywords
+    // (`int`, `bool`, …), which would make this alternative ambiguous.
+    <name:IDENT> => {
+        if name == "Self" {
+            Type::SelfType
+        } else {
+            Type::Named(name)
+        }
+    },
 };
 
 TypeArgList: Vec<Type> = {

@@ -16,7 +16,7 @@ pub fn parse_only(input: &str, file_path: &str) -> Result<Vec<ast::Item>, SprsEr
 mod tests {
     use super::parse_only;
     use crate::front::ast::{
-        AtomDef, Enum, Expr, Function, Item, MatchArmBody, MatchPat, Stmt,
+        AtomDef, Enum, Expr, Function, Item, MatchArmBody, MatchPat, Stmt, Struct,
     };
     use crate::front::label_name::LabelName;
     use crate::front::type_helper::{Type, TypeAnnot};
@@ -756,6 +756,39 @@ fn ^fn(^if) { var ^return = ^if; ^return = ^return + 1; return ^return; }
                 "unexpected error: {error}"
             );
         }
+    }
+
+    #[test]
+    fn parses_named_struct_and_self_types() {
+        let items = parse_only(
+            "struct A {} fn f(x >> A) >> A { return x; }",
+            "named.sprs",
+        )
+        .expect("parse");
+        let Item::FunctionItem(function_item) = &items[1] else {
+            panic!("expected function");
+        };
+        assert_eq!(
+            function_item.params[0].ty.as_ref().map(|annot| &annot.ty),
+            Some(&Type::Named("A".into()))
+        );
+        assert_eq!(function_item.ret_ty.as_ref(), Some(&Type::Named("A".into())));
+
+        let items = parse_only("struct Node { next >> Self }", "self.sprs").expect("parse");
+        let Item::StructItem(Struct { fields, .. }) = &items[0] else {
+            panic!("expected struct");
+        };
+        assert_eq!(fields[0].ty.as_ref(), Some(&Type::SelfType));
+
+        let items =
+            parse_only("struct Node { children >> List(Self) }", "list_self.sprs").expect("parse");
+        let Item::StructItem(Struct { fields, .. }) = &items[0] else {
+            panic!("expected struct");
+        };
+        assert_eq!(
+            fields[0].ty.as_ref(),
+            Some(&Type::App("List".into(), vec![Type::SelfType]))
+        );
     }
 
 }

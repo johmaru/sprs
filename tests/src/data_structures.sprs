@@ -89,6 +89,40 @@ pub fn struct_in_function() >> i64 {
     return sum;
 }
 
+struct PointHolder {
+    point >> Point
+}
+
+fn identity_point(value >> Point) >> Point {
+    return value;
+}
+
+struct ForwardA {
+    b >> ForwardB
+}
+
+struct ForwardB {
+    a >> ForwardA
+}
+
+struct Tree {
+    value >> i64,
+    children >> List(Self)
+}
+
+pub fn recursive_tree_child_value() >> i64 {
+    var leaf = @init(Tree {
+        value = 1,
+        children = []
+    });
+    var children = [leaf];
+    var root = @init(Tree {
+        value = 0,
+        children = children
+    });
+    return root.children[0].value;
+}
+
 # === Enum ===
 
 enum Palette {
