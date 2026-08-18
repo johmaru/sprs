@@ -8,7 +8,7 @@ annotations keep static types for checking. Unannotated code stays dynamic and e
 
 This project is still under development and may change in the future.
 
-**Documentation:** <https://johmaru.github.io/sprs/>
+**Documentation:** English <https://johmaru.github.io/sprs/> · 日本語 <https://johmaru.github.io/sprs/ja/>
 
 ## Quick start
 
@@ -20,7 +20,7 @@ sprs run
 
 ## Development
 
-See [`docs/src/contributing.md`](docs/src/contributing.md) for the WSL2/LLVM 22 setup and local documentation commands.
+See [`docs/en/src/contributing.md`](docs/en/src/contributing.md) (English) and [`docs/ja/src/contributing.md`](docs/ja/src/contributing.md) (日本語) for the WSL2/LLVM 22 setup and local documentation commands.
 
 ## Super Thanks to
 

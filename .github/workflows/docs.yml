@@ -44,7 +44,13 @@ jobs:
           mdbook --version
 
       - name: Build book
-        run: mdbook build docs
+        run: |
+          set -euo pipefail
+          diff \
+            <(find docs/en/src -type f -name '*.md' -printf '%P\n' | sort) \
+            <(find docs/ja/src -type f -name '*.md' -printf '%P\n' | sort)
+          mdbook build docs/en
+          mdbook build docs/ja
 
       - name: Configure Pages
         if: github.ref == 'refs/heads/master'
