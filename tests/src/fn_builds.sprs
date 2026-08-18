@@ -1,15 +1,15 @@
-pkg function_build;
+pkg fn_builds;
 
-#define FunctionBuild fb_contracts
+function_build source fb_contracts;
 
 struct Point {
     x >> i64
 }
 
 function_build PointFn {
-    @FbArgs(point >> Point);
-    @FbRetTy(i64);
-    @FbVisibility(pub);
+    params(point >> Point);
+    return_type(i64);
+    visibility(pub);
 }
 
 function_build Empty {}
@@ -19,14 +19,21 @@ fn forward use LaterBuild {
 }
 
 function_build LaterBuild {
-    @FbRetTy(i64);
-    @FbVisibility(pub);
+    return_type(i64);
+    visibility(pub);
 }
 
 function_build UnaryI64 {
-    @FbArgs(value >> i64);
-    @FbRetTy(i64);
-    @FbVisibility(pub);
+    params(value >> i64);
+    return_type(i64);
+    visibility(pub);
+}
+
+function_build Identity {
+    type_param T;
+    params(value >> T);
+    return_type(T);
+    visibility(pub);
 }
 
 fn fb_add use AddBuild {
@@ -54,4 +61,12 @@ fn point_x use PointFn {
 
 fn job_id use JobFn {
     return job.id;
+}
+
+fn identity_i64 use Identity {
+    return value;
+}
+
+fn identity_str use Identity {
+    return value;
 }

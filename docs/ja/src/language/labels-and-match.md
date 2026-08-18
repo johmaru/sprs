@@ -2,26 +2,36 @@
 
 ## ラベル（タグ付き値）
 
-ラベルは値にタグを付ける中核機能（`Tag::Label`）であり、エラー専用の型ではありません。
+ラベルは値にタグを付ける中核機能であり、エラー専用の型ではありません。
+表面型 `Label` は payload なし atom と payload 付きラベルの両方を覆い、単一のランタイムタグではありません。
+payload なし `:name` はランタイム `Tag::Atom`（9）、`{:name, payload}` はランタイム `Tag::Label`（10）です。
+型位置の `label` / `atom` は `SPRS-SEM-011` で拒否します。`Label`、`:name`、または `Label(:name, T)` と書いてください。
+閉じたメンバーは snake_case です（`:Color.red`。`:Color.Red` ではない）。
 ラベルは常に名前とペイロード 1 つを持ちます: `{:name, payload}`。
 裸の `:name` はペイロードのない不変 Atom（`Tag::Atom`）です。
-モジュール大域の Atom 定数は `label :ready;` で、名前空間付き Atom は `label :Color{:red, :blue}` で宣言します。
-参照は裸の `ready` と `Color.red` です。
+モジュール大域の Atom 定数は `label :ready;` で、閉じたラベル集合は `label Color { red, blue }` で宣言します。
+集合の member は常に完全修飾の `:Color.red` で書きます。
+開いた Atom は `:ready`（またはエクスポートされた定数 `ready`）のままです。
 宣言をエクスポートするには `pub label ...` を使います。
 そうでなければモジュール局所のままです。
 同名の局所変数は、単独の Atom 定数をシャドウします。
-`Color.red` の intern キーは `"Color.red"` であり、`Color.red == :red` は偽です。
+`:Color.red` の intern キーは `"Color.red"` であり、`:Color.red == :red` は偽です。
+未知または非公開の `:Foo.bar` は `SPRS-SEM-004` です。
+閉じたラベル集合の宣言は `label Color { red, blue }` だけです。
+空集合は構文エラーです。
+旧い `enum Color { Red }` と `label :Color{:red}` は拒否されます。
+`enum` は通常の識別子です。
 
 ```sprs
 pub label :ready;                     # exported Atom constant
-label :Color{:red, :blue}             # namespaced Atoms (same frame as enum)
+label Color { red, blue }             # closed label set
 label :local_atom;                    # module-local Atom constant
 
 var success_label = :ok;              # Atom
 var labeled_value = {:ok, 42};        # Label with payload
-var color = Color.red;                # intern key "Color.red"
+var color = :Color.red;               # intern key "Color.red"
 @println(ready == :ready);            # true
-@println(color == Color.red);         # true
+@println(color == :Color.red);        # true
 @println(color == :red);              # false
 
 var item_index = 10;
@@ -32,14 +42,14 @@ if @label_is(dynamic_label, :"{item_index}-item") {
   @println(@label_name(dynamic_label));     # "10-item"
 }
 
-fn wrap(value_input >> int) >> Label(int) {
+fn wrap(value_input >> i64) >> Label {
   var item_index = value_input;
   return {:"{item_index}", value_input};
 }
-fn wrap_named(value_input >> int) >> Label(:ok, int) {
+fn wrap_named(value_input >> i64) >> Label(:ok, i64) {
   return {:ok, value_input};
 }
-fn take(label_value >> label) >> label {
+fn take(label_value >> Label) >> Label {
   return label_value;
 }
 
@@ -77,14 +87,15 @@ fn take(label_value >> label) >> label {
 
 パターン（v1、静的な名前のみ）:
 
-- `case :name` — 名前で Atom または Label に一致します（ペイロード束縛なし）
+- `case :name` — 開いた Atom または Label を名前で一致します（ペイロード束縛なし）
+- `case :Set.member` — 閉じたラベル集合の member に一致します（完全修飾）
 - `case {:name, binder}` — Label のみ。
   ペイロードを `binder` に束縛します（`_` は捨てます）
 - `case _` — 何にでも一致し、最後のアームでなければなりません。
   `Match failed` パニックを避ける既定として使います。
 
 ```sprs
-fn match_label_bind() >> int {
+fn match_label_bind() >> i64 {
   match {:ok, 7} ?(var r) {
     case :ok => 1 break;
     case :error => 0 break;
@@ -92,7 +103,7 @@ fn match_label_bind() >> int {
   return r;
 }
 
-fn match_payload_bind() >> int {
+fn match_payload_bind() >> i64 {
   match {:ok, 7} ?(var r) {
     case {:ok, x} => x break;
     case :error => 0 break;
@@ -100,7 +111,7 @@ fn match_payload_bind() >> int {
   return r;
 }
 
-fn match_atom_bind() >> int {
+fn match_atom_bind() >> i64 {
   match :ok ?(var r) {
     case :ok => 1 break;
     case :error => 0 break;
@@ -108,7 +119,7 @@ fn match_atom_bind() >> int {
   return r;
 }
 
-fn match_no_bind_block() >> int {
+fn match_no_bind_block() >> i64 {
   var flag = 0;
   match :error {
     case :ok => { flag = 100; }
@@ -117,11 +128,21 @@ fn match_no_bind_block() >> int {
   return flag;
 }
 
-fn match_expr_example(v >> atom) >> int {
+fn match_expr_example(v >> Label) >> i64 {
   var r = match v {
     case :ok => 1
     case :error => 0
     case _ => -1
+  };
+  return r;
+}
+
+label State { idle, running }
+
+fn match_closed_label_set() >> i64 {
+  var r = match :State.idle {
+    case :State.idle => 1
+    case :State.running => 2
   };
   return r;
 }
@@ -130,8 +151,11 @@ fn match_expr_example(v >> atom) >> int {
 注意:
 
 - 一致しない被検査値は、末尾の `case _` がすべてを捕まえない限り、`Match failed` でパニックします（プロセスは非ゼロで終了します）。
-- enum 型の被検査値はコンパイル時に検査されます。
-  すべてのバリアントか `case _` です。
+- 閉じたラベル集合の被検査値はコンパイル時に検査されます。
+  すべての member を `:Set.member` で書くか、末尾の `case _` です。
+  欠落した member は宣言順の完全修飾で列挙されます
+  （`non-exhaustive match on State; missing State.running`）。
+  短縮の `case :running` は `State.running` をカバーしません。
 - `case :"{i}-item"` のような動的な名前パターンはコンパイル時に拒否されます。
   動的な名前には `if` と `@label_is` を使ってください。
 - 束縛マーカーは単一トークン `?(` です。

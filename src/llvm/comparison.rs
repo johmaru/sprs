@@ -222,19 +222,27 @@ where
         .unwrap()
         .get_parent()
         .unwrap();
-    let atom_bb = self_compiler.context.append_basic_block(parent_fn, "eq_atom");
+    let atom_bb = self_compiler
+        .context
+        .append_basic_block(parent_fn, "eq_atom");
     let check_str_bb = self_compiler
         .context
         .append_basic_block(parent_fn, "eq_check_str");
-    let str_bb = self_compiler.context.append_basic_block(parent_fn, "eq_str");
+    let str_bb = self_compiler
+        .context
+        .append_basic_block(parent_fn, "eq_str");
     let check_float_bb = self_compiler
         .context
         .append_basic_block(parent_fn, "eq_check_float");
     let float_bb = self_compiler
         .context
         .append_basic_block(parent_fn, "eq_float");
-    let data_bb = self_compiler.context.append_basic_block(parent_fn, "eq_data");
-    let merge_bb = self_compiler.context.append_basic_block(parent_fn, "eq_merge");
+    let data_bb = self_compiler
+        .context
+        .append_basic_block(parent_fn, "eq_data");
+    let merge_bb = self_compiler
+        .context
+        .append_basic_block(parent_fn, "eq_merge");
     self_compiler
         .builder
         .build_conditional_branch(either_atom, atom_bb, check_str_bb)
@@ -409,9 +417,15 @@ fn bitcast_float_data_to_f64<'ctx>(
         .unwrap()
         .get_parent()
         .unwrap();
-    let bb_f16 = self_compiler.context.append_basic_block(parent, "eq_as_f16");
-    let bb_f32 = self_compiler.context.append_basic_block(parent, "eq_as_f32");
-    let bb_f64 = self_compiler.context.append_basic_block(parent, "eq_as_f64");
+    let bb_f16 = self_compiler
+        .context
+        .append_basic_block(parent, "eq_as_f16");
+    let bb_f32 = self_compiler
+        .context
+        .append_basic_block(parent, "eq_as_f32");
+    let bb_f64 = self_compiler
+        .context
+        .append_basic_block(parent, "eq_as_f64");
     let merge = self_compiler
         .context
         .append_basic_block(parent, "eq_as_f64_merge");

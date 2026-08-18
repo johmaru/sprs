@@ -1,7 +1,10 @@
 pub mod ast;
 pub mod error;
 pub mod error_reporter;
+pub mod ident;
 pub mod label_name;
 pub mod lexer;
+pub mod parse_error;
 pub mod span;
+pub mod type_surface;
 pub mod type_helper;

@@ -20,19 +20,19 @@
 @list_push(y, z);
 ```
 
-* `@bufLen(buf)`: Buffer 長を Integer として返す（古い / 非 Buffer では `0`）
-* `@bufGet(buf, i)`: 1 バイトを Integer として読む。
+* `@buf_len(buf)`: Buffer 長を Integer として返す（古い / 非 Buffer では `0`）
+* `@buf_get(buf, i)`: 1 バイトを Integer として読む。
   OOB / 古い → `Unit`
-* `@bufSet(buf, i, v)`: `v` の下位 8 ビットを `i` に書く。
+* `@buf_set(buf, i, v)`: `v` の下位 8 ビットを `i` に書く。
   OOB → 何もしない
 
 例:
 
 ```sprs
 var a = new(2);
-@bufSet(a, 0, 7);
-@println(@bufGet(a, 0));
-@println(@bufLen(a));
+@buf_set(a, 0, 7);
+@println(@buf_get(a, 0));
+@println(@buf_len(a));
 ```
 
 Buffer の割り当て、添字、`destroy`、`exist`、`unsafe`、RawPtr、`defer` は [Buffer と unsafe](../language/buffers-and-unsafe.md) を参照してください。
@@ -66,16 +66,16 @@ var a = "hello";
 
 ```
 
-* `@move(value)`: `cp` 束縛から 1 回分ムーブする（束縛を無効化する）
+* `@move(value)`: 変数からムーブする（束縛を無効化する）
 
 例:
 
 ```sprs
-cp var a = "hello";
+var a = "hello";
 @println(@move(a)); # a becomes Unit
 ```
 
-ムーブセマンティクス、`cp var`、`@clone`、`@move`、自動 drop は [メモリ管理](memory-management.md) を参照してください。
+ムーブセマンティクス、`@clone`、`@move`、自動 drop は [メモリ管理](memory-management.md) を参照してください。
 
 * `@cast(value, type)`: 値を指定型へキャストする
 
@@ -109,16 +109,9 @@ var ok = 5 == 5;
 * `@not(value)`: 引数はちょうど 1 つ。
   `data == 0` のとき Boolean `true`、それ以外は `false`。
   ビット単位の補数ではない。
-* `@init(TypeName { field = value, ... })`: 構造体初期化。
-  `@init(...)` を通常マクロとして呼ぶと `SPRS-SEM-005`（`struct initialization requires @init(TypeName { field: value, ... }) syntax`）。
-  完全な形は [列挙型と構造体](../language/enums-and-structs.md) を参照。
-
-```sprs
-var p = @init(Point {
-  x = 10,
-  y = 20
-});
-```
+構造体初期化はコア構文 `init TypeName { field = value, ... }` であり、マクロではありません。
+`@init` は未知マクロです（`SPRS-SEM-003`）。
+[構造体](../language/structs.md) を参照してください。
 
 
 * `@attach(expr, <:name)`: `expr` をクローンして関数局所の attach スロット `<:name` へ入れる。
@@ -149,7 +142,7 @@ Atom/Label 構文、attach スロット、`match` は [ラベルと match](../la
 * `@error_message(value)`: 理由が String のときは String ペイロードをそのまま返す。
   それ以外のペイロードは通常の値フォーマッタで描画する。
 
-`err`、`Label(:error, T)`、`?`、未捕捉の `main` エラー、整数オーバーフロー、ゼロ除算は [エラー](../language/errors.md) を参照してください。
+`Label(:error, T)`、`?`、未捕捉の `main` エラー、整数オーバーフロー、ゼロ除算は [エラー](../language/errors.md) を参照してください。
 
 **注:** `@cast` マクロは通常の int 型より速いです。
 i8 と u8 の llvm 型を直接使うからです。

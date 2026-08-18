@@ -71,11 +71,17 @@ fn main() -> Result<(), Box<dyn Error>> {
                         let fmt_str = iter.next();
                         match fmt_str {
                             Some(s) => {
-                                error_format = Some(crate::front::error::ErrorFormat::from_str(s)
-                                    .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?);
+                                error_format = Some(
+                                    crate::front::error::ErrorFormat::from_str(s)
+                                        .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?,
+                                );
                             }
                             None => {
-                                eprintln!("Usage: {} {} --error-format <json|json-pretty|human>", naming::LANG_NAME, command);
+                                eprintln!(
+                                    "Usage: {} {} --error-format <json|json-pretty|human>",
+                                    naming::LANG_NAME,
+                                    command
+                                );
                                 return Err("missing value for --error-format".into());
                             }
                         }
@@ -107,7 +113,11 @@ fn main() -> Result<(), Box<dyn Error>> {
             Ok(())
         }
         "version" => {
-        println!("{} version: {}", naming::LANG_NAME, env!("CARGO_PKG_VERSION"));
+            println!(
+                "{} version: {}",
+                naming::LANG_NAME,
+                env!("CARGO_PKG_VERSION")
+            );
             Ok(())
         }
         other => {

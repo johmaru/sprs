@@ -4,7 +4,7 @@ use crate::front::span::Span;
 use crate::front::type_helper;
 use crate::llvm::builder_helper;
 use crate::llvm::compiler::{
-    Compiler, EnumFrame, FnTypeInfo, LINUX_STR, OS, StructDef, WINDOWS_STR,
+    ClosedLabelSetFrame, Compiler, FnTypeInfo, LINUX_STR, OS, StructDef, WINDOWS_STR,
 };
 use crate::llvm::parser::parse_only;
 use crate::llvm::value::build_label_is_error;
@@ -78,8 +78,9 @@ impl<'ctx> Compiler<'ctx> {
                 known_structs.insert(struct_item.ident.clone());
             }
         }
+        let known_closed_sets: HashSet<String> = self.closed_label_sets.keys().cloned().collect();
         self.apply_function_builds(&mut items, module_name, &path, &mut known_structs)?;
-        resolve_item_types(&mut items, &known_structs, &path)?;
+        resolve_item_types(&mut items, &known_structs, &known_closed_sets, &path)?;
 
         // Declare all function prototypes
         for item in &items {
@@ -91,7 +92,7 @@ impl<'ctx> Compiler<'ctx> {
             }
         }
 
-        let mut private_enum_variants: Vec<String> = Vec::new();
+        let mut private_closed_label_members: Vec<String> = Vec::new();
         let mut private_struct_fields: Vec<String> = Vec::new();
         let mut private_atom_defs: Vec<String> = Vec::new();
 
@@ -123,13 +124,13 @@ impl<'ctx> Compiler<'ctx> {
                         }
                     }
                 }
-                ast::Item::EnumItem(enm) => {
-                    self.register_enum(enm)?;
+                ast::Item::ClosedLabelSetItem(set) => {
+                    self.register_closed_label_set(set)?;
 
-                    if !enm.is_public {
-                        for variant in &enm.variants {
-                            let full_name = format!("{}.{}", enm.ident, variant);
-                            private_enum_variants.push(full_name);
+                    if !set.is_public {
+                        for member in &set.members {
+                            let full_name = format!("{}.{}", set.ident, member);
+                            private_closed_label_members.push(full_name);
                         }
                     }
                 }
@@ -264,8 +265,8 @@ impl<'ctx> Compiler<'ctx> {
             self.remove_variable(&private_field);
         }
 
-        for private_variant in private_enum_variants {
-            self.private_enum_variants.insert(private_variant);
+        for private_member in private_closed_label_members {
+            self.private_closed_label_members.insert(private_member);
         }
 
         for private_atom in private_atom_defs {
@@ -290,6 +291,12 @@ impl<'ctx> Compiler<'ctx> {
 
         let mut registry = FunctionBuildRegistry::default();
         let mut stack = vec![module_name.to_string()];
+        let mut known_closed_sets: HashSet<String> = self.closed_label_sets.keys().cloned().collect();
+        for item in items.iter() {
+            if let ast::Item::ClosedLabelSetItem(set) = item {
+                known_closed_sets.insert(set.ident.clone());
+            }
+        }
         if let Some((source_name, span)) = function_build_source_directive(items, path)? {
             let (mut ext_items, ext_path) = load_function_build_source(
                 &source_name,
@@ -300,7 +307,13 @@ impl<'ctx> Compiler<'ctx> {
             )?;
             let mut ext_known: HashSet<String> = self.struct_defs.keys().cloned().collect();
             ext_known.extend(known_structs_from_items(&ext_items));
-            resolve_item_types(&mut ext_items, &ext_known, &ext_path)?;
+            let mut ext_closed: HashSet<String> = self.closed_label_sets.keys().cloned().collect();
+            for item in &ext_items {
+                if let ast::Item::ClosedLabelSetItem(set) = item {
+                    ext_closed.insert(set.ident.clone());
+                }
+            }
+            resolve_item_types(&mut ext_items, &ext_known, &ext_closed, &ext_path)?;
             for item in &ext_items {
                 if let ast::Item::StructItem(struct_item) = item {
                     if !self.struct_defs.contains_key(&struct_item.ident) {
@@ -315,10 +328,21 @@ impl<'ctx> Compiler<'ctx> {
             import_public_builds_from_source(&ext_items, &ext_path, &mut registry)?;
         }
 
-        resolve_function_build_types(items, known_structs, path)?;
+        resolve_function_build_types(items, known_structs, &known_closed_sets, path)?;
         let local = collect_local_function_builds(items, path, false)?;
         insert_builds(&mut registry, local)?;
         lower_functions_with_builds(items, &registry, path)?;
+        // Expose resolved FunctionBuild contracts for call-site resolution
+        // (type parameters + when rules) during prototype declaration.
+        for (name, build) in &registry.builds {
+            self.function_build_contracts.insert(
+                name.clone(),
+                (
+                    build.signature.type_params.clone(),
+                    build.signature.when_rules.clone(),
+                ),
+            );
+        }
         Ok(())
     }
 
@@ -350,28 +374,27 @@ impl<'ctx> Compiler<'ctx> {
         Ok(())
     }
 
-    pub(crate) fn register_enum(&mut self, enm: &ast::Enum) -> Result<(), SprsError> {
-        if enm.variants.is_empty() {
-            return Ok(());
-        }
-
-        if self.enum_frames.contains_key(&enm.ident) {
+    pub(crate) fn register_closed_label_set(
+        &mut self,
+        set: &ast::ClosedLabelSet,
+    ) -> Result<(), SprsError> {
+        if self.closed_label_sets.contains_key(&set.ident) {
             return Err(SprsError::Semantic {
                 code: ErrorCode {
                     category: ErrorCategory::Semantic,
                     number: 4,
                 },
-                location: self.location(enm.span),
-                message: format!("Duplicate enum: {}", enm.ident),
+                location: self.location(set.span),
+                message: format!("Duplicate closed label set: {}", set.ident),
                 help: None,
             });
         }
 
-        self.enum_frames.insert(
-            enm.ident.clone(),
-            EnumFrame {
-                variants: enm.variants.clone(),
-                is_public: enm.is_public,
+        self.closed_label_sets.insert(
+            set.ident.clone(),
+            ClosedLabelSetFrame {
+                members: set.members.clone(),
+                is_public: set.is_public,
             },
         );
         Ok(())
@@ -420,6 +443,15 @@ impl<'ctx> Compiler<'ctx> {
             fn_val.set_linkage(Linkage::Private);
         }
 
+        let (type_params, when_rules) = match &func.build_ref {
+            Some(build_name) => self
+                .function_build_contracts
+                .get(build_name)
+                .cloned()
+                .unwrap_or_default(),
+            None => (Vec::new(), Vec::new()),
+        };
+
         self.fn_types.insert(
             func_name.to_string(),
             FnTypeInfo {
@@ -429,6 +461,8 @@ impl<'ctx> Compiler<'ctx> {
                     .iter()
                     .map(|parameter| parameter.ty.clone())
                     .collect(),
+                type_params,
+                when_rules,
             },
         );
         // Plain source name also resolves for non-main calls / inference.
@@ -442,6 +476,8 @@ impl<'ctx> Compiler<'ctx> {
                         .iter()
                         .map(|parameter| parameter.ty.clone())
                         .collect(),
+                    type_params: Vec::new(),
+                    when_rules: Vec::new(),
                 },
             );
         }
@@ -451,6 +487,7 @@ impl<'ctx> Compiler<'ctx> {
 fn resolve_item_types(
     items: &mut [ast::Item],
     known_structs: &HashSet<String>,
+    known_closed_sets: &HashSet<String>,
     path: &str,
 ) -> Result<(), SprsError> {
     fn semantic(path: &str, span: Span, message: String) -> SprsError {
@@ -473,6 +510,7 @@ fn resolve_item_types(
                         type_helper::resolve_type(
                             ty,
                             known_structs,
+                            known_closed_sets,
                             Some(struct_item.ident.as_str()),
                         )
                         .map_err(|message| semantic(path, field.span, message))?;
@@ -482,12 +520,12 @@ fn resolve_item_types(
             ast::Item::FunctionItem(func) => {
                 for param in &mut func.params {
                     if let Some(annot) = &mut param.ty {
-                        type_helper::resolve_type(&mut annot.ty, known_structs, None)
+                        type_helper::resolve_type(&mut annot.ty, known_structs, known_closed_sets, None)
                             .map_err(|message| semantic(path, param.span, message))?;
                     }
                 }
                 if let Some(ret_ty) = &mut func.ret_ty {
-                    type_helper::resolve_type(ret_ty, known_structs, None)
+                    type_helper::resolve_type(ret_ty, known_structs, known_closed_sets, None)
                         .map_err(|message| semantic(path, func.span, message))?;
                 }
             }
@@ -518,7 +556,7 @@ mod tests {
         let mut items =
             parse_only("struct A { b >> B } struct B { a >> A }", "forward.sprs").expect("parse");
         let known = collect_known_structs(&items);
-        resolve_item_types(&mut items, &known, "forward.sprs").unwrap();
+        resolve_item_types(&mut items, &known, &HashSet::new(), "forward.sprs").unwrap();
 
         let Item::StructItem(Struct {
             fields: fields_a, ..
@@ -542,7 +580,7 @@ mod tests {
         )
         .expect("parse");
         let known = collect_known_structs(&items);
-        resolve_item_types(&mut items, &known, "self_nested.sprs").unwrap();
+        resolve_item_types(&mut items, &known, &HashSet::new(), "self_nested.sprs").unwrap();
         let Item::StructItem(Struct { fields, .. }) = &items[0] else {
             panic!("expected struct Node");
         };
@@ -558,7 +596,7 @@ mod tests {
         let mut items =
             parse_only("struct A { value >> DoesNotExist }", "invalid_named.sprs").expect("parse");
         let known = collect_known_structs(&items);
-        let err = resolve_item_types(&mut items, &known, "invalid_named.sprs").unwrap_err();
+        let err = resolve_item_types(&mut items, &known, &HashSet::new(), "invalid_named.sprs").unwrap_err();
         match err {
             SprsError::Semantic {
                 code,
@@ -579,7 +617,7 @@ mod tests {
     fn rejects_self_outside_struct_with_location() {
         let mut items = parse_only("fn f(x >> Self) {}", "invalid_self.sprs").expect("parse");
         let known = collect_known_structs(&items);
-        let err = resolve_item_types(&mut items, &known, "invalid_self.sprs").unwrap_err();
+        let err = resolve_item_types(&mut items, &known, &HashSet::new(), "invalid_self.sprs").unwrap_err();
         match err {
             SprsError::Semantic {
                 code,

@@ -9,12 +9,12 @@ use crate::front::ast::{
     FunctionParam,
     FunctionBuild,
     FunctionBuildDirective,
-    Enum,
+    FbCondition,
+    ClosedLabelSet,
     AtomDef,
     AssignStmt,
     Struct,
     StructField,
-    Suffix,
     LabelName,
     MatchPat,
     MatchArm,
@@ -22,15 +22,17 @@ use crate::front::ast::{
     ExprMatchArm,
     parse_dynamic_label_template,
 };
+use crate::front::ident::{self, IdentCategory, ParsedIdentifier};
+use crate::front::parse_error::ParserUserError;
 use crate::front::span::{Span, Spanned};
 use crate::front::lexer::Token;
 use crate::front::type_helper::{Type, TypeAnnot};
+use crate::front::type_surface;
 use lalrpop_util::ParseError;
-use half::f16;
 
 extern {
     type Location = usize;
-    type Error = String;
+    type Error = ParserUserError;
 
     enum Token {
         LBrace => Token::LBrace,
@@ -64,54 +66,54 @@ extern {
         Dot    => Token::Dot,
         DotDot => Token::DotDot,
         Semi   => Token::Semi,
-        StrLiteral => Token::StrLiteral(String),
+        StrLiteral => Token::StrLiteral(<String>),
         If     => Token::If,
         Else   => Token::Else,
         While  => Token::While,
         IDENT  => Token::Ident(<String>),
-        MACRO  => Token::Macro(String),
-        NUM    => Token::Num(i64),
-        FLOAT  => Token::Float(f64),
+        ESCAPED_IDENT => Token::EscapedIdent(<String>),
+        MACRO  => Token::Macro(<String>),
+        NUM    => Token::Num(<i64>),
+        FLOAT  => Token::Float(<f64>),
         TRUE  => Token::Bool(true),
         FALSE => Token::Bool(false),
         Comma  => Token::Comma,
         Colon  => Token::Colon,
+        QUALIFIED_ATOM => Token::QualifiedAtom(<String>),
         Function => Token::Function,
         Return => Token::Return,
         Use => Token::Use,
         FunctionBuild => Token::FunctionBuild,
         Private => Token::Private,
-        FbArgs => Token::FbArgs,
-        FbRetTy => Token::FbRetTy,
-        FbVisibility => Token::FbVisibility,
         PREPROCESSOR => Token::Preprocessor(<String>),
         Import => Token::Import,
         Package => Token::Package,
         Var => Token::Var,
         Public => Token::Public,
-        Enum => Token::Enum,
         Struct => Token::Struct,
-        Copy => Token::Copy,
         Ambi => Token::Ambi,
         InstanceCreate => Token::InstanceCreate,
         Destroy => Token::Destroy,
         Exist => Token::Exist,
         Unsafe => Token::Unsafe,
         Defer => Token::Defer,
+        Init => Token::Init,
+        Source => Token::Source,
+        Params => Token::Params,
+        ReturnTypeKw => Token::ReturnTypeKw,
+        Visibility => Token::Visibility,
+        TypeParam => Token::TypeParam,
+        When => Token::When,
+        Is => Token::Is,
+        NeqKw => Token::NeqKw,
+        And => Token::And,
+        Or => Token::Or,
+        Not => Token::Not,
 
-        // System types
-        TypeInt => Token::TypeInt,
-        TypeFloat => Token::TypeFloat,
         TypeBool => Token::TypeBool,
         TypeStr => Token::TypeStr,
-        TypeList => Token::TypeList,
-        TypeBuffer => Token::TypeBuffer,
-        TypeRawPtr => Token::TypeRawPtr,
-        TypeRange => Token::TypeRange,
         TypeUnit => Token::TypeUnit,
-        TypeError => Token::TypeError,
         TypeLabel => Token::TypeLabel,
-        TypeAtomKw => Token::TypeAtomKw,
 
         TypeI8 => Token::TypeI8,
         TypeU8 => Token::TypeU8,
@@ -137,86 +139,71 @@ ItemNode: Item = {
     FunctionBuildFnDef,
     FunctionBuildDef,
     PubFunctionBuildDef,
+    FunctionBuildSourceDef,
     PreprocessorItem,
-    <start:@L> <v:VarDecl> <end:@R> => Item::VarItem(v),
+    <start:@L> <v:GlobalVarDecl> <end:@R> => Item::VarItem(v),
     <start:@L> <i:ImportDirective> <end:@R> => Item::Import(i),
     <start:@L> <p:PackageDirective> <end:@R> => Item::Package(p),
-    <start:@L> <e:EnumDef> <end:@R> => Item::EnumItem(e),
     <start:@L> <s:StructDef> <end:@R> => Item::StructItem(s),
     LabelAtomDef,
-    LabelGroupedDef,
+    ClosedLabelSetDef,
 };
 
 PreprocessorItem: Item = {
-    <start:@L> <p:PREPROCESSOR> <end:@R> => {
-        if let Some(target) = p.strip_prefix("FunctionBuild ") {
-            Item::FunctionBuildSource { target: target.to_string(), span: Span::new(start, end) }
-        } else {
-            Item::Preprocessor(p)
-        }
-    }
+    <start:@L> <p:PREPROCESSOR> <end:@R> => Item::Preprocessor(p)
 };
 
+FunctionBuildSourceDef: Item =
+    <start:@L> FunctionBuild Source <name:ModName> Semi <end:@R> =>
+        Item::FunctionBuildSource { target: name, span: Span::new(start, end) };
+
 ImportDirective: String = {
-    Import <id:Ident> Semi => id,
+    Import <id:ModName> Semi => id,
 };
 
 PackageDirective: String = {
-    Package <id:Ident> Semi => id,
+    Package <id:ModName> Semi => id,
 };
 
-EnumDef: Enum =
-    <start:@L> <is_pub:PublicKw> Enum <name:Ident> LBrace <variants:EnumVariantList> RBrace <end:@R> => {
-        Enum {
-            ident: name,
-            variants,
-            is_public: is_pub,
-            span: Span::new(start, end),
-        }
-    };
-
 LabelAtomDef: Item =
-    <start:@L> <is_pub:PublicKw> TypeLabel Colon <name:Ident> Semi <end:@R> => Item::AtomItem(AtomDef {
+    <start:@L> <is_pub:PublicKw> TypeLabel Colon <name:OpenLabelName> Semi <end:@R> => Item::AtomItem(AtomDef {
         ident: name,
         is_public: is_pub,
         span: Span::new(start, end),
     });
 
-LabelGroupedDef: Item =
-    <start:@L> <is_pub:PublicKw> TypeLabel Colon <name:Ident> LBrace <variants:LabelVariantList> RBrace <end:@R> => Item::EnumItem(Enum {
+ClosedLabelSetDef: Item =
+    <start:@L> <is_pub:PublicKw> TypeLabel <name:PascalName> LBrace <members:ClosedLabelMemberList> RBrace <end:@R> => Item::ClosedLabelSetItem(ClosedLabelSet {
         ident: name,
-        variants,
+        members,
         is_public: is_pub,
         span: Span::new(start, end),
     });
 
-LabelVariant: String = Colon <id:Ident> => id;
-
-LabelVariantList: Vec<String> = {
-    <first:LabelVariant> <rest:MoreLabelVariants> => {
+ClosedLabelMemberList: Vec<String> = {
+    <first:ClosedMemberName> <rest:MoreClosedLabelMembers> => {
         let mut v = vec![first];
         v.extend(rest);
         v
     }
 };
 
-MoreLabelVariants: Vec<String> = {
+MoreClosedLabelMembers: Vec<String> = {
     => vec![],
-    Comma <tail:LabelVariantTail> => tail,
+    Comma <tail:ClosedLabelMemberTail> => tail,
 };
 
-LabelVariantTail: Vec<String> = {
+ClosedLabelMemberTail: Vec<String> = {
     => vec![],
-    <v:LabelVariant> <rest:MoreLabelVariants> => {
+    <v:ClosedMemberName> <rest:MoreClosedLabelMembers> => {
         let mut v = vec![v];
         v.extend(rest);
         v
     }
 };
 
-
 StructDef: Struct =
-    <start:@L> <is_pub:PublicKw> Struct <name:Ident> LBrace <fields:StructFieldList> RBrace <end:@R> => {
+    <start:@L> <is_pub:PublicKw> Struct <name:PascalName> LBrace <fields:StructFieldList> RBrace <end:@R> => {
         Struct {
             ident: name,
             fields,
@@ -235,36 +222,12 @@ StructFieldList: Vec<StructField> = {
     }
 };
 
-
 StructFieldNode: StructField = {
-    <start:@L> <id:Ident> <ty:FieldType?> <def:FieldDefault?> <end:@R> => StructField {
+    <start:@L> <id:FieldName> <ty:FieldType?> <def:FieldDefault?> <end:@R> => StructField {
         ident: id,
         ty,
         default_value: def,
         span: Span::new(start, end),
-    }
-};
-
-EnumVariantList: Vec<String> = {
-    => vec![],
-    <first:Ident> <rest:MoreEnumVariants> => {
-        let mut v = vec![first];
-        v.extend(rest);
-        v
-    }
-};
-
-MoreEnumVariants: Vec<String> = {
-    => vec![],
-    Comma <tail:EnumVariantTail> => tail,
-};
-
-EnumVariantTail: Vec<String> = {
-    => vec![],
-    <v:Ident> <rest:MoreEnumVariants> => {
-        let mut v = vec![v];
-        v.extend(rest);
-        v
     }
 };
 
@@ -284,7 +247,7 @@ PublicKw: bool = {
 };
 
 FunctionDef: Item =
-   <start:@L> FnKw <name:Ident> LParen <params:ParamList> RParen <ret:ReturnType> <body:Block> <end:@R> => {
+   <start:@L> FnKw <name:FnName> LParen <params:ParamList> RParen <ret:ReturnType> <body:Block> <end:@R> => {
         Item::FunctionItem(Function {
             ident: name,
             params,
@@ -298,7 +261,7 @@ FunctionDef: Item =
     };
 
 PubFunctionDef: Item =
-   <start:@L> Public FnKw <name:Ident> LParen <params:ParamList> RParen <ret:ReturnType> <body:Block> <end:@R> => {
+   <start:@L> Public FnKw <name:FnName> LParen <params:ParamList> RParen <ret:ReturnType> <body:Block> <end:@R> => {
         Item::FunctionItem(Function {
             ident: name,
             params,
@@ -312,21 +275,21 @@ PubFunctionDef: Item =
     };
 
 FunctionBuildFnDef: Item =
-   <start:@L> FnKw <name:Ident> Use <build:Ident> <body:Block> <end:@R> => {
+   <start:@L> FnKw <name:FnName> Use <build:PascalName> <body:Block> <end:@R> => {
         Item::FunctionItem(Function {
             ident: name,
             params: vec![],
             ret_ty: None,
             blk: body,
             is_public: false,
-            build_ref: Some(build.clone()),
+            build_ref: Some(build),
             build_ref_span: Span::new(start, end),
             span: Span::new(start, end),
         })
     };
 
 FunctionBuildDef: Item =
-    <start:@L> FunctionBuild <name:Ident> LBrace <directives:FbDirectiveList> RBrace <end:@R> => {
+    <start:@L> FunctionBuild <name:PascalName> LBrace <directives:FbDirectiveList> RBrace <end:@R> => {
         Item::FunctionBuildItem(FunctionBuild {
             ident: name,
             directives,
@@ -336,7 +299,7 @@ FunctionBuildDef: Item =
     };
 
 PubFunctionBuildDef: Item =
-    <start:@L> Public FunctionBuild <name:Ident> LBrace <directives:FbDirectiveList> RBrace <end:@R> => {
+    <start:@L> Public FunctionBuild <name:PascalName> LBrace <directives:FbDirectiveList> RBrace <end:@R> => {
         Item::FunctionBuildItem(FunctionBuild {
             ident: name,
             directives,
@@ -351,32 +314,72 @@ FbDirectiveList: Vec<FunctionBuildDirective> = {
 };
 
 FbDirective: FunctionBuildDirective = {
-    FbArgsDirective,
+    FbParamsDirective,
     FbRetDirective,
     FbVisDirective,
+    FbTypeParamDirective,
+    FbWhenDirective,
     <start:@L> <m:MacroName> LParen <_args:ArgList> RParen Semi <end:@R> =>? {
-        let _ = start;
-        Err(ParseError::User {
-            error: format!("invalid FunctionBuild directive @{}", m),
-        })
+        Err(type_surface::syn(
+            7,
+            Span::new(start, end),
+            format!("invalid FunctionBuild directive @{}", m),
+            Some("FunctionBuild entries are params / return_type / visibility / type_param / when".to_string()),
+        ))
     },
 };
 
-FbArgsDirective: FunctionBuildDirective =
-    <start:@L> FbArgs LParen <params:ParamList> RParen Semi <end:@R> =>
-        FunctionBuildDirective::Args { params, span: Span::new(start, end) };
+FbParamsDirective: FunctionBuildDirective =
+    <start:@L> Params LParen <params:ParamList> RParen Semi <end:@R> =>
+        FunctionBuildDirective::Params { params, span: Span::new(start, end) };
 
 FbRetDirective: FunctionBuildDirective =
-    <start:@L> FbRetTy LParen <t:Type> RParen Semi <end:@R> =>
-        FunctionBuildDirective::RetTy { ty: t, span: Span::new(start, end) };
+    <start:@L> ReturnTypeKw LParen <t:Type> RParen Semi <end:@R> =>
+        FunctionBuildDirective::ReturnType { ty: t, span: Span::new(start, end) };
 
 FbVisDirective: FunctionBuildDirective =
-    <start:@L> FbVisibility LParen <is_public:FbVisibilityValue> RParen Semi <end:@R> =>
+    <start:@L> Visibility LParen <is_public:FbVisibilityValue> RParen Semi <end:@R> =>
         FunctionBuildDirective::Visibility { is_public, span: Span::new(start, end) };
+
+FbTypeParamDirective: FunctionBuildDirective =
+    <start:@L> TypeParam <id:PascalName> Semi <end:@R> =>
+        FunctionBuildDirective::TypeParam { ident: id, span: Span::new(start, end) };
+
+FbWhenDirective: FunctionBuildDirective =
+    <start:@L> When <cond:FbCond> LBrace ReturnTypeKw LParen <t:Type> RParen Semi RBrace <end:@R> =>
+        FunctionBuildDirective::When { condition: cond, ret_ty: t, span: Span::new(start, end) };
 
 FbVisibilityValue: bool = {
     Public => true,
     Private => false,
+};
+
+FbCond: FbCondition = {
+    <l:FbCond> Or <r:FbCondAnd> => FbCondition::Or { lhs: Box::new(l), rhs: Box::new(r) },
+    <c:FbCondAnd> => c,
+};
+
+FbCondAnd: FbCondition = {
+    <l:FbCondAnd> And <r:FbCondCmp> => FbCondition::And { lhs: Box::new(l), rhs: Box::new(r) },
+    <c:FbCondCmp> => c,
+};
+
+FbCondCmp: FbCondition = {
+    <l:FbCondNot> Is <r:FbCondNot> => FbCondition::Is { lhs: Box::new(l), rhs: Box::new(r) },
+    <l:FbCondNot> NeqKw <r:FbCondNot> => FbCondition::Neq { lhs: Box::new(l), rhs: Box::new(r) },
+    <c:FbCondNot> => c,
+};
+
+FbCondNot: FbCondition = {
+    Not <c:FbCondNot> => FbCondition::Not { inner: Box::new(c) },
+    <c:FbCondAtom> => c,
+};
+
+FbCondAtom: FbCondition = {
+    TRUE => FbCondition::Bool(true),
+    FALSE => FbCondition::Bool(false),
+    LParen <c:FbCond> RParen => c,
+    <t:Type> => FbCondition::Type(t),
 };
 
 ParamList: Vec<FunctionParam> = {
@@ -389,10 +392,9 @@ ParamList: Vec<FunctionParam> = {
 };
 
 FunctionParamNode: FunctionParam = {
-    <start:@L> <id:ParamIdent> GtGt <t:TypeAnnot> <end:@R> => FunctionParam { ident: id, ty: Some(t), span: Span::new(start, end) },
-    <start:@L> <id:ParamIdent> <end:@R> => FunctionParam { ident: id, ty: None, span: Span::new(start, end) },
+    <start:@L> <id:LocalName> GtGt <t:TypeAnnot> <end:@R> => FunctionParam { ident: id, ty: Some(t), span: Span::new(start, end) },
+    <start:@L> <id:LocalName> <end:@R> => FunctionParam { ident: id, ty: None, span: Span::new(start, end) },
 };
-
 
 TypeAnnot: TypeAnnot = {
     Ambi <t:Type> => TypeAnnot { ty: t, ambi: true },
@@ -400,22 +402,12 @@ TypeAnnot: TypeAnnot = {
 };
 
 Type: Type = {
-    TypeInt => Type::Int,
-    TypeFloat => Type::Float,
     TypeBool => Type::Bool,
     TypeStr => Type::Str,
-    TypeList => Type::List,
-    TypeBuffer => Type::Buffer,
-    TypeRawPtr => Type::RawPtr,
-    TypeRange => Type::Range,
     TypeUnit => Type::Unit,
-    // `err` sugar: `{:error, reason}` label.
-    TypeError => Type::App("Label".into(), vec![Type::Atom("error".into()), Type::Any]),
-    TypeLabel => Type::Label,
-    TypeAtomKw => Type::AtomVal,
+    <start:@L> TypeLabel <end:@R> =>? Err(type_surface::reject_label_keyword(Span::new(start, end))),
 
-    // Named label/atom argument: `Label(:ok, int)`, `Atom(:ok)`. Compile-time only.
-    Colon <id:Ident> => Type::Atom(id),
+    <start:@L> Colon <id:OpenLabelName> <end:@R> => Type::Atom(id),
 
     TypeI8 => Type::TypeI8,
     TypeU8 => Type::TypeU8,
@@ -430,18 +422,12 @@ Type: Type = {
     TypeF32 => Type::TypeF32,
     TypeF64 => Type::TypeF64,
 
-    // Type application: `List(int)`, `Result(int, err)`, `List()` …
-    // Bare idents are not `Param` yet (generics / #29).
-    <name:Ident> LParen <args:TypeArgList> RParen => Type::App(name, args),
-    // Lexer IDENT only: the Ident nonterminal also matches type keywords
-    // (`int`, `bool`, …), which would make this alternative ambiguous.
-    <name:IDENT> => {
-        if name == "Self" {
-            Type::SelfType
-        } else {
-            Type::Named(name)
-        }
+    <start:@L> <id:Ident> LParen <args:TypeArgList> RParen <end:@R> =>? {
+        let _ = start;
+        let _ = end;
+        type_surface::finish_type(id, args)
     },
+    <id:Ident> =>? type_surface::finish_type(id, vec![]),
 };
 
 TypeArgList: Vec<Type> = {
@@ -453,9 +439,7 @@ TypeArgList: Vec<Type> = {
     },
 };
 
-
 ReturnType: Option<Type> = {
-    // `ambi` on return is accepted syntactically but ignored (return slots are not rebound).
     GtGt <t:TypeAnnot> => Some(t.ty),
     => None,
 };
@@ -488,7 +472,7 @@ Stmts: Vec<Spanned<Stmt>> = {
 };
 
 Stmt: Spanned<Stmt> = {
-    <start:@L> <v:VarDecl> <end:@R> => Spanned::new(Stmt::Var(v), Span::new(start, end)),
+    <start:@L> <v:LocalVarDecl> <end:@R> => Spanned::new(Stmt::Var(v), Span::new(start, end)),
     <start:@L> <e:ExprNoMatch> <tail:StmtTail> <end:@R> =>? {
         match tail {
             None => Ok(Spanned::new(Stmt::Expr(e), Span::new(start, end))),
@@ -498,7 +482,12 @@ Stmt: Spanned<Stmt> = {
                 } else if let Expr::Index(collection, index) = e.node {
                     Ok(Spanned::new(Stmt::IndexAssign { collection: *collection, index: *index, expr: val, span: Span::new(start, end) }, Span::new(start, end)))
                 } else {
-                    Err(ParseError::User { error: "Invalid assignment target".to_string() })
+                    Err(type_surface::syn(
+                        5,
+                        Span::new(start, end),
+                        "Invalid assignment target",
+                        None,
+                    ))
                 }
             }
         }
@@ -538,16 +527,8 @@ IfStmt: Spanned<Stmt> = {
     }, Span::new(start, end)),
 };
 
-/// `match <scrutinee> ?(var name) { case PAT => expr break; ... }` (bind form)
-/// or `match <scrutinee> { case PAT => { stmts } ... }` (no-bind form).
-///
-/// The bind form takes a full Expr as scrutinee: `?(` is a single lexer token
-/// (QuestionLParen), so the bind `?` never competes with the postfix Try `?`.
-/// `match x? {` (Try, no bind) and `match x ?(var r) {` (bind) separate on the
-/// lookahead after the Expr is reduced.
 MatchStmt: Spanned<Stmt> = {
-    // bind: `match <Expr> ?(var name) { ... }`
-    <start:@L> Match <e:Expr> QuestionLParen Var <bind:Ident> RParen
+    <start:@L> Match <e:Expr> QuestionLParen Var <bind:LocalName> RParen
         LBrace <arms:MatchArmsBind> RBrace <end:@R>
       => Spanned::new(Stmt::Match {
           scrutinee: e,
@@ -556,7 +537,6 @@ MatchStmt: Spanned<Stmt> = {
           span: Span::new(start, end),
       }, Span::new(start, end)),
 
-    // no bind: `match <Expr> { case PAT => { ... } }`
     <start:@L> Match <e:Expr> LBrace <arms:MatchArmsBlock> RBrace <end:@R>
       => Spanned::new(Stmt::Match {
           scrutinee: e,
@@ -617,19 +597,39 @@ MatchArmExpr: ExprMatchArm = {
     },
 };
 
+QualifiedAtomName: LabelName = {
+    <start:@L> <name:QUALIFIED_ATOM> <end:@R> =>? {
+        ident::validate_static_label(&name, Span::new(start, end)).map(LabelName::Static)
+    }
+};
+
 MatchPatNode: MatchPat = {
-    Colon <id:Ident> => MatchPat::Name(LabelName::Static(id)),
-    LBrace Colon <id:Ident> Comma <binder:Ident> RBrace =>
+    <q:QualifiedAtomName> => MatchPat::Name(q),
+    Colon <id:OpenLabelName> => MatchPat::Name(LabelName::Static(id)),
+    LBrace Colon <id:OpenLabelName> Comma <binder:MatchBinder> RBrace =>
         MatchPat::LabelPayload { name: LabelName::Static(id), binder },
     <id:Ident> =>? {
-        if id == "_" {
+        if id.name == "_" && !id.escaped {
             Ok(MatchPat::Wildcard)
         } else {
-            Err(ParseError::User {
-                error: "match pattern must be :name, {:name, binder}, or _".into(),
-            })
+            Err(type_surface::syn(
+                6,
+                id.span,
+                "match pattern must be :name, {:name, binder}, or _",
+                None,
+            ))
         }
     },
+};
+
+MatchBinder: String = {
+    <id:Ident> =>? {
+        if id.name == "_" && !id.escaped {
+            Ok("_".to_string())
+        } else {
+            ident::finish(id, IdentCategory::Local)
+        }
+    }
 };
 
 StmtTail: Option<Spanned<Expr>> = {
@@ -638,85 +638,47 @@ StmtTail: Option<Spanned<Expr>> = {
 };
 
 AssignExpr: Spanned<Expr> = {
-    <start:@L> <id:Ident> Assign <e:AssignExpr> <end:@R> => Spanned::new(Expr::Assign(id, Box::new(e)), Span::new(start, end)),
+    <start:@L> <id:LocalName> Assign <e:AssignExpr> <end:@R> => Spanned::new(Expr::Assign(id, Box::new(e)), Span::new(start, end)),
     <e:Expr> => e,
 };
 
-
-VarDecl: VarDecl = {
- <start:@L> Var <id:VarIdent> Assign <e:Expr> Semi <end:@R> => VarDecl { ident: id, expr: Some(e), always_clone: false, span: Span::new(start, end) },
- <start:@L> Var <id:VarIdent> Semi <end:@R> => VarDecl { ident: id, expr: None, always_clone: false, span: Span::new(start, end) },
- <start:@L> Copy Var <id:VarIdent> Assign <e:Expr> Semi <end:@R> => VarDecl { ident: id, expr: Some(e), always_clone: true, span: Span::new(start, end) },
+GlobalVarDecl: VarDecl = {
+ <start:@L> Var <id:GlobalName> Assign <e:Expr> Semi <end:@R> => VarDecl { ident: id, expr: Some(e), span: Span::new(start, end) },
+ <start:@L> Var <id:GlobalName> Semi <end:@R> => VarDecl { ident: id, expr: None, span: Span::new(start, end) },
 };
 
-Ident: String = {
-    IDENT,
-    Use => "use".to_string(),
-    FunctionBuild => "function_build".to_string(),
-    Private => "private".to_string(),
-    Function => "fn".to_string(),
-    Case => "case".to_string(),
-    Break => "break".to_string(),
-    Package => "pkg".to_string(),
-    Import => "import".to_string(),
-    Var => "var".to_string(),
-    Public => "pub".to_string(),
-    Enum => "enum".to_string(),
-    Struct => "struct".to_string(),
-    Copy => "cp".to_string(),
-    Ambi => "ambi".to_string(),
-    Unsafe => "unsafe".to_string(),
-    TypeInt => "int".to_string(),
-    TypeFloat => "fp".to_string(),
-    TypeBool => "bool".to_string(),
-    TypeStr => "str".to_string(),
-    TypeList => "list".to_string(),
-    TypeBuffer => "buffer".to_string(),
-    TypeRawPtr => "rawptr".to_string(),
-    TypeRange => "range".to_string(),
-    TypeUnit => "unit".to_string(),
-    TypeError => "err".to_string(),
-    TypeLabel => "label".to_string(),
-    TypeAtomKw => "atom".to_string(),
+LocalVarDecl: VarDecl = {
+ <start:@L> Var <id:LocalName> Assign <e:Expr> Semi <end:@R> => VarDecl { ident: id, expr: Some(e), span: Span::new(start, end) },
+ <start:@L> Var <id:LocalName> Semi <end:@R> => VarDecl { ident: id, expr: None, span: Span::new(start, end) },
 };
 
-ParamIdent: String = {
-    Ident,
-    InstanceCreate => "new".to_string(),
-    Destroy => "destroy".to_string(),
-    Exist => "exist".to_string(),
+Ident: ParsedIdentifier = {
+    <start:@L> <name:IDENT> <end:@R> => ParsedIdentifier { name, escaped: false, span: Span::new(start, end) },
+    <start:@L> <name:ESCAPED_IDENT> <end:@R> => ParsedIdentifier { name, escaped: true, span: Span::new(start, end) },
 };
 
-VarIdent: String = {
-    Ident,
-    Defer => "defer".to_string(),
+FnName: String = <id:Ident> =>? ident::finish(id, IdentCategory::Function);
+ModName: String = <id:Ident> =>? ident::finish(id, IdentCategory::Module);
+GlobalName: String = <id:Ident> =>? ident::finish(id, IdentCategory::GlobalVar);
+LocalName: String = <id:Ident> =>? ident::finish(id, IdentCategory::Local);
+FieldName: String = <id:Ident> =>? ident::finish(id, IdentCategory::Field);
+PascalName: String = <id:Ident> =>? ident::finish(id, IdentCategory::PascalType);
+OpenLabelName: String = <id:Ident> =>? ident::finish(id, IdentCategory::OpenLabel);
+ClosedMemberName: String = <id:Ident> =>? ident::finish(id, IdentCategory::ClosedMember);
+AttachName: String = <id:Ident> =>? ident::finish(id, IdentCategory::AttachSlot);
+
+MacroName: String = {
+    <start:@L> <name:MACRO> <end:@R> =>? ident::finish_macro(name, Span::new(start, end))
 };
 
-MacroName: String = <tok:MACRO> =>? {
-    match tok { Token::Macro(s) => Ok(s), _ => Err(ParseError::User { error: "Expected MACRO token".to_string() }) }
-};
-Num: i64     = <tok:NUM>   =>? {
-    match tok { Token::Num(n) => Ok(n), _ => Err(ParseError::User { error: "Expected NUM token".to_string() }) }
-};
-
-Float: f64     = <tok:FLOAT>   =>? {
-    match tok { Token::Float(f) => Ok(f), _ => Err(ParseError::User { error: "Expected FLOAT token".to_string() }) }
-};
-
-StringLiteral: String = {
-    <s:StrLiteral> =>? {
-        match s {
-            Token::StrLiteral(str) => Ok(str),
-            _ => Err(ParseError::User { error: "Expected StrLiteral token".to_string() }),
-        }
-    }
-};
+Num: i64 = <n:NUM> => n;
+Float: f64 = <f:FLOAT> => f;
+StringLiteral: String = <s:StrLiteral> => s;
 
 BooleanLiteral: bool = {
     TRUE => true,
     FALSE => false,
 };
-
 
 Expr: Spanned<Expr> = {
     <e:ExprNoMatch> => e,
@@ -764,27 +726,40 @@ Postfix: Spanned<Expr> = {
     <start:@L> <base:Postfix> LBracket <index:Expr> RBracket <end:@R> => Spanned::new(Expr::Index(Box::new(base), Box::new(index)), Span::new(start, end)),
     <start:@L> <e:Postfix> PlusPlus <end:@R> => Spanned::new(Expr::Increment(Box::new(e)), Span::new(start, end)),
     <start:@L> <e:Postfix> MinusMinus <end:@R> => Spanned::new(Expr::Decrement(Box::new(e)), Span::new(start, end)),
-    <start:@L> <base:Postfix> Dot <field:Ident> LParen RParen <end:@R> =>? {
+    <start:@L> <base:Postfix> Dot <id:Ident> LParen RParen <end:@R> =>? {
+        let field = ident::finish(id, IdentCategory::Function)?;
         if let Expr::Var(mod_name) = base.node {
             Ok(Spanned::new(Expr::ModuleAccess(mod_name, field, vec![]), Span::new(start, end)))
         } else {
-            Err(ParseError::User { error: "method call on non-module expression is not supported".to_string() })
+            Err(type_surface::syn(
+                6,
+                Span::new(start, end),
+                "method call on non-module expression is not supported",
+                None,
+            ))
         }
     },
-    <start:@L> <base:Postfix> Dot <field:Ident> LParen <first:Expr> <rest:(Comma <Expr>)*> RParen <end:@R> =>? {
+    <start:@L> <base:Postfix> Dot <id:Ident> LParen <first:Expr> <rest:(Comma <Expr>)*> RParen <end:@R> =>? {
+        let field = ident::finish(id, IdentCategory::Function)?;
         let mut args = vec![first];
         args.extend(rest);
         if let Expr::Var(mod_name) = base.node {
             Ok(Spanned::new(Expr::ModuleAccess(mod_name, field, args), Span::new(start, end)))
         } else {
-            Err(ParseError::User { error: "method call on non-module expression is not supported".to_string() })
+            Err(type_surface::syn(
+                6,
+                Span::new(start, end),
+                "method call on non-module expression is not supported",
+                None,
+            ))
         }
     },
-    <start:@L> <base:Postfix> Dot <field:Ident> <end:@R> => {
+    <start:@L> <base:Postfix> Dot <id:Ident> <end:@R> =>? {
+        let field = ident::finish(id, IdentCategory::Field)?;
         if let Expr::Var(val) = base.node {
-            Spanned::new(Expr::FieldAccess(Box::new(Spanned::new(Expr::Var(val), base.span)), field), Span::new(start, end))
+            Ok(Spanned::new(Expr::FieldAccess(Box::new(Spanned::new(Expr::Var(val), base.span)), field), Span::new(start, end)))
         } else {
-            Spanned::new(Expr::FieldAccess(Box::new(base), field), Span::new(start, end))
+            Ok(Spanned::new(Expr::FieldAccess(Box::new(base), field), Span::new(start, end)))
         }
     },
     <start:@L> <base:Postfix> Question <end:@R> => Spanned::new(Expr::Try(Box::new(base)), Span::new(start, end)),
@@ -792,6 +767,8 @@ Postfix: Spanned<Expr> = {
 }
 
 Atom: Spanned<Expr> = {
+    <start:@L> Init <name:PascalName> LBrace <fields:StructInitFields> RBrace <end:@R> =>
+        Spanned::new(Expr::StructInit(name, fields), Span::new(start, end)),
     <start:@L> <m:MacroName> LParen RParen <end:@R> => Spanned::new(Expr::Macro(m, vec![]), Span::new(start, end)),
     <start:@L> <m:MacroName> LParen <first:Expr> <rest:(Comma <Expr>)*> RParen <end:@R> => {
         let mut args = vec![first];
@@ -804,56 +781,51 @@ Atom: Spanned<Expr> = {
         Spanned::new(Expr::Destroy(Box::new(e)), Span::new(start, end)),
     <start:@L> Exist LParen <e:Expr> RParen <end:@R> =>
         Spanned::new(Expr::Exist(Box::new(e)), Span::new(start, end)),
-    <start:@L> InstanceCreate <end:@R> =>
-        Spanned::new(Expr::Var("new".to_string()), Span::new(start, end)),
-    <start:@L> Destroy <end:@R> =>
-        Spanned::new(Expr::Var("destroy".to_string()), Span::new(start, end)),
-    <start:@L> Exist <end:@R> =>
-        Spanned::new(Expr::Var("exist".to_string()), Span::new(start, end)),
-    <start:@L> <m:MacroName> LParen <name:Ident> LBrace <fields:StructInitFields> RBrace RParen <end:@R> =>? {
-        if m == "init" {
-            Ok(Spanned::new(Expr::StructInit(name, fields), Span::new(start, end)))
-        } else {
-            Err(ParseError::User { error: format!("Macro '{}' does not support struct init syntax. Use @init for struct initialization.", m) })
-        }
+    <start:@L> <id:Ident> LParen RParen <end:@R> =>? {
+        let name = ident::finish(id, IdentCategory::Function)?;
+        Ok(Spanned::new(Expr::Call(name, vec![]), Span::new(start, end)))
     },
-    <start:@L> <id:Ident> LParen RParen <end:@R> => Spanned::new(Expr::Call(id, vec![]), Span::new(start, end)),
-    <start:@L> <id:Ident> LParen <first:Expr> <rest:(Comma <Expr>)*> RParen <end:@R> => {
+    <start:@L> <id:Ident> LParen <first:Expr> <rest:(Comma <Expr>)*> RParen <end:@R> =>? {
+        let name = ident::finish(id, IdentCategory::Function)?;
         let mut args = vec![first];
         args.extend(rest);
-        Spanned::new(Expr::Call(id, args), Span::new(start, end))
+        Ok(Spanned::new(Expr::Call(name, args), Span::new(start, end)))
     },
-    <start:@L> Colon <id:Ident> <end:@R> => Spanned::new(Expr::Atom(LabelName::Static(id)), Span::new(start, end)),
+    <start:@L> <q:QualifiedAtomName> <end:@R> => Spanned::new(Expr::Atom(q), Span::new(start, end)),
+    <start:@L> Colon <id:OpenLabelName> <end:@R> => Spanned::new(Expr::Atom(LabelName::Static(id)), Span::new(start, end)),
     <start:@L> Colon <s:StringLiteral> <end:@R> =>? {
         match parse_dynamic_label_template(&s) {
             Ok(parts) => Ok(Spanned::new(Expr::Atom(LabelName::Dynamic(parts)), Span::new(start, end))),
-            Err(msg) => Err(ParseError::User { error: msg }),
+            Err(msg) => Err(type_surface::syn(6, Span::new(start, end), msg, None)),
         }
     },
-    <start:@L> LBrace Colon <id:Ident> Comma <payload:Expr> RBrace <end:@R> => Spanned::new(Expr::Label(LabelName::Static(id), Box::new(payload)), Span::new(start, end)),
+    <start:@L> LBrace Colon <id:OpenLabelName> Comma <payload:Expr> RBrace <end:@R> => Spanned::new(Expr::Label(LabelName::Static(id), Box::new(payload)), Span::new(start, end)),
     <start:@L> LBrace Colon <s:StringLiteral> Comma <payload:Expr> RBrace <end:@R> =>? {
         match parse_dynamic_label_template(&s) {
             Ok(parts) => Ok(Spanned::new(Expr::Label(LabelName::Dynamic(parts), Box::new(payload)), Span::new(start, end))),
-            Err(msg) => Err(ParseError::User { error: msg }),
+            Err(msg) => Err(type_surface::syn(6, Span::new(start, end), msg, None)),
         }
     },
-    <start:@L> LtColon <id:Ident> <end:@R> => Spanned::new(Expr::AttachSlot(id), Span::new(start, end)),
-    <start:@L> <id:Ident> <end:@R> => Spanned::new(Expr::Var(id), Span::new(start, end)),
+    <start:@L> LtColon <id:AttachName> <end:@R> => Spanned::new(Expr::AttachSlot(id), Span::new(start, end)),
+    <start:@L> <id:Ident> <end:@R> =>? {
+        let name = ident::finish(id, IdentCategory::Local)?;
+        Ok(Spanned::new(Expr::Var(name), Span::new(start, end)))
+    },
     <start:@L> <n:Num> <end:@R> => Spanned::new(Expr::Number(n), Span::new(start, end)),
     <start:@L> <f:Float> <end:@R> => Spanned::new(Expr::Float(f), Span::new(start, end)),
     <start:@L> <s:StringLiteral> <end:@R> => Spanned::new(Expr::Str(s), Span::new(start, end)),
     <start:@L> <b:BooleanLiteral> <end:@R> => Spanned::new(Expr::Bool(b), Span::new(start, end)),
-    <start:@L> <i:TypeI8> <end:@R> => Spanned::new(Expr::TypeI8, Span::new(start, end)),
-    <start:@L> <u:TypeU8> <end:@R> => Spanned::new(Expr::TypeU8, Span::new(start, end)),
-    <start:@L> <i:TypeI16> <end:@R> => Spanned::new(Expr::TypeI16, Span::new(start, end)),
-    <start:@L> <u:TypeU16> <end:@R> => Spanned::new(Expr::TypeU16, Span::new(start, end)),
-    <start:@L> <i:TypeI32> <end:@R> => Spanned::new(Expr::TypeI32, Span::new(start, end)),
-    <start:@L> <u:TypeU32> <end:@R> => Spanned::new(Expr::TypeU32, Span::new(start, end)),
-    <start:@L> <i:TypeI64> <end:@R> => Spanned::new(Expr::TypeI64, Span::new(start, end)),
-    <start:@L> <u:TypeU64> <end:@R> => Spanned::new(Expr::TypeU64, Span::new(start, end)),
-    <start:@L> <f:TypeF16> <end:@R> => Spanned::new(Expr::TypeF16, Span::new(start, end)),
-    <start:@L> <f:TypeF32> <end:@R> => Spanned::new(Expr::TypeF32, Span::new(start, end)),
-    <start:@L> <f:TypeF64> <end:@R> => Spanned::new(Expr::TypeF64, Span::new(start, end)),
+    <start:@L> TypeI8 <end:@R> => Spanned::new(Expr::TypeI8, Span::new(start, end)),
+    <start:@L> TypeU8 <end:@R> => Spanned::new(Expr::TypeU8, Span::new(start, end)),
+    <start:@L> TypeI16 <end:@R> => Spanned::new(Expr::TypeI16, Span::new(start, end)),
+    <start:@L> TypeU16 <end:@R> => Spanned::new(Expr::TypeU16, Span::new(start, end)),
+    <start:@L> TypeI32 <end:@R> => Spanned::new(Expr::TypeI32, Span::new(start, end)),
+    <start:@L> TypeU32 <end:@R> => Spanned::new(Expr::TypeU32, Span::new(start, end)),
+    <start:@L> TypeI64 <end:@R> => Spanned::new(Expr::TypeI64, Span::new(start, end)),
+    <start:@L> TypeU64 <end:@R> => Spanned::new(Expr::TypeU64, Span::new(start, end)),
+    <start:@L> TypeF16 <end:@R> => Spanned::new(Expr::TypeF16, Span::new(start, end)),
+    <start:@L> TypeF32 <end:@R> => Spanned::new(Expr::TypeF32, Span::new(start, end)),
+    <start:@L> TypeF64 <end:@R> => Spanned::new(Expr::TypeF64, Span::new(start, end)),
     <start:@L> LParen RParen <end:@R> => Spanned::new(Expr::Unit(), Span::new(start, end)),
     <start:@L> LParen <e:Expr> RParen <end:@R> => Spanned::new(e.node, Span::new(start, end)),
     <start:@L> LBracket RBracket <end:@R> => Spanned::new(Expr::List(vec![]), Span::new(start, end)),
@@ -863,7 +835,6 @@ Atom: Spanned<Expr> = {
         Spanned::new(Expr::List(v), Span::new(start, end))
     },
 };
-
 
 StructInitFields: Vec<(String, Spanned<Expr>)> = {
     => vec![],
@@ -876,6 +847,7 @@ StructInitFields: Vec<(String, Spanned<Expr>)> = {
 };
 
 StructInitFieldsTail: Vec<(String, Spanned<Expr>)> = {
+    => vec![],
     <f:StructInitField> => vec![f],
     <first:StructInitField> Comma <rest:StructInitFieldsTail> => {
         let mut v = vec![first];
@@ -885,5 +857,5 @@ StructInitFieldsTail: Vec<(String, Spanned<Expr>)> = {
 };
 
 StructInitField: (String, Spanned<Expr>) = {
-    <id:Ident> Assign <e:Expr> => (id, e),
+    <id:FieldName> Assign <e:Expr> => (id, e),
 };

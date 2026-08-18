@@ -63,3 +63,5 @@ pkg test;
            return b;
       }
 ```
+
+`pkg` / `import` names are `snake_case` (`SPRS-SEM-025`) and cannot be bare keywords (`function_build` is a keyword; name the package `fn_builds` or write `^function_build`).

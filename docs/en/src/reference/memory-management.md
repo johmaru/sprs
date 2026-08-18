@@ -1,19 +1,28 @@
 # Memory Management
 
-Sprs uses **move semantics** for heap values (`str`, `list`, `range`, `struct`, `label`, `buffer`).
+Sprs uses **move semantics** for heap values (`str`, `List`, `Range`, struct, label, `Buffer`).
 Assigning or passing one of these values transfers ownership; the old binding becomes invalid
 (`Unit`). Integers, floats, and bools are copied instead.
 
-Use `@clone(x)` when you need to keep the original value after a move.
-Use `cp var` when the same binding is read many times and writing `@clone` each time is noisy.
-Use `@move(x)` to opt out of that sugar for one use.
+Use `@clone(x)` to keep the original after a use that would move. Use `@move(x)` to move out of
+a variable explicitly (the binding becomes `Unit`). There is no `cp var`. Ordinary `var`
+bindings always move.
 
-Auto-clone from `cp` applies when ownership would otherwise move: function arguments,
-`@println` / `@list_push`, assignment RHS, `var` / `cp var` init from another variable,
-and `return`. It does **not** rewrite every expression operand (for example `a + b`).
+**List index is a move:**
 
-**Phase 1:** `cp` is intended mainly for `str`. Other heap types still work, but each use
-deep-copies; the compiler warns when `cp` is clearly applied to `list` / `range` / `struct`.
+`values[index]` takes ownership of the element and leaves `Unit` in that list slot.
+Reading the same index again yields `Unit`. To keep the original list's element,
+`@clone` the list first and read from the clone.
+
+```sprs
+fn main() {
+    var values = [];
+    @list_push(values, "hello");
+    var first = values[0];     # moves the string out; values[0] is now Unit
+    @println(first);           # prints: hello
+    @println(values[0]);       # prints: ()
+}
+```
 
 **Move on assignment:**
 
@@ -44,14 +53,12 @@ fn main() {
 }
 ```
 
-**Always-clone binding with `cp var`:**
+**Explicit `@move`:**
 
 ```sprs
 fn main() {
-    cp var greeting = "Hello, Sprs!";
-    @println(greeting);         # same as @println(@clone(greeting))
-    @println(greeting);         # still valid
-    @println(@move(greeting));  # one-shot real move; greeting becomes Unit
+    var greeting = "Hello, Sprs!";
+    @println(@move(greeting));  # greeting becomes Unit
 }
 ```
 

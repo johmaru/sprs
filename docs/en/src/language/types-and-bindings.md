@@ -1,24 +1,35 @@
 # Types and Bindings
 
-## Basic data types
+## Canonical types
 
-- Int (i64) — annotation keyword `int` (compatible with `i64` in type checks)
-- Float (f64) — annotation keyword `fp` (compatible with `fp64` / `f64` in type checks)
-- Bool — `bool`
-- Str — `str`
-- List (dynamic array) — annotation keyword `list` (also `List(T)` application form)
-- Range — `range`
-- Unit — `unit`
-- Enum — compile-time frame; variants are Atoms (`Color.Red`)
-- Struct
-- Buffer — fixed-size zero-initialized byte array; annotation keyword `buffer`
-- RawPtr — bare address from `@raw(buf)`; annotation keyword `rawptr`
-- Error labels (catchable) — `err` sugar for `Label(:error, any)`
-- Atom (immutable name) — annotation keyword `atom` (also `Atom(:name)` application form)
-- Label (tagged value) — annotation keyword `label` (also `Label(:name[, T])` application form)
-- i8 / u8 / i16 / u16 / i32 / u32 / i64 / u64 (mainly `@cast`; also usable in `>>` annotations)
-- fp16 / fp32 / fp64 (mainly `@cast`; also usable in `>>` annotations)
+Surface types have one spelling. Old aliases (`int`, `fp`, `fp16`/`fp32`/`fp64`, `list`, `range`, `buffer`, `rawptr`, `err`, `atom`, type-position `label`) are `SPRS-SEM-011` with a replacement in `help`.
 
+| Surface | Meaning |
+|---------|---------|
+| `i8` `u8` `i16` `u16` `i32` `u32` `i64` `u64` | Integer widths. Unannotated integer literals are `i64`. |
+| `f16` `f32` `f64` | Float widths. Unannotated float literals are `f64`. `@cast` uses these names. |
+| `bool` | Boolean |
+| `str` | String |
+| `unit` | Unit (`()`) |
+| `Any` | Unchecked / dynamic |
+| `List(T)` | List. Always one argument (`List(Any)` when the element is unknown). Bare `List` / `List()` is rejected. |
+| `Range` | Range |
+| `Buffer` | Fixed-size zero-initialized byte array |
+| `RawPtr` | Bare address from `@raw(buf)` |
+| `Label` | Broad label: payloadless atoms and payload labels |
+| `:name` | Exact payloadless atom (`:ready`) |
+| `Label(:name, T)` | Exact payload label. First argument must be `:name`. |
+| PascalCase name | Struct or closed label set (`Point`, `ConnectionState`) |
+
+`Type::Label` is a surface union. It does not assume a single runtime tag (`tag_discriminant` is `None`). Runtime still uses `Tag::Atom = 9` for payloadless atoms and `Tag::Label = 10` for payload values. Those tags are implementation detail, not type names.
+
+Inferred payloadless value `:ready` is `:ready`. A payload value `{:ok, 7}` is `Label(:ok, i64)` when the name is static, otherwise broad `Label`.
+
+Broad `Label` accepts exact atoms, payload labels, closed label sets, and the runtime-only atom tag. Exact `:name` matches only that name. `Label(:name, T)` compares the name and the payload type. `Label(:ok)` (one argument) and `Atom(...)` are rejected.
+
+`Self` is valid only in struct field types (including `List(Self)`). See [Structs](structs.md).
+
+Type application is compile-time only: `List(i64)`, `Label(:ok, i64)`, `Label(:error, Any)`.
 
 ## Comments and literals
 
@@ -34,32 +45,36 @@ Booleans are `true` and `false`.
 
 List literals use the same form as the `[1, 2, 3]` example under Variables and assignments.
 
-Type *application* in annotations uses `Name(Type, …)` (for example `List(int)`, `Result(int, err)`, `Label(:ok, int)`). These are compile-time forms only: they are not runtime tags.
+## Identifiers and naming (`SPRS-SEM-025`)
 
-Everyday code keeps the flat keywords (`list`, `err`, `atom`, `label`, `buffer`, `rawptr`). Generics / type parameters (`Param`) are not user-facing yet.
+Identifiers are `[A-Za-z_][A-Za-z0-9_]*`. A trailing `!` is not part of a name.
 
-## Keyword identifiers
+ASCII only. Digits may appear after the first character. Acronyms are ordinary words (`DmaController`, not `DMAController`). `__` prefix is rejected in every user category. `_` alone is the match wildcard only. `_name` is allowed only for local variables, parameters, and pattern binders.
 
-Keywords stay lexer tokens, but many parse as names wherever an identifier is expected (`pkg`, `import`, `fn` name, parameters, `var`, fields, calls, variable references).
+| Category | Style | Examples |
+|----------|-------|----------|
+| function, module/`pkg`/`import`, global `var`, field, attach slot, macro | `snake_case` | `start_dma`, `fn_builds`, `@buf_len` |
+| local variable / parameter / binder | `snake_case`, optional `_name` | `item`, `_tmp` |
+| struct, closed label set, FunctionBuild, named type, type parameter | `PascalCase` | `Point`, `T`, `DmaController` |
+| open label (`:name`) and closed member | `snake_case` | `:ready`, `:ConnectionState.waiting_for_dma` |
 
-Usable as names without escaping (e.g. `pkg buffer;`, `fn buffer(new >> int)`, `var rawptr = new;`):
-`fn`, `case`, `break`, `pkg`, `import`, `var`, `pub`, `enum`, `struct`, `cp`, `ambi`,
-`unsafe`, `int`, `fp`, `bool`, `str`, `list`, `buffer`, `rawptr`, `range`, `unit`,
-`err`, `label`, `atom`. Parameter names may also be `new` / `destroy` / `exist`.
-`var defer = …` is allowed. A bare `new` / `destroy` / `exist` in an expression is a
-variable; `new(4)` / `destroy(x)` / `exist(x)` stay the heap forms.
+Static labels are split for checking: `:ready` is snake_case; `:ConnectionState.waiting_for_dma` is PascalCase set + snake_case member. Dynamic `:"..."` text is not checked. Canonical-name generation / automatic rename is not implemented.
 
-Still syntax when written bare: `if`, `else`, `while`, `match`, `return`, `true`,
-`false`. `defer` is a `var` name only (not an expression identifier). `i8`…`u64` /
-`fp16`…`fp64` stay type atoms for `@cast`. In `>>` position a type keyword is still
-the type (`>> buffer` is Buffer, not a named type).
+Violations are `SPRS-SEM-025` with a category message such as `function names must use snake_case`.
 
-## `^` escape
+## Keywords and `^`
 
-Prefix any identifier with `^` to treat it as a normal name, including keywords
-that cannot appear bare. The `^` is not part of the name: `^fn` and `fn` are the
-same identifier. Examples: `var ^fn = 1;` / `^fn = ^fn + 1;`. A lone `^`, `^1`,
-or `^^fn` is a lexer error.
+Keywords are always keywords. Bare keyword in an identifier position is `SPRS-SYN-002` (`\`keyword\` is a reserved keyword`) with `help: use ^keyword if this name is intentional`.
+
+Escape with `^` to use a keyword as a name. `^` is not part of the name. `new(expr)`, `destroy(expr)`, `exist(expr)`, and `defer expr;` stay core syntax; the same names as identifiers require `^new` and so on.
+
+`@name` is a macro token. `@^name` is a lexer error.
+
+Escaping a non-keyword that already passes its category rule is `SPRS-SYN-008` (`unnecessary identifier escape \`^foo\``) with `help: use foo instead of ^foo`. A bad name such as `^BadName` as a local reports `SPRS-SEM-025` first, not the unnecessary escape.
+
+Keywords include: `if` `else` `while` `fn` `use` `function_build` `private` `return` `pkg` `import` `var` `pub` `struct` `ambi` `new` `destroy` `exist` `unsafe` `defer` `match` `case` `break` `true` `false` `bool` `str` `unit` `i8`…`u64` `f16` `f32` `f64` `label` `init` `source` `params` `return_type` `visibility` `type_param` `when` `is` `neq` `and` `or` `not`. `label` is for declarations (`label Color { ... }`, `label :ready;`); type position uses `Label`. `ambi` is the only remaining type-position keyword besides the primitive type names above.
+
+A lone `^`, `^1`, or `^^name` is a lexer error.
 
 ## Variables and assignments
 
@@ -82,14 +97,15 @@ y = "now a string"; # y is now a string
 
 ```
 
+Heap values move on assignment, call, and return. Use `@clone` to keep a copy. See [Memory Management](../reference/memory-management.md).
+
 ## Typed bindings and `ambi`
 
 Parameter and return types use `>>` annotations. Unannotated parameters stay dynamic.
-Annotated parameters are checked at call sites (arity and type). `int` and `i64` are
-treated as the same type for checking; `fp` and `fp64` likewise.
+Annotated parameters are checked at call sites (arity and type).
 
 ```sprs
-fn add(a >> int, b >> int) >> int {
+fn add(a >> i64, b >> i64) >> i64 {
   return a + b;
 }
 ```
@@ -98,7 +114,7 @@ Fixed annotations reject incompatible reassignment. Prefix the type with `ambi`
 (ambiguous) when the binding should start as that type but allow dynamic reassignment:
 
 ```sprs
-fn demo(fixed >> int, flex >> ambi int) {
+fn demo(fixed >> i64, flex >> ambi i64) {
   fixed = 1;      # ok
   flex = 1;       # ok
   flex = "x";     # ok — becomes dynamic after reassignment
@@ -108,11 +124,11 @@ fn demo(fixed >> int, flex >> ambi int) {
 Applied types nest and are checked by constructor name and each argument:
 
 ```sprs
-fn take(xs >> List(int)) >> List(int) {
+fn take(xs >> List(i64)) >> List(i64) {
   return xs;
 }
 
-fn parse() >> Result(int, err) {
-  return 1;
+fn parse() >> Label(:error, Any) {
+  return {:error, "no"};
 }
 ```

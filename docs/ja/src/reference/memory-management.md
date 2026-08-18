@@ -1,20 +1,27 @@
 # メモリ管理
 
-Sprs はヒープ値（`str`、`list`、`range`、`struct`、`label`、`buffer`）に **ムーブセマンティクス** を使います。
+Sprs はヒープ値（`str`、`List`、`Range`、構造体、ラベル、`Buffer`）に **ムーブセマンティクス** を使います。
 これらの値を代入または渡すと所有権が移り、古い束縛は無効になります（`Unit`）。
 整数、浮動小数点、bool はコピーされます。
 
-ムーブのあとも元の値を残したいときは `@clone(x)` を使います。
-同じ束縛を何度も読み、毎回 `@clone` を書くのが煩わしいときは `cp var` を使います。
-1 回分その糖衣を外すには `@move(x)` を使います。
+ムーブになる利用のあと元の値を残すときは `@clone(x)` です。変数から明示的にムーブするときは
+`@move(x)` です（束縛は `Unit` になります）。`cp var` はありません。通常の `var` は常にムーブします。
 
-`cp` による自動クローンは、そうしなければ所有権がムーブされるときに働きます。
-関数引数、`@println` / `@list_push`、代入の右辺、別変数からの `var` / `cp var` 初期化、`return` です。
-すべての式オペランドを書き換えるわけでは **ありません**（例: `a + b`）。
+**リスト添字はムーブ:**
 
-**Phase 1:** `cp` は主に `str` 向けです。
-他のヒープ型でも動きますが、使用ごとにディープコピーします。
-`cp` が明らかに `list` / `range` / `struct` に適用されていると、コンパイラは警告します。
+`values[index]` は要素の所有権をムーブし、list 側のそのスロットを `Unit` にします。
+同じ index を再読すると `Unit` になります。
+元の list の要素を残したい場合は、先に list 自体を `@clone` し、clone 側から取得します。
+
+```sprs
+fn main() {
+    var values = [];
+    @list_push(values, "hello");
+    var first = values[0];     # moves the string out; values[0] is now Unit
+    @println(first);           # prints: hello
+    @println(values[0]);       # prints: ()
+}
+```
 
 **代入時のムーブ:**
 
@@ -45,14 +52,12 @@ fn main() {
 }
 ```
 
-**`cp var` による常時クローン束縛:**
+**明示的な `@move`:**
 
 ```sprs
 fn main() {
-    cp var greeting = "Hello, Sprs!";
-    @println(greeting);         # same as @println(@clone(greeting))
-    @println(greeting);         # still valid
-    @println(@move(greeting));  # one-shot real move; greeting becomes Unit
+    var greeting = "Hello, Sprs!";
+    @println(@move(greeting));  # greeting becomes Unit
 }
 ```
 

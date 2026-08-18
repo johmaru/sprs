@@ -12,7 +12,7 @@ import errors;
 import labels;
 import buffers;
 import unsafe_mem;
-import function_build;
+import fn_builds;
 
 # === Main ===
 
@@ -69,13 +69,13 @@ fn main() {
     @println(variables.str_eq_same());
     @println(variables.escaped_keyword_var());
 
-    @println("=== cp / @move ===");
-    @println(variables.cp_print_twice());
-    @println(variables.cp_move_invalidates());
-    @println(variables.cp_assign_keeps_source());
+    @println("=== clone / @move ===");
+    @println(variables.clone_print_twice());
+    @println(variables.move_invalidates());
+    @println(variables.clone_assign_keeps_source());
     @println(variables.assign_moves_string());
     @println(variables.self_assign_string());
-    @println(variables.cp_call_twice());
+    @println(variables.clone_call_twice());
 
     @println("=== Functions ===");
     @println(functions.call_with_args());
@@ -88,10 +88,12 @@ fn main() {
     @println(functions.deep_recursion());
 
     @println("=== FunctionBuild ===");
-    @println(function_build.fb_add(3, 4));
-    @println(function_build.echo_a(9));
-    @println(function_build.echo_b(11));
-    @println(function_build.forward_value());
+    @println(fn_builds.fb_add(3, 4));
+    @println(fn_builds.echo_a(9));
+    @println(fn_builds.echo_b(11));
+    @println(fn_builds.forward_value());
+    @println(fn_builds.identity_i64(42));
+    @println(fn_builds.identity_str("id"));
 
     @println("=== Lists ===");
     @println(data_structures.list_push_and_print());
@@ -99,6 +101,7 @@ fn main() {
     @println(data_structures.list_build_loop());
     @println(data_structures.list_empty());
     @println(data_structures.list_index_read());
+    @println(data_structures.list_index_moves_string());
 
     @println("=== Cast ===");
     @println(types.cast_i8());
@@ -120,8 +123,8 @@ fn main() {
     @println(types.fcast_preserves_error());
     @println("bool test : " + @fcast(comparison.eq_as_bool()));
     @println("=== BUG-L08 Verify ===");
-    @println(types.cast_uint32_to_fp64());
-    @println(types.cast_int32_to_fp64());
+    @println(types.cast_uint32_to_f64());
+    @println(types.cast_int32_to_f64());
     @println("=== Shift ===");
     @println(comparison.lshift_basic());
     @println(comparison.lshift_zero());
@@ -148,7 +151,7 @@ fn main() {
     @println(types.float_div());
     @println(types.float_complex());
     @println(types.float_var_arith());
-    # @cast(..., fp16/fp32) is incompatible with >> fp
+    # @cast(..., f16/f32) is incompatible with >> f64
     @println(types.float_while_loop());
     @println(types.float_nested());
     @println(types.float_mixed());
@@ -177,16 +180,8 @@ fn main() {
     @println(data_structures.struct_clone_string());
     @println(data_structures.struct_move_invalid_field());
     @println(data_structures.recursive_tree_child_value());
-
-    @println("=== Enum ===");
-    @println(data_structures.enum_access());
-    @println(data_structures.enum_multiple());
-    @println(data_structures.enum_in_list());
-    @println(data_structures.enum_eq_same());
-    @println(data_structures.enum_eq_other());
-    @println(data_structures.enum_eq_bare_atom());
-    @println(data_structures.enum_match_red());
-    data_structures.enum_print();
+    @println(data_structures.init_default_value());
+    @println(data_structures.init_empty());
 
     @println("=== Module Import ===");
     @println(test.test());
@@ -208,6 +203,7 @@ fn main() {
     @println(errors.overflow_other_ops());
     @println(errors.overflow_label_contract());
     @println(errors.overflow_normal_boundaries());
+    @println(errors.question_drops_buffer_arg());
 
     @println("=== Labels ===");
     @println(labels.dynamic_payload());
@@ -232,6 +228,14 @@ fn main() {
     @println(labels.color_frame_identity());
     @println(labels.local_atom_paths());
     @println(labels.shadow_local_atom());
+    @println(labels.palette_access());
+    @println(labels.palette_multiple());
+    @println(labels.palette_in_list());
+    @println(labels.palette_eq_same());
+    @println(labels.palette_eq_other());
+    @println(labels.palette_eq_bare_atom());
+    @println(labels.palette_match_red());
+    labels.palette_print();
 
     @println("=== Buffer ===");
     @println(buffers.buf_macro_roundtrip());
@@ -240,6 +244,7 @@ fn main() {
     @println(buffers.buf_scope_exit_no_destroy());
     @println(buffers.buf_oob_get());
     @println(buffers.buf_demo_output());
+    @println(buffers.explicit_return_drops_buffer_arg());
 
     @println("=== Unsafe/Defer ===");
     @println(unsafe_mem.raw_free_roundtrip());

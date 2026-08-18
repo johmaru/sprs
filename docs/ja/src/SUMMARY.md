@@ -8,7 +8,7 @@
 
 - [型と束縛](language/types-and-bindings.md)
 - [関数と制御フロー](language/functions-and-control-flow.md)
-- [列挙型と構造体](language/enums-and-structs.md)
+- [構造体](language/structs.md)
 - [ラベルと match](language/labels-and-match.md)
 - [エラー](language/errors.md)
 - [Buffer と unsafe](language/buffers-and-unsafe.md)

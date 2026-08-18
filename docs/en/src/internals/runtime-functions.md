@@ -36,7 +36,7 @@ A runtime value is `{ i32 tag, i64 data }`. For heap values, `data` is a handle 
 | Function Name   | Description                          |
 |-----------------|--------------------------------------|
 | __list_new | for creating a new list|
-| __list_get | for getting an element from a list by index|
+| __list_get | destructive take of a list element; leaves Unit in that slot|
 | __list_push | for pushing an element to the end of a list|
 | __range_new | for creating a new range|
 | __println | for printing values to the console|

@@ -6,11 +6,11 @@ use inkwell::{
     targets::{InitializationConfig, Target, TargetMachine, TargetTriple},
 };
 
+use crate::naming;
 use crate::{
-    command_helper::{validate_name, validate_subpath, ProjectConfig},
+    command_helper::{ProjectConfig, validate_name, validate_subpath},
     llvm::compiler::{self, OS},
 };
-use crate::naming;
 
 const RUNTIME_SOURCE: &str = include_str!("../runtime/runtime.rs");
 
@@ -21,18 +21,21 @@ pub enum ExecuteMode {
     Debug,
 }
 
-pub fn build_and_run(dest: Option<&str>, mode: ExecuteMode, cli_error_format: Option<crate::front::error::ErrorFormat>) -> Result<(), Box<dyn std::error::Error>> {
+pub fn build_and_run(
+    dest: Option<&str>,
+    mode: ExecuteMode,
+    cli_error_format: Option<crate::front::error::ErrorFormat>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let context = Context::create();
     let builder = context.create_builder();
 
     let base = dest.unwrap_or(".");
 
     let toml_path = format!("{}/{}", base, naming::CONFIG_FILE);
-    let setting_toml_content =
-        std::fs::read_to_string(&toml_path).unwrap_or_else(|e| {
-            eprintln!("Failed to read {}: {}", naming::CONFIG_FILE, e);
-            "".to_string()
-        });
+    let setting_toml_content = std::fs::read_to_string(&toml_path).unwrap_or_else(|e| {
+        eprintln!("Failed to read {}: {}", naming::CONFIG_FILE, e);
+        "".to_string()
+    });
 
     let config: Option<ProjectConfig> = if !setting_toml_content.is_empty() {
         match toml::from_str(&setting_toml_content) {
@@ -55,10 +58,7 @@ pub fn build_and_run(dest: Option<&str>, mode: ExecuteMode, cli_error_format: Op
             .unwrap_or(crate::front::error::ErrorFormat::Human)
     });
 
-    let src_dir = config
-        .as_ref()
-        .map(|c| c.src_dir.as_str())
-        .unwrap_or("src");
+    let src_dir = config.as_ref().map(|c| c.src_dir.as_str()).unwrap_or("src");
     validate_subpath(src_dir)?;
     let src_path = format!("{}/{}", base, src_dir);
 
@@ -101,8 +101,7 @@ pub fn build_and_run(dest: Option<&str>, mode: ExecuteMode, cli_error_format: Op
     } else {
         TargetTriple::create("x86_64-pc-linux-gnu")
     };
-    let target = Target::from_triple(&target_triple)
-        .map_err(|e| format!("Target error: {}", e))?;
+    let target = Target::from_triple(&target_triple).map_err(|e| format!("Target error: {}", e))?;
     let target_machine = target
         .create_target_machine(
             &target_triple,
@@ -124,7 +123,10 @@ pub fn build_and_run(dest: Option<&str>, mode: ExecuteMode, cli_error_format: Op
         // mem2reg
         let pass_options = PassBuilderOptions::create();
         if let Err(e) = module.run_passes("mem2reg", &target_machine, pass_options) {
-            eprintln!("Warning: LLVM run_passes failed for module '{}': {}", name, e);
+            eprintln!(
+                "Warning: LLVM run_passes failed for module '{}': {}",
+                name, e
+            );
         }
 
         let ll_filename = format!("{}/{}.ll", out_dir, name);
@@ -137,7 +139,11 @@ pub fn build_and_run(dest: Option<&str>, mode: ExecuteMode, cli_error_format: Op
         let filename = format!("{}/{}.o", out_dir, name);
 
         target_machine
-            .write_to_file(module, inkwell::targets::FileType::Object, Path::new(&filename))
+            .write_to_file(
+                module,
+                inkwell::targets::FileType::Object,
+                Path::new(&filename),
+            )
             .map_err(|e| format!("Failed to write object file: {}", e))?;
         println!("Generated: {}", filename);
         object_files.push(filename);
@@ -191,12 +197,13 @@ pub fn build_and_run(dest: Option<&str>, mode: ExecuteMode, cli_error_format: Op
         }
         _ => proj_name,
     };
+    let exec_path = Path::new(&out_dir).join(&exec_filename);
 
     let mut args = object_files.clone();
     args.extend(vec![
         runtime_lib_path,
         "-o".to_string(),
-        format!("{}/{}", out_dir, exec_filename),
+        exec_path.to_string_lossy().into_owned(),
         "-lm".to_string(),
         "-ldl".to_string(),
         "-lpthread".to_string(),
@@ -208,7 +215,10 @@ pub fn build_and_run(dest: Option<&str>, mode: ExecuteMode, cli_error_format: Op
         .map_err(|e| format!("Failed to invoke clang: {}", e))?;
 
     if status_link.success() {
-        println!("Successfully created executable: {}/{}", out_dir, exec_filename);
+        println!(
+            "Successfully created executable: {}",
+            exec_path.display()
+        );
         if mode == ExecuteMode::Run {
             println!("--- Running ---");
             let can_run = match compiler.target_os {
@@ -217,7 +227,7 @@ pub fn build_and_run(dest: Option<&str>, mode: ExecuteMode, cli_error_format: Op
                 OS::Unknown => true,
             };
             if can_run {
-                let status = Command::new(format!("./{}/{}", out_dir, exec_filename))
+                let status = Command::new(&exec_path)
                     .status()
                     .map_err(|e| format!("Failed to run executable: {}", e))?;
                 if !status.success() {
@@ -231,7 +241,11 @@ pub fn build_and_run(dest: Option<&str>, mode: ExecuteMode, cli_error_format: Op
                         OS::Linux => "Linux",
                         OS::Unknown => "Unknown",
                     },
-                    if cfg!(target_os = "windows") { "Windows" } else { "Linux" }
+                    if cfg!(target_os = "windows") {
+                        "Windows"
+                    } else {
+                        "Linux"
+                    }
                 );
             }
         }

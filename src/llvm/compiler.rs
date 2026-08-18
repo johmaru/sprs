@@ -1,4 +1,5 @@
 use crate::front::ast;
+use crate::front::ast::FbCondition;
 use crate::front::error::{ErrorCategory, ErrorCode, Location, SprsError};
 use crate::front::span::Span;
 use crate::front::span::Spanned;
@@ -29,13 +30,13 @@ pub struct StructDef<'ctx> {
     pub llvm_type: StructType<'ctx>,
 }
 
-/// Compiler-local frame for a source `enum` declaration.
+/// Compiler-local frame for a source closed label set (`label State { idle, running }`).
 ///
-/// Variants are kept in source order; the frame only exists at compile time.
-/// Runtime values of `Color.Red` are `Tag::Atom` with intern key `"Color.Red"`
-/// (immediate, not a slab handle), so no runtime enum table is emitted.
-pub struct EnumFrame {
-    pub variants: Vec<String>,
+/// Members are kept in source order; the frame only exists at compile time.
+/// Runtime values of `:State.running` are `Tag::Atom` with intern key `"State.running"`
+/// (immediate, not a slab handle), so no runtime table is emitted.
+pub struct ClosedLabelSetFrame {
+    pub members: Vec<String>,
     pub is_public: bool,
 }
 
@@ -44,6 +45,11 @@ pub struct EnumFrame {
 pub struct FnTypeInfo {
     pub ret_ty: Option<Type>,
     pub params: Vec<Option<TypeAnnot>>,
+    /// Declared FunctionBuild type parameters (empty for normal functions).
+    pub type_params: Vec<String>,
+    /// Conditional `when` return rules, in source order. Empty for normal
+    /// functions and for unconditional FunctionBuild contracts.
+    pub when_rules: Vec<(FbCondition, Type)>,
 }
 
 /// Local binding metadata in a scope.
@@ -51,7 +57,6 @@ pub struct FnTypeInfo {
 pub struct VarBinding<'ctx> {
     pub value: BasicValueEnum<'ctx>,
     pub ty: Type,
-    pub always_clone: bool,
     /// Annotated with `ambi` — reassignment may change the static type.
     pub is_ambi: bool,
     /// Came from a type annotation (`>> T` / `>> ambi T`).
@@ -77,10 +82,14 @@ pub struct Compiler<'ctx> {
     /// Used for type/semantic error locations (was previously left empty).
     pub current_file: String,
     pub struct_defs: HashMap<String, StructDef<'ctx>>, // struct name -> struct definition
-    pub enum_frames: HashMap<String, EnumFrame>,
-    /// Variants of non-public enums, filled after the defining module's
-    /// functions are compiled so same-module functions still see them.
-    pub private_enum_variants: HashSet<String>,
+    pub closed_label_sets: HashMap<String, ClosedLabelSetFrame>,
+    /// FunctionBuild type parameters and `when` rules, keyed by build name.
+    /// Filled from the registry during module loading so prototype declaration
+    /// and call-site resolution can reuse the resolved contract.
+    pub function_build_contracts: HashMap<String, (Vec<String>, Vec<(FbCondition, Type)>)>,
+    /// Members of non-public closed label sets, filled after the defining
+    /// module's functions are compiled so same-module functions still see them.
+    pub private_closed_label_members: HashSet<String>,
     /// Standalone `label :name;` declarations (module-global Atom constants).
     pub atom_defs: HashSet<String>,
     /// Non-public atom names, filled after the defining module compiles.
@@ -410,8 +419,9 @@ impl<'ctx> Compiler<'ctx> {
             source_path,
             current_file: String::new(),
             struct_defs: HashMap::new(),
-            enum_frames: HashMap::new(),
-            private_enum_variants: HashSet::new(),
+            closed_label_sets: HashMap::new(),
+            function_build_contracts: HashMap::new(),
+            private_closed_label_members: HashSet::new(),
             atom_defs: HashSet::new(),
             private_atom_defs: HashSet::new(),
             sources: HashMap::new(),
@@ -426,6 +436,37 @@ impl<'ctx> Compiler<'ctx> {
 
     pub(crate) fn is_visible_atom_def(&self, name: &str) -> bool {
         self.atom_defs.contains(name) && !self.private_atom_defs.contains(name)
+    }
+
+    /// Resolve a static Atom name as a closed label set member.
+    ///
+    /// `set.member` form: `Some(set)` when declared and visible, otherwise
+    /// `SPRS-SEM-004`. Unqualified names return `None` (open Atom).
+    pub fn resolve_closed_label_member(
+        &self,
+        name: &str,
+        span: Span,
+    ) -> Result<Option<String>, SprsError> {
+        let Some((set, member)) = name.split_once('.') else {
+            return Ok(None);
+        };
+        let undefined = || SprsError::Semantic {
+            code: ErrorCode {
+                category: ErrorCategory::Semantic,
+                number: 4,
+            },
+            location: self.location(span),
+            message: format!("Undefined closed label member: {}", name),
+            help: None,
+        };
+        let Some(frame) = self.closed_label_sets.get(set) else {
+            return Err(undefined());
+        };
+        let member_known = frame.members.iter().any(|known| known == member);
+        if self.private_closed_label_members.contains(name) || !member_known {
+            return Err(undefined());
+        }
+        Ok(Some(set.to_string()))
     }
 
     pub(crate) fn enter_scope(&mut self) {
@@ -480,7 +521,6 @@ impl<'ctx> Compiler<'ctx> {
         name: String,
         value: BasicValueEnum<'ctx>,
         ty: Type,
-        is_clone_variable: bool,
         is_ambi: bool,
         is_annotated: bool,
     ) {
@@ -490,7 +530,6 @@ impl<'ctx> Compiler<'ctx> {
                 VarBinding {
                     value,
                     ty,
-                    always_clone: is_clone_variable,
                     is_ambi,
                     is_annotated,
                 },
@@ -519,8 +558,9 @@ impl<'ctx> Compiler<'ctx> {
 
         let mut scope_work: Vec<(Vec<Spanned<ast::Expr>>, Vec<(PointerValue<'ctx>, String)>)> =
             Vec::new();
-        // skip(1): function-arg scope is popped separately; take deferred/vars so
-        // compile_expr does not borrow `scopes` while mutating.
+        // skip(1): exclude scopes[0] (global). Remaining scopes, including the
+        // function-argument scope, are cleaned up innermost-first. Deferred/vars
+        // are taken first so compile_expr does not borrow `scopes` while mutating.
         for scope in self.scopes.iter_mut().skip(1) {
             let deferred = std::mem::take(&mut scope.deferred);
             let mut vars = Vec::new();
@@ -581,7 +621,7 @@ impl<'ctx> Compiler<'ctx> {
                     | Type::Struct(_)
                     | Type::Label
                     | Type::AtomVal
-                    | Type::Enum(_)
+                    | Type::ClosedLabelSet(_)
                     | Type::Buffer
                     | Type::RawPtr
                     | Type::App(_, _)
@@ -895,9 +935,8 @@ mod tag_type_sync_tests {
             (Type::List, Tag::List),
             (Type::Range, Tag::Range),
             (Type::Unit, Tag::Unit),
-            (Type::Enum("Point".into()), Tag::Atom),
+            (Type::ClosedLabelSet("Point".into()), Tag::Atom),
             (Type::Struct("Point".into()), Tag::Struct),
-            (Type::Label, Tag::Label),
             (Type::Buffer, Tag::Buffer),
             (Type::RawPtr, Tag::RawPtr),
             (Type::TypeI8, Tag::Int8),
@@ -925,6 +964,9 @@ mod tag_type_sync_tests {
 
         assert_eq!(Type::Any.tag_discriminant(), None);
         assert_eq!(Tag::from_type(&Type::Any), None);
+        // Broad Label is a surface union of tags 9/10, not a single discriminant.
+        assert_eq!(Type::Label.tag_discriminant(), None);
+        assert_eq!(Type::from_tag_discriminant(10), Some(Type::Label));
     }
 
     #[test]

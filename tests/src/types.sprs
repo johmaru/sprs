@@ -49,7 +49,7 @@ pub fn cast_loop() >> i64 {
     return count;
 }
 
-# BUG-L08 verification: Uint* tag -> fp64 cast
+# BUG-L08 verification: Uint* tag -> f64 cast
 # Uses 4294967295 (0xFFFFFFFF) — bit pattern with sign bit set.
 # - Original bug (default bb_f64, bit_cast): ~2.12e-314 (garbage)
 # - Wrong fix (SITOFP): 4294967295.0 (same as correct for u32, but for u64 max it'd be negative)
@@ -57,11 +57,11 @@ pub fn cast_loop() >> i64 {
 # For definitive 3-way discrimination we need u64 max, but -1 is not parseable (BUG-F04b).
 # u32 with sign bit set still validates that Uint32 routes to bb_uint (UITOFP) not bb_int (SITOFP):
 #   SITOFP(0xFFFFFFFF as i32) = -1.0, UITOFP(0xFFFFFFFF as u32) = 4294967295.0
-pub fn cast_uint32_to_fp64() >> fp {
-    return @cast(@cast(4294967295, u32), fp64);
+pub fn cast_uint32_to_f64() >> f64 {
+    return @cast(@cast(4294967295, u32), f64);
 }
-pub fn cast_int32_to_fp64() >> fp {
-    return @cast(@cast(2147483647, i32), fp64);
+pub fn cast_int32_to_f64() >> f64 {
+    return @cast(@cast(2147483647, i32), f64);
 }
 
 pub fn cast_mixed() >> i64 { return @cast(1, i8) + @cast(2, i16) + @cast(3, i32); }
@@ -76,52 +76,52 @@ pub fn fcast_preserves_error() >> str { return @error_message(@fcast(@error("ori
 
 # === Float ===
 
-pub fn float_add() >> fp {
+pub fn float_add() >> f64 {
     return 1.5 + 2.5;
 }
 
-pub fn float_sub() >> fp {
+pub fn float_sub() >> f64 {
     return 10.0 - 3.5;
 }
 
-pub fn float_mul() >> fp {
+pub fn float_mul() >> f64 {
     return 2.5 * 4.0;
 }
 
-pub fn float_div() >> fp {
+pub fn float_div() >> f64 {
     return 10.0 / 4.0;
 }
 
-pub fn float_complex() >> fp {
+pub fn float_complex() >> f64 {
     return (1.5 + 2.5) * 2.0;
 }
 
-pub fn float_var_arith() >> fp {
+pub fn float_var_arith() >> f64 {
     var a = 5.2;
     var b = 7.3;
     return a + b;
 }
 
-# XFAIL: >> fp + @cast return (infer_type @cast bug)
-# fn float_cast_f16() >> fp { return @cast(1.5, fp16); }
-# fn float_cast_f32() >> fp { return @cast(3.14, fp32); }
-# fn float_cast_f64() >> fp { return @cast(2.71828, fp64); }
+# XFAIL: >> f64 + @cast return (infer_type @cast bug)
+# fn float_cast_f16() >> f64 { return @cast(1.5, f16); }
+# fn float_cast_f32() >> f64 { return @cast(3.14, f32); }
+# fn float_cast_f64() >> f64 { return @cast(2.71828, f64); }
 
 pub fn float_while_loop() >> i64 {
-    var v = @cast(0.0, fp16);
+    var v = @cast(0.0, f16);
     var count = 0;
-    while v < @cast(1.0, fp16) {
+    while v < @cast(1.0, f16) {
         count = count + 1;
-        v = v + @cast(0.25, fp16);
+        v = v + @cast(0.25, f16);
     }
     return count;
 }
 
-pub fn float_nested() >> fp {
+pub fn float_nested() >> f64 {
     return (1.0 + 2.0) * (3.0 + 4.0);
 }
 
-pub fn float_mixed() >> fp {
+pub fn float_mixed() >> f64 {
     var x = 12.3;
     return x + 0.1;
 }

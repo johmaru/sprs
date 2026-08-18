@@ -78,27 +78,62 @@ pub enum Item {
     Preprocessor(String),
     FunctionBuildSource { target: String, span: Span },
     FunctionBuildItem(FunctionBuild),
-    EnumItem(Enum),
+    ClosedLabelSetItem(ClosedLabelSet),
     AtomItem(AtomDef),
     StructItem(Struct),
     HeapAllocItem(HeapAlloc),
 }
 
-/// Dedicated FunctionBuild contract directives (`@FbArgs` / `@FbRetTy` / `@FbVisibility`).
-/// These are not runtime macros and must not flow through `Expr::Macro`.
+/// Dedicated FunctionBuild contract directives. These are not runtime macros
+/// and must not flow through `Expr::Macro`.
 #[derive(Debug, PartialEq, Clone)]
 pub enum FunctionBuildDirective {
-    Args {
+    Params {
         params: Vec<FunctionParam>,
         span: Span,
     },
-    RetTy {
+    ReturnType {
         ty: Type,
         span: Span,
     },
     Visibility {
         is_public: bool,
         span: Span,
+    },
+    TypeParam {
+        ident: String,
+        span: Span,
+    },
+    When {
+        condition: FbCondition,
+        ret_ty: Type,
+        span: Span,
+    },
+}
+
+/// Compile-time FunctionBuild `when` condition.
+#[derive(Debug, PartialEq, Clone)]
+pub enum FbCondition {
+    Type(Type),
+    Bool(bool),
+    Is {
+        lhs: Box<FbCondition>,
+        rhs: Box<FbCondition>,
+    },
+    Neq {
+        lhs: Box<FbCondition>,
+        rhs: Box<FbCondition>,
+    },
+    And {
+        lhs: Box<FbCondition>,
+        rhs: Box<FbCondition>,
+    },
+    Or {
+        lhs: Box<FbCondition>,
+        rhs: Box<FbCondition>,
+    },
+    Not {
+        inner: Box<FbCondition>,
     },
 }
 
@@ -131,7 +166,6 @@ pub struct Function {
 pub struct VarDecl {
     pub ident: String,
     pub expr: Option<Spanned<Expr>>,
-    pub always_clone: bool,
     pub span: Span,
 }
 
@@ -148,9 +182,9 @@ pub struct AssignStmt {
     pub span: Span,
 }
 #[derive(Debug, PartialEq)]
-pub struct Enum {
+pub struct ClosedLabelSet {
     pub ident: String,
-    pub variants: Vec<String>,
+    pub members: Vec<String>,
     pub is_public: bool,
     pub span: Span,
 }
@@ -254,7 +288,6 @@ pub enum Stmt {
         span: Span,
     }, // queue `expr`; LIFO at scope exit before auto `__drop`
     Return(Option<Spanned<Expr>>),
-    EnumItem(Enum),
     Match {
         scrutinee: Spanned<Expr>,
         /// Some(name) when `?(var name)` present

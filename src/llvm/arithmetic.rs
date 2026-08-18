@@ -1,19 +1,19 @@
 use crate::front::error::SprsError;
-use inkwell::{
-    AddressSpace,
-    intrinsics::Intrinsic,
-    values::{BasicValueEnum, IntValue, PointerValue, ValueKind},
-};
-use crate::{
-    front::ast,
-    front::span::Spanned,
-    llvm::compiler::{Compiler, StoreTag, StoreValue, Tag},
-};
 use crate::llvm::value::{
     build_label_is_error, create_entry_block_alloca, create_error_label_from_atom,
     create_error_label_from_str,
 };
 use crate::llvm::variable::move_variable;
+use crate::{
+    front::ast,
+    front::span::Spanned,
+    llvm::compiler::{Compiler, StoreTag, StoreValue, Tag},
+};
+use inkwell::{
+    AddressSpace,
+    intrinsics::Intrinsic,
+    values::{BasicValueEnum, IntValue, PointerValue, ValueKind},
+};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum BinOpKind {
@@ -125,11 +125,10 @@ fn create_binary_dispatch<'ctx>(
     let check_r_error_bb = self_compiler
         .context
         .append_basic_block(parent_fn, "check_r_error");
-    let _ = self_compiler.builder.build_conditional_branch(
-        l_is_error,
-        l_error_bb,
-        check_r_error_bb,
-    );
+    let _ =
+        self_compiler
+            .builder
+            .build_conditional_branch(l_is_error, l_error_bb, check_r_error_bb);
 
     self_compiler.builder.position_at_end(l_error_bb);
     let _ = self_compiler.builder.build_unconditional_branch(merge_bb);
@@ -151,11 +150,10 @@ fn create_binary_dispatch<'ctx>(
     let normal_dispatch_bb = self_compiler
         .context
         .append_basic_block(parent_fn, "normal_dispatch");
-    let _ = self_compiler.builder.build_conditional_branch(
-        r_is_error,
-        r_error_bb,
-        normal_dispatch_bb,
-    );
+    let _ =
+        self_compiler
+            .builder
+            .build_conditional_branch(r_is_error, r_error_bb, normal_dispatch_bb);
 
     self_compiler.builder.position_at_end(r_error_bb);
     let _ = self_compiler.builder.build_unconditional_branch(merge_bb);
@@ -199,7 +197,7 @@ fn create_binary_dispatch<'ctx>(
     self_compiler.builder.position_at_end(error_bb);
 
     let error_message = format!(
-        "TypeError: type miss match : '{:?}' and '{:?}'",
+        "TypeError: type miss match : '{}' and '{}'",
         self_compiler.infer_type(lhs),
         self_compiler.infer_type(rhs)
     );
@@ -212,15 +210,8 @@ fn create_binary_dispatch<'ctx>(
 
     self_compiler.builder.position_at_end(int_bb);
 
-    let int_res_ptr = create_add_expr_build_int_branch(
-        self_compiler,
-        module,
-        l_ptr,
-        r_ptr,
-        l_tag,
-        r_tag,
-        op,
-    )?;
+    let int_res_ptr =
+        create_add_expr_build_int_branch(self_compiler, module, l_ptr, r_ptr, l_tag, r_tag, op)?;
     let int_end_bb = self_compiler.builder.get_insert_block().unwrap();
     let _ = self_compiler.builder.build_unconditional_branch(merge_bb);
 
@@ -409,7 +400,6 @@ fn create_add_expr_check_float<'ctx>(
         .unwrap())
 }
 
-
 fn llvm_overflow_intrinsic_name(op: BinOpKind, signed: bool) -> Result<&'static str, SprsError> {
     match (op, signed) {
         (BinOpKind::Add, true) => Ok("llvm.sadd.with.overflow"),
@@ -419,7 +409,10 @@ fn llvm_overflow_intrinsic_name(op: BinOpKind, signed: bool) -> Result<&'static 
         (BinOpKind::Mul, true) => Ok("llvm.smul.with.overflow"),
         (BinOpKind::Mul, false) => Ok("llvm.umul.with.overflow"),
         _ => Err(SprsError::Internal {
-            message: format!("checked integer intrinsic is not defined for {:?}", op.name()),
+            message: format!(
+                "checked integer intrinsic is not defined for {:?}",
+                op.name()
+            ),
             location: None,
         }),
     }
@@ -487,7 +480,12 @@ fn signed_bounds_for_result_tag<'ctx>(
     let is_i8 = tag_eq_const(self_compiler, result_tag, Tag::Int8, "result_is_i8");
     min = self_compiler
         .builder
-        .build_select(is_i8, i64_type.const_int((-128i64) as u64, true), min, "signed_min_i8")
+        .build_select(
+            is_i8,
+            i64_type.const_int((-128i64) as u64, true),
+            min,
+            "signed_min_i8",
+        )
         .unwrap()
         .into_int_value();
     max = self_compiler
@@ -508,7 +506,12 @@ fn signed_bounds_for_result_tag<'ctx>(
         .into_int_value();
     max = self_compiler
         .builder
-        .build_select(is_i16, i64_type.const_int(32767, true), max, "signed_max_i16")
+        .build_select(
+            is_i16,
+            i64_type.const_int(32767, true),
+            max,
+            "signed_max_i16",
+        )
         .unwrap()
         .into_int_value();
     let is_i32 = tag_eq_const(self_compiler, result_tag, Tag::Int32, "result_is_i32");
@@ -565,7 +568,12 @@ fn build_unsigned_range_overflow<'ctx>(
     let is_u8 = tag_eq_const(self_compiler, result_tag, Tag::Uint8, "result_is_u8");
     max = self_compiler
         .builder
-        .build_select(is_u8, i64_type.const_int(u8::MAX as u64, false), max, "unsigned_max_u8")
+        .build_select(
+            is_u8,
+            i64_type.const_int(u8::MAX as u64, false),
+            max,
+            "unsigned_max_u8",
+        )
         .unwrap()
         .into_int_value();
     let is_u16 = tag_eq_const(self_compiler, result_tag, Tag::Uint16, "result_is_u16");
@@ -592,7 +600,12 @@ fn build_unsigned_range_overflow<'ctx>(
         .into_int_value();
     self_compiler
         .builder
-        .build_int_compare(inkwell::IntPredicate::UGT, result, max, "unsigned_range_overflow")
+        .build_int_compare(
+            inkwell::IntPredicate::UGT,
+            result,
+            max,
+            "unsigned_range_overflow",
+        )
         .unwrap()
 }
 
@@ -675,11 +688,9 @@ fn create_add_expr_build_int_branch<'ctx>(
             .append_basic_block(parent_fn, &format!("{op_name}_int_ovf_merge"));
 
         let is_unsigned = is_unsigned_int_tag(self_compiler, result_tag)?;
-        let _ = self_compiler.builder.build_conditional_branch(
-            is_unsigned,
-            unsigned_bb,
-            signed_bb,
-        );
+        let _ = self_compiler
+            .builder
+            .build_conditional_branch(is_unsigned, unsigned_bb, signed_bb);
 
         self_compiler.builder.position_at_end(unsigned_bb);
         let (u_result, u_flag) =
@@ -689,11 +700,10 @@ fn create_add_expr_build_int_branch<'ctx>(
             .builder
             .build_or(u_flag, u_range, "unsigned_overflow")
             .unwrap();
-        let _ = self_compiler.builder.build_conditional_branch(
-            u_overflow,
-            overflow_bb,
-            unsigned_ok_bb,
-        );
+        let _ =
+            self_compiler
+                .builder
+                .build_conditional_branch(u_overflow, overflow_bb, unsigned_ok_bb);
 
         self_compiler.builder.position_at_end(unsigned_ok_bb);
         let unsigned_ptr = create_entry_block_alloca(self_compiler, "int_res_alloc")?;
@@ -713,11 +723,10 @@ fn create_add_expr_build_int_branch<'ctx>(
             .builder
             .build_or(s_flag, s_range, "signed_overflow")
             .unwrap();
-        let _ = self_compiler.builder.build_conditional_branch(
-            s_overflow,
-            overflow_bb,
-            signed_ok_bb,
-        );
+        let _ =
+            self_compiler
+                .builder
+                .build_conditional_branch(s_overflow, overflow_bb, signed_ok_bb);
 
         self_compiler.builder.position_at_end(signed_ok_bb);
         let signed_ptr = create_entry_block_alloca(self_compiler, "int_res_alloc")?;
@@ -793,9 +802,10 @@ fn create_add_expr_build_int_branch<'ctx>(
 
     self_compiler.builder.position_at_end(bb_ok);
     let is_unsigned = is_unsigned_int_tag(self_compiler, result_tag)?;
-    let _ = self_compiler
-        .builder
-        .build_conditional_branch(is_unsigned, bb_unsigned, bb_signed_check);
+    let _ =
+        self_compiler
+            .builder
+            .build_conditional_branch(is_unsigned, bb_unsigned, bb_signed_check);
 
     self_compiler.builder.position_at_end(bb_unsigned);
     let unsigned_res = match op {
@@ -828,7 +838,10 @@ fn create_add_expr_build_int_branch<'ctx>(
             "div_lhs_is_min",
         )
         .unwrap();
-    let neg_one = self_compiler.context.i64_type().const_int((-1i64) as u64, true);
+    let neg_one = self_compiler
+        .context
+        .i64_type()
+        .const_int((-1i64) as u64, true);
     let is_neg_one = self_compiler
         .builder
         .build_int_compare(
@@ -842,11 +855,10 @@ fn create_add_expr_build_int_branch<'ctx>(
         .builder
         .build_and(is_min, is_neg_one, "signed_div_overflow")
         .unwrap();
-    let _ = self_compiler.builder.build_conditional_branch(
-        signed_overflow,
-        bb_overflow,
-        bb_signed_ok,
-    );
+    let _ =
+        self_compiler
+            .builder
+            .build_conditional_branch(signed_overflow, bb_overflow, bb_signed_ok);
 
     self_compiler.builder.position_at_end(bb_overflow);
     let overflow_ptr = create_error_label_from_atom(self_compiler, "overflow", module)?;
@@ -897,12 +909,22 @@ fn apply_float_op<'ctx>(
     name: &str,
 ) -> inkwell::values::FloatValue<'ctx> {
     match op {
-        BinOpKind::Add => self_compiler.builder.build_float_add(lhs, rhs, name).unwrap(),
-        BinOpKind::Sub => self_compiler.builder.build_float_sub(lhs, rhs, name).unwrap(),
-        BinOpKind::Mul => self_compiler.builder.build_float_mul(lhs, rhs, name).unwrap(),
-        BinOpKind::Div | BinOpKind::Mod => {
-            self_compiler.builder.build_float_div(lhs, rhs, name).unwrap()
-        }
+        BinOpKind::Add => self_compiler
+            .builder
+            .build_float_add(lhs, rhs, name)
+            .unwrap(),
+        BinOpKind::Sub => self_compiler
+            .builder
+            .build_float_sub(lhs, rhs, name)
+            .unwrap(),
+        BinOpKind::Mul => self_compiler
+            .builder
+            .build_float_mul(lhs, rhs, name)
+            .unwrap(),
+        BinOpKind::Div | BinOpKind::Mod => self_compiler
+            .builder
+            .build_float_div(lhs, rhs, name)
+            .unwrap(),
     }
 }
 
@@ -928,7 +950,12 @@ fn maybe_guard_float_div_zero<'ctx>(
         .append_basic_block(parent, &format!("{name}_div_ok"));
     let is_zero = self_compiler
         .builder
-        .build_float_compare(inkwell::FloatPredicate::OEQ, rhs, zero, &format!("{name}_is_zero"))
+        .build_float_compare(
+            inkwell::FloatPredicate::OEQ,
+            rhs,
+            zero,
+            &format!("{name}_is_zero"),
+        )
         .unwrap();
     let _ = self_compiler
         .builder
@@ -1043,11 +1070,15 @@ fn create_add_expr_build_float_branch<'ctx>(
     self_compiler.builder.position_at_end(error_bb);
     let error_message = "TypeError: unexpected float tag in add";
     let error_ptr = create_error_label_from_str(self_compiler, error_message, module)?;
-    let _ = self_compiler.builder.build_unconditional_branch(final_merge);
+    let _ = self_compiler
+        .builder
+        .build_unconditional_branch(final_merge);
 
     self_compiler.builder.position_at_end(div_zero_bb);
     let div_zero_ptr = create_error_label_from_str(self_compiler, "Division by zero", module)?;
-    let _ = self_compiler.builder.build_unconditional_branch(final_merge);
+    let _ = self_compiler
+        .builder
+        .build_unconditional_branch(final_merge);
 
     // Float16
     self_compiler.builder.position_at_end(bb_f16);
@@ -1202,7 +1233,9 @@ fn create_add_expr_build_float_branch<'ctx>(
         "float_res",
     );
     let success_end_bb = self_compiler.builder.get_insert_block().unwrap();
-    let _ = self_compiler.builder.build_unconditional_branch(final_merge);
+    let _ = self_compiler
+        .builder
+        .build_unconditional_branch(final_merge);
 
     self_compiler.builder.position_at_end(final_merge);
     let final_phi = self_compiler
@@ -1270,7 +1303,12 @@ fn create_add_expr_build_string_branch<'ctx>(
         .unwrap();
     let result_handle = match concat_call.try_as_basic_value() {
         ValueKind::Basic(val) => val.into_int_value(),
-        _ => return Err(SprsError::Internal { message: "Expected i64 handle from __string_concat".to_string(), location: None }),
+        _ => {
+            return Err(SprsError::Internal {
+                message: "Expected i64 handle from __string_concat".to_string(),
+                location: None,
+            });
+        }
     };
 
     // Pack the new handle into a fresh runtime value of tag String.

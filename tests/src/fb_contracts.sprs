@@ -5,19 +5,19 @@ struct Job {
 }
 
 pub function_build AddBuild {
-    @FbArgs(lhs >> i64, rhs >> i64);
-    @FbRetTy(i64);
-    @FbVisibility(pub);
+    params(lhs >> i64, rhs >> i64);
+    return_type(i64);
+    visibility(pub);
 }
 
 pub function_build JobFn {
-    @FbArgs(job >> Job);
-    @FbRetTy(i64);
-    @FbVisibility(pub);
+    params(job >> Job);
+    return_type(i64);
+    visibility(pub);
 }
 
 function_build InternalBuild {
-    @FbRetTy(str);
+    return_type(str);
 }
 
 fn helper_not_imported() {

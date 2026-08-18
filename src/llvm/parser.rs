@@ -16,8 +16,8 @@ pub fn parse_only(input: &str, file_path: &str) -> Result<Vec<ast::Item>, SprsEr
 mod tests {
     use super::parse_only;
     use crate::front::ast::{
-        AtomDef, Enum, Expr, Function, FunctionBuild, FunctionBuildDirective, Item, MatchArmBody,
-        MatchPat, Stmt, Struct,
+        AtomDef, ClosedLabelSet, Expr, FbCondition, Function, FunctionBuild,
+        FunctionBuildDirective, Item, MatchArmBody, MatchPat, Stmt, Struct,
     };
     use crate::front::label_name::LabelName;
     use crate::front::type_helper::{Type, TypeAnnot};
@@ -25,9 +25,9 @@ mod tests {
     #[test]
     fn parses_list_range_error_type_annotations() {
         let src = r#"
-fn first_function(xs >> list) >> list { return xs; }
-fn second_function(range_input >> range) >> range { return range_input; }
-fn error_value() >> err { return @error(100, "x"); }
+fn first_function(xs >> List(Any)) >> List(Any) { return xs; }
+fn second_function(range_input >> Range) >> Range { return range_input; }
+fn error_value() >> Label(:error, Any) { return @error(100, "x"); }
 "#;
         let items = parse_only(src, "test.sprs").expect("parse");
         let tys: Vec<&Type> = items
@@ -42,7 +42,7 @@ fn error_value() >> err { return @error(100, "x"); }
         assert_eq!(
             tys,
             vec![
-                &Type::List,
+                &Type::App("List".into(), vec![Type::Any]),
                 &Type::Range,
                 &Type::App("Label".into(), vec![Type::Atom("error".into()), Type::Any])
             ]
@@ -55,7 +55,7 @@ fn error_value() >> err { return @error(100, "x"); }
         assert_eq!(
             list_param,
             Some(&TypeAnnot {
-                ty: Type::List,
+                ty: Type::App("List".into(), vec![Type::Any]),
                 ambi: false
             })
         );
@@ -64,17 +64,17 @@ fn error_value() >> err { return @error(100, "x"); }
     #[test]
     fn parses_app_type_annotations() {
         let src = r#"
-fn first_function(xs >> List(int)) >> List(int) { return xs; }
-fn second_function() >> Result(int, err) { return 1; }
-fn third_function(xs >> List()) >> list { return xs; }
+fn first_function(xs >> List(i64)) >> List(i64) { return xs; }
+fn second_function() >> Result(i64, Label(:error, Any)) { return 1; }
+fn third_function(xs >> List(Any)) >> List(Any) { return xs; }
 "#;
         let items = parse_only(src, "test.sprs").expect("parse");
 
-        let list_int = Type::App("List".into(), vec![Type::Int]);
+        let list_int = Type::App("List".into(), vec![Type::TypeI64]);
         let result_int_err = Type::App(
             "Result".into(),
             vec![
-                Type::Int,
+                Type::TypeI64,
                 Type::App("Label".into(), vec![Type::Atom("error".into()), Type::Any]),
             ],
         );
@@ -102,13 +102,13 @@ fn third_function(xs >> List()) >> list { return xs; }
             Item::FunctionItem(function_item) => {
                 assert_eq!(
                     function_item.ret_ty.as_ref(),
-                    Some(&Type::List),
-                    "flat list keyword still parses"
+                    Some(&Type::App("List".into(), vec![Type::Any])),
+                    "List(Any) is the canonical untyped list spelling"
                 );
                 assert_eq!(
                     function_item.params[0].ty.as_ref(),
                     Some(&TypeAnnot {
-                        ty: Type::App("List".into(), vec![]),
+                        ty: Type::App("List".into(), vec![Type::Any]),
                         ambi: false
                     })
                 );
@@ -119,14 +119,14 @@ fn third_function(xs >> List()) >> list { return xs; }
 
     #[test]
     fn parses_nested_app_type_annotation() {
-        let src = "fn nested_value(input_value >> List(Result(int, err))) { return; }\n";
+        let src = "fn nested_value(input_value >> List(Result(i64, Label(:error, Any)))) { return; }\n";
         let items = parse_only(src, "test.sprs").expect("parse");
         let expected = Type::App(
             "List".into(),
             vec![Type::App(
                 "Result".into(),
                 vec![
-                    Type::Int,
+                    Type::TypeI64,
                     Type::App("Label".into(), vec![Type::Atom("error".into()), Type::Any]),
                 ],
             )],
@@ -147,21 +147,21 @@ fn third_function(xs >> List()) >> list { return xs; }
 
     #[test]
     fn parses_ambi_param_annotation() {
-        let src = "fn dynamic_parameter(first_value >> ambi int, second_value >> int) { first_value = \"x\"; }\n";
+        let src = "fn dynamic_parameter(first_value >> ambi i64, second_value >> i64) { first_value = \"x\"; }\n";
         let items = parse_only(src, "test.sprs").expect("parse");
         match &items[0] {
             Item::FunctionItem(function_item) => {
                 assert_eq!(
                     function_item.params[0].ty.as_ref(),
                     Some(&TypeAnnot {
-                        ty: Type::Int,
+                        ty: Type::TypeI64,
                         ambi: true
                     })
                 );
                 assert_eq!(
                     function_item.params[1].ty.as_ref(),
                     Some(&TypeAnnot {
-                        ty: Type::Int,
+                        ty: Type::TypeI64,
                         ambi: false
                     })
                 );
@@ -172,7 +172,7 @@ fn third_function(xs >> List()) >> list { return xs; }
 
     #[test]
     fn call_expr_has_no_embedded_ret_ty() {
-        let src = "fn list_factory() >> list { return []; }\nfn main() { var list_result = list_factory(); }\n";
+        let src = "fn list_factory() >> List(Any) { return []; }\nfn main() { var list_result = list_factory(); }\n";
         let items = parse_only(src, "test.sprs").expect("parse");
         match &items[1] {
             Item::FunctionItem(function_item) => {
@@ -292,8 +292,8 @@ fn third_function(xs >> List()) >> list { return xs; }
     #[test]
     fn parses_label_type_annotations() {
         let src = r#"
-fn first_label_value(input_value >> label) >> label { return input_value; }
-fn second_label_value(input_value >> Label(int)) >> Label(int) { return input_value; }
+fn first_label_value(input_value >> Label) >> Label { return input_value; }
+fn second_label_value(input_value >> Label(:ok, str)) >> Label(:ok, str) { return input_value; }
 "#;
         let items = parse_only(src, "label_ty.sprs").expect("parse");
         match &items[0] {
@@ -311,7 +311,8 @@ fn second_label_value(input_value >> Label(int)) >> Label(int) { return input_va
         }
         match &items[1] {
             Item::FunctionItem(function_item) => {
-                let expected = Type::App("Label".into(), vec![Type::Int]);
+                let expected =
+                    Type::App("Label".into(), vec![Type::Atom("ok".into()), Type::Str]);
                 assert_eq!(function_item.ret_ty.as_ref(), Some(&expected));
             }
             other => panic!("expected second function, got {:?}", other),
@@ -321,14 +322,15 @@ fn second_label_value(input_value >> Label(int)) >> Label(int) { return input_va
     #[test]
     fn parses_named_label_type_annotations() {
         let src = r#"
-fn first_function() >> Atom(:ok) { return :ok; }
-fn second_function(input_value >> Label(:ok, int)) >> Label(:ok, int) { return input_value; }
-fn third_function() >> err { return :error; }
+fn first_function() >> :ok { return :ok; }
+fn second_function(input_value >> Label(:ok, i64)) >> Label(:ok, i64) { return input_value; }
+fn third_function() >> Label(:error, Any) { return :error; }
 "#;
         let items = parse_only(src, "named_label_ty.sprs").expect("parse");
-        let atom_ok = Type::App("Atom".into(), vec![Type::Atom("ok".into())]);
-        let label_ok_int = Type::App("Label".into(), vec![Type::Atom("ok".into()), Type::Int]);
-        let err_sugar = Type::App("Label".into(), vec![Type::Atom("error".into()), Type::Any]);
+        let atom_ok = Type::Atom("ok".into());
+        let label_ok_int =
+            Type::App("Label".into(), vec![Type::Atom("ok".into()), Type::TypeI64]);
+        let err_label = Type::App("Label".into(), vec![Type::Atom("error".into()), Type::Any]);
 
         match &items[0] {
             Item::FunctionItem(function_item) => {
@@ -351,7 +353,7 @@ fn third_function() >> err { return :error; }
         }
         match &items[2] {
             Item::FunctionItem(function_item) => {
-                assert_eq!(function_item.ret_ty.as_ref(), Some(&err_sugar));
+                assert_eq!(function_item.ret_ty.as_ref(), Some(&err_label));
             }
             other => panic!("expected third function, got {:?}", other),
         }
@@ -384,7 +386,7 @@ fn third_function() >> err { return :error; }
     #[test]
     fn parses_match_bind_ident_form() {
         let src = r#"
-fn request_check(req >> Label(:ok, int)) >> Label(:result, int) {
+fn request_check(req >> Label(:ok, i64)) >> Label(:result, i64) {
     match req ?(var result) {
         case :ok => {:result, 0} break;
         case {:error, _reason} => {:result, 1} break;
@@ -423,7 +425,7 @@ fn request_check(req >> Label(:ok, int)) >> Label(:result, int) {
     #[test]
     fn parses_match_bind_parenthesized_expr() {
         let src = r#"
-fn f() >> int {
+fn f() >> i64 {
     match (foo()) ?(var r) {
         case :ok => 1 break;
     }
@@ -507,7 +509,7 @@ fn f(req) {
     #[test]
     fn parses_match_bind_label_literal_scrutinee() {
         let src = r#"
-fn f() >> int {
+fn f() >> i64 {
     match {:ok, 7} ?(var r) {
         case :ok => 1 break;
     }
@@ -521,7 +523,7 @@ fn f() >> int {
     #[test]
     fn parses_match_bind_atom_literal_scrutinee() {
         let src = r#"
-fn f() >> int {
+fn f() >> i64 {
     match :ok ?(var r) {
         case :ok => 1 break;
     }
@@ -535,7 +537,7 @@ fn f() >> int {
     #[test]
     fn parses_match_expression_form() {
         let src = r#"
-fn f() >> int {
+fn f() >> i64 {
     var r = match :ok {
         case :ok => 1
         case :error => 0
@@ -571,7 +573,7 @@ fn f() >> int {
     #[test]
     fn parses_match_wildcard_in_stmt_form() {
         let src = r#"
-fn f() >> int {
+fn f() >> i64 {
     var flag = 0;
     match :ok {
         case :ok => { flag = 1; }
@@ -593,36 +595,55 @@ fn f() >> int {
     }
 
     #[test]
-    fn parses_keywords_as_idents() {
-        let src = r#"
-pkg buffer;
-import rawptr;
-fn buffer(new >> int) >> int {
-    var rawptr = new;
-    var defer = rawptr;
-    return rawptr;
-}
-"#;
-        let items = parse_only(src, "keyword_idents.sprs").expect("parse");
-        assert!(matches!(&items[0], Item::Package(name) if name == "buffer"));
-        assert!(matches!(&items[1], Item::Import(name) if name == "rawptr"));
-        let Item::FunctionItem(function_item) = &items[2] else {
-            panic!("expected function");
-        };
-        assert_eq!(function_item.ident, "buffer");
-        assert_eq!(function_item.params[0].ident, "new");
-        assert_eq!(
-            function_item.params[0].ty.as_ref().map(|t| &t.ty),
-            Some(&Type::Int)
+    fn rejects_bare_keywords_as_identifiers() {
+        // Keywords can no longer be used as bare identifiers anywhere:
+        // they are reserved and require the `^` escape.
+        for source in [
+            "pkg match;
+",
+            "fn if() {}
+",
+            "fn f(new) {}
+",
+            "fn f() { var defer = 1; }
+",
+            "fn f() { var return = 1; }
+",
+        ] {
+            let error = parse_only(source, "keyword_idents.sprs")
+                .expect_err("bare keyword identifier must be rejected");
+            let message = format!("{error}");
+            assert!(
+                message.contains("SPRS-SYN-002") || message.contains("reserved"),
+                "expected reserved-keyword diagnostic, got: {message}"
+            );
+            match error {
+                crate::front::error::SprsError::Parse { help, .. } => {
+                    let help = help.unwrap_or_default();
+                    assert!(
+                        help.contains("^"),
+                        "expected `^` escape hint in help, got message={message} help={help}"
+                    );
+                }
+                other => panic!("expected Parse error, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_unnecessary_escape() {
+        // `^foo` (non-keyword) is an unnecessary escape (SYN-008).
+        let error = parse_only("fn f() { var ^foo = 1; }\n", "escaped.sprs").unwrap_err();
+        let message = format!("{error}");
+        assert!(
+            message.contains("SPRS-SYN-008") || message.contains("unnecessary identifier escape"),
+            "unexpected error: {message}"
         );
-        let Stmt::Var(first_var) = &function_item.blk[0].node else {
-            panic!("expected var statement");
-        };
-        assert_eq!(first_var.ident, "rawptr");
-        let Stmt::Var(second_var) = &function_item.blk[1].node else {
-            panic!("expected var statement");
-        };
-        assert_eq!(second_var.ident, "defer");
+        assert!(message.contains("^foo"), "missing name in: {message}");
+
+        // `foo!` / `^foo!` are no longer valid identifiers.
+        assert!(parse_only("fn f() { var foo! = 1; }\n", "bang.sprs").is_err());
+        assert!(parse_only("fn f() { var ^foo! = 1; }\n", "bang2.sprs").is_err());
     }
 
     #[test]
@@ -659,8 +680,8 @@ fn ^fn(^if) { var ^return = ^if; ^return = ^return + 1; return ^return; }
     }
 
     #[test]
-    fn keyword_type_annotation_still_type() {
-        let src = "fn f(x >> buffer) >> rawptr { return x; }";
+    fn parses_canonical_buffer_and_rawptr_type_annotations() {
+        let src = "fn f(x >> Buffer) >> RawPtr { return x; }";
         let items = parse_only(src, "test.sprs").expect("parse");
         let Item::FunctionItem(function_item) = &items[0] else {
             panic!("expected function");
@@ -718,27 +739,90 @@ fn ^fn(^if) { var ^return = ^if; ^return = ^return + 1; return ^return; }
     }
 
     #[test]
-    fn parses_pub_grouped_label_enum_def() {
-        let src = "pub label :Color{:red, :blue,}\n";
-        let items = parse_only(src, "label_enum.sprs").expect("parse");
+    fn parses_pub_closed_label_set() {
+        let src = "pub label Color { red, blue, }\n";
+        let items = parse_only(src, "closed_label_set.sprs").expect("parse");
         match &items[0] {
-            Item::EnumItem(Enum {
+            Item::ClosedLabelSetItem(ClosedLabelSet {
                 ident,
-                variants,
+                members,
                 is_public,
                 ..
             }) => {
                 assert_eq!(ident, "Color");
-                assert_eq!(variants, &["red".to_string(), "blue".to_string()]);
+                assert_eq!(members, &["red".to_string(), "blue".to_string()]);
                 assert!(*is_public);
             }
-            other => panic!("expected EnumItem, got {:?}", other),
+            other => panic!("expected ClosedLabelSetItem, got {:?}", other),
         }
     }
 
     #[test]
+    fn parses_qualified_atom_expression_and_match_pattern() {
+        let src = r#"
+fn f() {
+    var x = :Color.red;
+    var r = match x {
+        case :Color.red => 1
+        case _ => 0
+    };
+}
+"#;
+        let items = parse_only(src, "qualified_atom.sprs").expect("parse");
+        let Item::FunctionItem(function_item) = &items[0] else {
+            panic!("expected function");
+        };
+        let Stmt::Var(var_decl) = &function_item.blk[0].node else {
+            panic!("expected var");
+        };
+        assert!(matches!(
+            var_decl.expr.as_ref().map(|expr| &expr.node),
+            Some(Expr::Atom(LabelName::Static(name))) if name == "Color.red"
+        ));
+        let Stmt::Var(match_var) = &function_item.blk[1].node else {
+            panic!("expected match var");
+        };
+        let init = match_var.expr.as_ref().expect("initializer");
+        let Expr::Match { arms, .. } = &init.node else {
+            panic!("expected match expression");
+        };
+        assert_eq!(
+            arms[0].pat,
+            MatchPat::Name(LabelName::Static("Color.red".into()))
+        );
+    }
+
+    #[test]
+    fn rejects_old_enum_and_old_grouped_label() {
+        assert!(parse_only("enum Color { Red }\n", "old_enum.sprs").is_err());
+        assert!(parse_only("label :Color{:red}\n", "old_grouped.sprs").is_err());
+        assert!(parse_only("label :Color{:red, :blue}\n", "old_grouped_multi.sprs").is_err());
+    }
+
+    #[test]
+    fn parses_enum_as_ordinary_identifier() {
+        let src = r#"
+fn enum(enum >> i64) {
+    var enum = enum;
+    return enum;
+}
+"#;
+        let items = parse_only(src, "enum_ident.sprs").expect("parse");
+        let Item::FunctionItem(function_item) = &items[0] else {
+            panic!("expected function");
+        };
+        assert_eq!(function_item.ident, "enum");
+        assert_eq!(function_item.params[0].ident, "enum");
+        let Stmt::Var(var_decl) = &function_item.blk[0].node else {
+            panic!("expected var");
+        };
+        assert_eq!(var_decl.ident, "enum");
+    }
+
+    #[test]
     fn rejects_empty_grouped_inner_and_old_var_label() {
-        assert!(parse_only("label :Color{}\n", "empty_grouped.sprs").is_err());
+        assert!(parse_only("label Color {}\n", "empty_grouped.sprs").is_err());
+        assert!(parse_only("label :Color{}\n", "old_empty_grouped.sprs").is_err());
         assert!(parse_only("fn f() { label :red; }\n", "inner_label.sprs").is_err());
         assert!(parse_only("var Color = :Color{:red, :blue};\n", "old_var_label.sprs").is_err());
     }
@@ -797,9 +881,9 @@ fn ^fn(^if) { var ^return = ^if; ^return = ^return + 1; return ^return; }
     fn parses_function_build_and_use() {
         let src = r#"
 function_build AddBuild {
-    @FbArgs(lhs >> i64, rhs >> i64);
-    @FbRetTy(i64);
-    @FbVisibility(pub);
+    params(lhs >> i64, rhs >> i64);
+    return_type(i64);
+    visibility(pub);
 }
 
 fn add use AddBuild {
@@ -819,7 +903,15 @@ fn add use AddBuild {
                 assert_eq!(directives.len(), 3);
                 assert!(matches!(
                     &directives[0],
-                    FunctionBuildDirective::Args { params, .. } if params.len() == 2
+                    FunctionBuildDirective::Params { params, .. } if params.len() == 2
+                ));
+                assert!(matches!(
+                    &directives[1],
+                    FunctionBuildDirective::ReturnType { ty, .. } if *ty == Type::TypeI64
+                ));
+                assert!(matches!(
+                    &directives[2],
+                    FunctionBuildDirective::Visibility { is_public, .. } if *is_public
                 ));
             }
             other => panic!("expected FunctionBuildItem, got {other:?}"),
@@ -832,6 +924,38 @@ fn add use AddBuild {
         assert!(function.params.is_empty());
         assert_eq!(function.ret_ty, None);
         assert!(!function.is_public);
+    }
+
+    #[test]
+    fn parses_function_build_with_type_param_and_when() {
+        let src = r#"
+function_build Identity {
+    type_param T;
+    params(value >> T);
+    return_type(T);
+    when T is i64 { return_type(i64); }
+    when T is str and not T is bool { return_type(str); }
+}
+"#;
+        let items = parse_only(src, "fb_cond.sprs").expect("parse");
+        let Item::FunctionBuildItem(FunctionBuild { directives, .. }) = &items[0] else {
+            panic!("expected function_build");
+        };
+        assert_eq!(directives.len(), 5);
+        assert!(matches!(
+            &directives[0],
+            FunctionBuildDirective::TypeParam { ident, .. } if ident == "T"
+        ));
+        assert!(matches!(
+            &directives[3],
+            FunctionBuildDirective::When { condition, .. }
+                if matches!(condition, FbCondition::Is { .. })
+        ));
+        assert!(matches!(
+            &directives[4],
+            FunctionBuildDirective::When { condition, .. }
+                if matches!(condition, FbCondition::And { .. })
+        ));
     }
 
     #[test]
@@ -855,7 +979,7 @@ fn add use AddBuild {
     #[test]
     fn parses_function_build_source_directive() {
         let items = parse_only(
-            "#define FunctionBuild contracts
+            "function_build source contracts;
 fn main() {}
 ",
             "fb.sprs",
@@ -904,6 +1028,71 @@ fn main() {}
             message.contains("invalid FunctionBuild directive") || message.contains("Unrecognized"),
             "unexpected error: {message}"
         );
+    }
+
+    #[test]
+    fn parses_init_struct_expression() {
+        let src = "fn f() { var p = init Point { x = 1, y = 2, }; }\n";
+        let items = parse_only(src, "init.sprs").expect("parse");
+        let Item::FunctionItem(function_item) = &items[0] else {
+            panic!("expected function");
+        };
+        let Stmt::Var(var_decl) = &function_item.blk[0].node else {
+            panic!("expected var statement");
+        };
+        let init = var_decl.expr.as_ref().expect("var has initializer");
+        assert!(matches!(
+            &init.node,
+            Expr::StructInit(name, fields)
+                if name == "Point"
+                    && fields.len() == 2
+                    && fields[0].0 == "x"
+                    && fields[1].0 == "y"
+        ));
+    }
+
+    #[test]
+    fn parses_init_empty_struct() {
+        let src = "fn f() { var e = init Empty {}; }\n";
+        let items = parse_only(src, "init_empty.sprs").expect("parse");
+        let Item::FunctionItem(function_item) = &items[0] else {
+            panic!("expected function");
+        };
+        let Stmt::Var(var_decl) = &function_item.blk[0].node else {
+            panic!("expected var statement");
+        };
+        let init = var_decl.expr.as_ref().expect("var has initializer");
+        assert!(matches!(&init.node, Expr::StructInit(name, fields) if name == "Empty" && fields.is_empty()));
+    }
+
+    #[test]
+    fn rejects_old_init_macro() {
+        assert!(parse_only("fn f() { var p = @init(Point); }\n", "old_init.sprs").is_err());
+    }
+
+    #[test]
+    fn rejects_cp_var() {
+        assert!(parse_only("fn f() { cp var x = 1; }\n", "cp_var.sprs").is_err());
+        assert!(parse_only("fn f() { cp var x = 1; var y = x; }\n", "cp_var2.sprs").is_err());
+    }
+
+    #[test]
+    fn rejects_old_fb_directive_spellings() {
+        assert!(parse_only(
+            "function_build A { @FbArgs(x >> i64); }\n",
+            "old_fb.sprs"
+        )
+        .is_err());
+        assert!(parse_only(
+            "function_build A { @FbRetTy(i64); }\n",
+            "old_fb2.sprs"
+        )
+        .is_err());
+        assert!(parse_only(
+            "function_build A { @FbVisibility(pub); }\n",
+            "old_fb3.sprs"
+        )
+        .is_err());
     }
 
     #[test]

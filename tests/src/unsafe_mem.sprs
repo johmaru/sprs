@@ -1,5 +1,5 @@
 # Language tests for unsafe / @raw / @free / RawPtr / defer.
-# Package name avoids the `rawptr` type keyword.
+# The `rawptr` type keyword was removed; the canonical type is `RawPtr`.
 pkg unsafe_mem;
 
 # 1. @raw moves Buffer ownership; exist(b) is false after @free.
@@ -21,7 +21,7 @@ pub fn raw_free_roundtrip() >> i64 {
 pub fn defer_destroy_ok() >> i64 {
     var a = new(1);
     defer destroy(a);
-    @bufSet(a, 0, 1);
+    @buf_set(a, 0, 1);
     return 1;
 }
 

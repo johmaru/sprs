@@ -11,8 +11,9 @@
 //!   function. No reference escapes the closure, so no lifetime error.
 //! - `SlotData` is a plain safe `enum` (no `ManuallyDrop`, no `union`); `Drop`
 //!   is auto-implemented and frees the inner Vec/String/Box.
-//! - `__list_get` returns a bare `SprsValue` (16 bytes, same codegen pattern as
-//!   `__clone`). OOB / bad handle is signalled by the `Unit` sentinel.
+//! - `__list_get` takes the element and leaves `Unit` in that slot. OOB / bad
+//!   handle is signalled by the `Unit` sentinel. List drop recursively
+//!   `__drop`s remaining owned elements.
 //! - Output (`__println`) is routed through a user-registerable callback
 //!   (`__sprs_set_output`) so the runtime is host/stdout-agnostic. When no
 //!   callback is registered, output falls back to `eprintln!` for host builds.
@@ -167,8 +168,14 @@ struct StructOwnedValue {
 impl Drop for SlotData {
     fn drop(&mut self) {
         match self {
-            // Vec / String / SprsRange / Buffer drop themselves.
-            SlotData::List(_) | SlotData::String(_) | SlotData::Range(_) | SlotData::Buffer(_) => {}
+            SlotData::List(values) => {
+                let values = std::mem::take(values);
+                for value in values {
+                    __drop(value.tag, value.data);
+                }
+            }
+            // String / SprsRange / Buffer drop themselves.
+            SlotData::String(_) | SlotData::Range(_) | SlotData::Buffer(_) => {}
             SlotData::Label { payload, .. } => __drop(payload.tag, payload.data),
             SlotData::Struct {
                 ptr,
@@ -461,7 +468,7 @@ pub extern "C" fn __list_get(list_handle: u64, index: i64) -> SprsValue {
         if index < 0 || (index as usize) >= vec.len() {
             return sentinel;
         }
-        vec[index as usize]
+        std::mem::replace(&mut vec[index as usize], sentinel)
     })
 }
 
@@ -752,7 +759,6 @@ pub extern "C" fn __struct_borrow(handle: u64) -> *mut u8 {
         }
     })
 }
-
 
 /// Register a field value so struct drop/clone owns it independently of
 /// the original variable binding.
@@ -1134,10 +1140,8 @@ fn slot_is_list(handle: u64) -> bool {
 }
 
 fn struct_clone(handle: u64) -> u64 {
-    let snapshot: Option<(*mut u8, std::alloc::Layout, usize, Vec<StructOwnedValue>)> = slot_with(
-        handle,
-        None,
-        |slot_data| match slot_data {
+    let snapshot: Option<(*mut u8, std::alloc::Layout, usize, Vec<StructOwnedValue>)> =
+        slot_with(handle, None, |slot_data| match slot_data {
             SlotData::Struct {
                 ptr,
                 layout,
@@ -1145,8 +1149,7 @@ fn struct_clone(handle: u64) -> u64 {
                 ..
             } => Some((*ptr, *layout, layout.size(), owned_values.clone())),
             _ => None,
-        },
-    );
+        });
     let Some((ptr, layout, size, owned_values)) = snapshot else {
         return INVALID_HANDLE;
     };
@@ -1505,11 +1508,13 @@ pub extern "C" fn __panic(message_ptr: *const i8) {
 mod tests {
     use super::{
         __atom_eq, __atom_from_bytes, __atom_from_string, __atom_name, __buffer_exist,
-        __buffer_get, __buffer_into_raw, __buffer_len, __buffer_new, __buffer_set, __clone,
-        __drop, __error_label_from_str, __error_message_from_label, __label_is_error, __label_name,
-        __label_name_eq, __label_new, __label_new_from_string, __label_payload, __raw_free,
-        __string_eq, __string_new, __struct_borrow, __struct_new, __struct_track_value, __value_to_string, atom_name, intern_atom, INVALID_HANDLE, RAW_LAYOUTS,
-        SlotData, SprsValue, Tag, format_sprs_value, slot_with,
+        __buffer_get, __buffer_into_raw, __buffer_len, __buffer_new, __buffer_set, __clone, __drop,
+        __error_label_from_str, __error_message_from_label, __label_is_error, __label_name,
+        __label_name_eq, __label_new, __label_new_from_string, __label_payload, __list_get,
+        __list_new, __list_push, __raw_free,
+        __string_eq, __string_new, __struct_borrow, __struct_new, __struct_track_value,
+        __value_to_string, INVALID_HANDLE, RAW_LAYOUTS, SlotData, SprsValue, Tag, atom_name,
+        format_sprs_value, intern_atom, slot_with,
     };
 
     #[test]
@@ -1890,7 +1895,6 @@ mod tests {
         __drop(Tag::Buffer as i32, empty);
     }
 
-
     #[test]
     fn struct_drop_invalidates_tracked_string() {
         let payload = b"owned";
@@ -1902,7 +1906,13 @@ mod tests {
             std::ptr::write(field_ptr as *mut u64, string_handle);
         }
         assert_eq!(
-            __struct_track_value(struct_handle, field_ptr, Tag::String as i32, string_handle, 1),
+            __struct_track_value(
+                struct_handle,
+                field_ptr,
+                Tag::String as i32,
+                string_handle,
+                1
+            ),
             1
         );
         __drop(Tag::Struct as i32, struct_handle);
@@ -1920,7 +1930,13 @@ mod tests {
             std::ptr::write(field_ptr as *mut u64, string_handle);
         }
         assert_eq!(
-            __struct_track_value(struct_handle, field_ptr, Tag::String as i32, string_handle, 1),
+            __struct_track_value(
+                struct_handle,
+                field_ptr,
+                Tag::String as i32,
+                string_handle,
+                1
+            ),
             1
         );
         let cloned = __clone(Tag::Struct as i32, struct_handle);
@@ -1951,5 +1967,56 @@ mod tests {
             0
         );
         __drop(Tag::Struct as i32, struct_handle);
+    }
+
+    #[test]
+    fn list_get_moves_values_and_leaves_unit() {
+        let list = __list_new(2);
+        __list_push(list, Tag::Integer as i32, 42);
+        let payload = b"heap";
+        let string_handle = __string_new(payload.as_ptr(), payload.len() as i64);
+        __list_push(list, Tag::String as i32, string_handle);
+
+        let first = __list_get(list, 0);
+        assert_eq!(first.tag, Tag::Integer as i32);
+        assert_eq!(first.data, 42);
+        let first_again = __list_get(list, 0);
+        assert_eq!(first_again.tag, Tag::Unit as i32);
+        assert_eq!(first_again.data, 0);
+
+        let taken = __list_get(list, 1);
+        assert_eq!(taken.tag, Tag::String as i32);
+        assert_eq!(taken.data, string_handle);
+        let taken_again = __list_get(list, 1);
+        assert_eq!(taken_again.tag, Tag::Unit as i32);
+        assert_eq!(taken_again.data, 0);
+
+        __drop(Tag::List as i32, list);
+        let live = slot_with(string_handle, false, |_| true);
+        assert!(live);
+        __drop(Tag::String as i32, string_handle);
+        let live_after = slot_with(string_handle, false, |_| true);
+        assert!(!live_after);
+    }
+
+    #[test]
+    fn dropping_list_releases_nested_heap_values() {
+        let payload = b"nested";
+        let string_handle = __string_new(payload.as_ptr(), payload.len() as i64);
+        let inner = __list_new(1);
+        __list_push(inner, Tag::String as i32, string_handle);
+        let outer = __list_new(1);
+        __list_push(outer, Tag::List as i32, inner);
+
+        __drop(Tag::List as i32, outer);
+        let string_live = slot_with(string_handle, false, |_| true);
+        assert!(!string_live);
+        let inner_live = slot_with(inner, false, |_| true);
+        assert!(!inner_live);
+
+        let immediates = __list_new(2);
+        __list_push(immediates, Tag::Integer as i32, 1);
+        __list_push(immediates, Tag::Boolean as i32, 1);
+        __drop(Tag::List as i32, immediates);
     }
 }

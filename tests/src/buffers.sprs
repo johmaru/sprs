@@ -1,17 +1,15 @@
-# Package name avoids the `buffer` type keyword (the lexer maps `buffer` to
-# the TypeBuffer token, so it cannot be used as an identifier).
+# Buffer tests: new / @buf_len / @buf_get / @buf_set / buf[i] sugar / destroy / exist.
+# Functions return i64 flags (same convention as the rest of the suite).
+# The `buffer` type keyword was removed; the canonical type is `Buffer`.
 pkg buffers;
 
-# Buffer tests: new / @bufLen / @bufGet / @bufSet / buf[i] sugar / destroy / exist.
-# Functions return i64 flags (same convention as the rest of the suite).
-
-# 1. new + @bufSet/@bufGet/@bufLen agree.
+# 1. new + @buf_set/@buf_get/@buf_len agree.
 pub fn buf_macro_roundtrip() >> i64 {
     var a = new(4);
-    @bufSet(a, 0, 10);
-    @bufSet(a, 1, 20);
-    var sum = @bufGet(a, 0) + @bufGet(a, 1);
-    if @bufLen(a) != 4 {
+    @buf_set(a, 0, 10);
+    @buf_set(a, 1, 20);
+    var sum = @buf_get(a, 0) + @buf_get(a, 1);
+    if @buf_len(a) != 4 {
         destroy(a);
         return 0;
     }
@@ -23,17 +21,17 @@ pub fn buf_macro_roundtrip() >> i64 {
     return 1;
 }
 
-# 2. buf[i] sugar matches @bufGet/@bufSet.
+# 2. buf[i] sugar matches @buf_get/@buf_set.
 pub fn buf_index_sugar() >> i64 {
     var b = new(2);
     b[0] = 7;
     b[1] = 8;
-    var total = b[0] + @bufGet(b, 1);
+    var total = b[0] + @buf_get(b, 1);
     if total != 15 {
         destroy(b);
         return 0;
     }
-    @bufSet(b, 0, 1);
+    @buf_set(b, 0, 1);
     if b[0] != 1 {
         destroy(b);
         return 0;
@@ -67,19 +65,19 @@ pub fn buf_destroy_exist() >> i64 {
 # 4. Scope exit without destroy must not leak (__drop path smoke test).
 pub fn buf_scope_exit_no_destroy() >> i64 {
     var c = new(3);
-    @bufSet(c, 0, 5);
-    if @bufGet(c, 0) != 5 {
+    @buf_set(c, 0, 5);
+    if @buf_get(c, 0) != 5 {
         return 0;
     }
     # no destroy before return — exit_scope __drop frees the Buffer
     return 1;
 }
 
-# 5. OOB @bufGet returns the Unit sentinel → false in an if condition.
+# 5. OOB @buf_get returns the Unit sentinel → false in an if condition.
 pub fn buf_oob_get() >> i64 {
     var a = new(1);
-    @bufSet(a, 0, 42);
-    if @bufGet(a, 99) {
+    @buf_set(a, 0, 42);
+    if @buf_get(a, 99) {
         destroy(a);
         return 0;
     }
@@ -91,11 +89,20 @@ pub fn buf_oob_get() >> i64 {
 pub fn buf_demo_output() >> i64 {
     var a = new(2);
     a[0] = 7;
-    @bufSet(a, 1, 8);
-    @println(@bufLen(a));                # expect: 2
-    @println(a[0] + @bufGet(a, 1));      # expect: 15
+    @buf_set(a, 1, 8);
+    @println(@buf_len(a));                # expect: 2
+    @println(a[0] + @buf_get(a, 1));      # expect: 15
     @println(exist(a));                  # expect: true
     destroy(a);
     @println(exist(a));                  # expect: false
     return 1;
+}
+
+# Explicit return drops a heap Buffer argument (issue #49 IR contract).
+fn consume_buffer_and_return(value >> Buffer) >> i64 {
+    return 1;
+}
+
+pub fn explicit_return_drops_buffer_arg() >> i64 {
+    return consume_buffer_and_return(new(1));
 }
