@@ -1,12 +1,14 @@
 grammar;
 
 use crate::front::ast::{
-    Item, 
-    VarDecl, 
-    Expr, 
-    Stmt, 
-    Function, 
-    FunctionParam, 
+    Item,
+    VarDecl,
+    Expr,
+    Stmt,
+    Function,
+    FunctionParam,
+    FunctionBuild,
+    FunctionBuildDirective,
     Enum,
     AtomDef,
     AssignStmt,
@@ -76,6 +78,12 @@ extern {
         Colon  => Token::Colon,
         Function => Token::Function,
         Return => Token::Return,
+        Use => Token::Use,
+        FunctionBuild => Token::FunctionBuild,
+        Private => Token::Private,
+        FbArgs => Token::FbArgs,
+        FbRetTy => Token::FbRetTy,
+        FbVisibility => Token::FbVisibility,
         PREPROCESSOR => Token::Preprocessor(<String>),
         Import => Token::Import,
         Package => Token::Package,
@@ -125,8 +133,12 @@ pub Start: Vec<Item> =
 
 ItemNode: Item = {
     FunctionDef,
+    PubFunctionDef,
+    FunctionBuildFnDef,
+    FunctionBuildDef,
+    PubFunctionBuildDef,
+    PreprocessorItem,
     <start:@L> <v:VarDecl> <end:@R> => Item::VarItem(v),
-    <start:@L> <p:PreprocessorDirective> <end:@R> => Item::Preprocessor(p),
     <start:@L> <i:ImportDirective> <end:@R> => Item::Import(i),
     <start:@L> <p:PackageDirective> <end:@R> => Item::Package(p),
     <start:@L> <e:EnumDef> <end:@R> => Item::EnumItem(e),
@@ -135,8 +147,14 @@ ItemNode: Item = {
     LabelGroupedDef,
 };
 
-PreprocessorDirective: String = {
-    PREPROCESSOR,
+PreprocessorItem: Item = {
+    <start:@L> <p:PREPROCESSOR> <end:@R> => {
+        if let Some(target) = p.strip_prefix("FunctionBuild ") {
+            Item::FunctionBuildSource { target: target.to_string(), span: Span::new(start, end) }
+        } else {
+            Item::Preprocessor(p)
+        }
+    }
 };
 
 ImportDirective: String = {
@@ -147,7 +165,7 @@ PackageDirective: String = {
     Package <id:Ident> Semi => id,
 };
 
-EnumDef: Enum = 
+EnumDef: Enum =
     <start:@L> <is_pub:PublicKw> Enum <name:Ident> LBrace <variants:EnumVariantList> RBrace <end:@R> => {
         Enum {
             ident: name,
@@ -266,16 +284,100 @@ PublicKw: bool = {
 };
 
 FunctionDef: Item =
-   <start:@L> <is_pub:PublicKw> FnKw <name:Ident> LParen <params:ParamList> RParen <ret:ReturnType> <body:Block> <end:@R> => {
+   <start:@L> FnKw <name:Ident> LParen <params:ParamList> RParen <ret:ReturnType> <body:Block> <end:@R> => {
         Item::FunctionItem(Function {
             ident: name,
             params,
             ret_ty: ret,
             blk: body,
-            is_public: is_pub,
+            is_public: false,
+            build_ref: None,
+            build_ref_span: Span::DUMMY,
             span: Span::new(start, end),
         })
     };
+
+PubFunctionDef: Item =
+   <start:@L> Public FnKw <name:Ident> LParen <params:ParamList> RParen <ret:ReturnType> <body:Block> <end:@R> => {
+        Item::FunctionItem(Function {
+            ident: name,
+            params,
+            ret_ty: ret,
+            blk: body,
+            is_public: true,
+            build_ref: None,
+            build_ref_span: Span::DUMMY,
+            span: Span::new(start, end),
+        })
+    };
+
+FunctionBuildFnDef: Item =
+   <start:@L> FnKw <name:Ident> Use <build:Ident> <body:Block> <end:@R> => {
+        Item::FunctionItem(Function {
+            ident: name,
+            params: vec![],
+            ret_ty: None,
+            blk: body,
+            is_public: false,
+            build_ref: Some(build.clone()),
+            build_ref_span: Span::new(start, end),
+            span: Span::new(start, end),
+        })
+    };
+
+FunctionBuildDef: Item =
+    <start:@L> FunctionBuild <name:Ident> LBrace <directives:FbDirectiveList> RBrace <end:@R> => {
+        Item::FunctionBuildItem(FunctionBuild {
+            ident: name,
+            directives,
+            is_public: false,
+            span: Span::new(start, end),
+        })
+    };
+
+PubFunctionBuildDef: Item =
+    <start:@L> Public FunctionBuild <name:Ident> LBrace <directives:FbDirectiveList> RBrace <end:@R> => {
+        Item::FunctionBuildItem(FunctionBuild {
+            ident: name,
+            directives,
+            is_public: true,
+            span: Span::new(start, end),
+        })
+    };
+
+FbDirectiveList: Vec<FunctionBuildDirective> = {
+    => vec![],
+    <mut ds:FbDirectiveList> <d:FbDirective> => { ds.push(d); ds }
+};
+
+FbDirective: FunctionBuildDirective = {
+    FbArgsDirective,
+    FbRetDirective,
+    FbVisDirective,
+    <start:@L> <m:MacroName> LParen <_args:ArgList> RParen Semi <end:@R> =>? {
+        let _ = start;
+        Err(ParseError::User {
+            error: format!("invalid FunctionBuild directive @{}", m),
+        })
+    },
+};
+
+FbArgsDirective: FunctionBuildDirective =
+    <start:@L> FbArgs LParen <params:ParamList> RParen Semi <end:@R> =>
+        FunctionBuildDirective::Args { params, span: Span::new(start, end) };
+
+FbRetDirective: FunctionBuildDirective =
+    <start:@L> FbRetTy LParen <t:Type> RParen Semi <end:@R> =>
+        FunctionBuildDirective::RetTy { ty: t, span: Span::new(start, end) };
+
+FbVisDirective: FunctionBuildDirective =
+    <start:@L> FbVisibility LParen <is_public:FbVisibilityValue> RParen Semi <end:@R> =>
+        FunctionBuildDirective::Visibility { is_public, span: Span::new(start, end) };
+
+FbVisibilityValue: bool = {
+    Public => true,
+    Private => false,
+};
 
 ParamList: Vec<FunctionParam> = {
     => vec![],
@@ -549,6 +651,9 @@ VarDecl: VarDecl = {
 
 Ident: String = {
     IDENT,
+    Use => "use".to_string(),
+    FunctionBuild => "function_build".to_string(),
+    Private => "private".to_string(),
     Function => "fn".to_string(),
     Case => "case".to_string(),
     Break => "break".to_string(),

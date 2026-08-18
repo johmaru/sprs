@@ -16,7 +16,8 @@ pub fn parse_only(input: &str, file_path: &str) -> Result<Vec<ast::Item>, SprsEr
 mod tests {
     use super::parse_only;
     use crate::front::ast::{
-        AtomDef, Enum, Expr, Function, Item, MatchArmBody, MatchPat, Stmt, Struct,
+        AtomDef, Enum, Expr, Function, FunctionBuild, FunctionBuildDirective, Item, MatchArmBody,
+        MatchPat, Stmt, Struct,
     };
     use crate::front::label_name::LabelName;
     use crate::front::type_helper::{Type, TypeAnnot};
@@ -43,10 +44,7 @@ fn error_value() >> err { return @error(100, "x"); }
             vec![
                 &Type::List,
                 &Type::Range,
-                &Type::App(
-                    "Label".into(),
-                    vec![Type::Atom("error".into()), Type::Any]
-                )
+                &Type::App("Label".into(), vec![Type::Atom("error".into()), Type::Any])
             ]
         );
 
@@ -75,7 +73,10 @@ fn third_function(xs >> List()) >> list { return xs; }
         let list_int = Type::App("List".into(), vec![Type::Int]);
         let result_int_err = Type::App(
             "Result".into(),
-            vec![Type::Int, Type::App("Label".into(), vec![Type::Atom("error".into()), Type::Any])],
+            vec![
+                Type::Int,
+                Type::App("Label".into(), vec![Type::Atom("error".into()), Type::Any]),
+            ],
         );
 
         match &items[0] {
@@ -124,12 +125,21 @@ fn third_function(xs >> List()) >> list { return xs; }
             "List".into(),
             vec![Type::App(
                 "Result".into(),
-                vec![Type::Int, Type::App("Label".into(), vec![Type::Atom("error".into()), Type::Any])],
+                vec![
+                    Type::Int,
+                    Type::App("Label".into(), vec![Type::Atom("error".into()), Type::Any]),
+                ],
             )],
         );
         match &items[0] {
             Item::FunctionItem(function_item) => {
-                assert_eq!(function_item.params[0].ty.as_ref().map(|annotation| &annotation.ty), Some(&expected));
+                assert_eq!(
+                    function_item.params[0]
+                        .ty
+                        .as_ref()
+                        .map(|annotation| &annotation.ty),
+                    Some(&expected)
+                );
             }
             other => panic!("expected function, got {:?}", other),
         }
@@ -217,9 +227,9 @@ fn third_function(xs >> List()) >> list { return xs; }
             panic!("expected first variable");
         };
         match first.expr.as_ref().map(|expr| &expr.node) {
-            Some(crate::front::ast::Expr::Atom(
-                crate::front::label_name::LabelName::Dynamic(parts),
-            )) => {
+            Some(crate::front::ast::Expr::Atom(crate::front::label_name::LabelName::Dynamic(
+                parts,
+            ))) => {
                 assert_eq!(
                     parts,
                     &vec![
@@ -269,7 +279,13 @@ fn third_function(xs >> List()) >> list { return xs; }
 
     #[test]
     fn rejects_invalid_dynamic_label_templates() {
-        assert!(parse_only(r#"fn main() { var label_value = :"{item_index+1}"; }"#, "bad1.sprs").is_err());
+        assert!(
+            parse_only(
+                r#"fn main() { var label_value = :"{item_index+1}"; }"#,
+                "bad1.sprs"
+            )
+            .is_err()
+        );
         assert!(parse_only(r#"fn main() { var label_value = :"{}"; }"#, "bad2.sprs").is_err());
     }
 
@@ -311,12 +327,8 @@ fn third_function() >> err { return :error; }
 "#;
         let items = parse_only(src, "named_label_ty.sprs").expect("parse");
         let atom_ok = Type::App("Atom".into(), vec![Type::Atom("ok".into())]);
-        let label_ok_int =
-            Type::App("Label".into(), vec![Type::Atom("ok".into()), Type::Int]);
-        let err_sugar = Type::App(
-            "Label".into(),
-            vec![Type::Atom("error".into()), Type::Any],
-        );
+        let label_ok_int = Type::App("Label".into(), vec![Type::Atom("ok".into()), Type::Int]);
+        let err_sugar = Type::App("Label".into(), vec![Type::Atom("error".into()), Type::Any]);
 
         match &items[0] {
             Item::FunctionItem(function_item) => {
@@ -358,7 +370,13 @@ fn third_function() >> err { return :error; }
         );
         match &items[0] {
             Item::FunctionItem(function_item) => {
-                assert_eq!(function_item.params[0].ty.as_ref().map(|annotation| &annotation.ty), Some(&expected));
+                assert_eq!(
+                    function_item.params[0]
+                        .ty
+                        .as_ref()
+                        .map(|annotation| &annotation.ty),
+                    Some(&expected)
+                );
             }
             other => panic!("expected function, got {:?}", other),
         }
@@ -390,10 +408,7 @@ fn request_check(req >> Label(:ok, int)) >> Label(:result, int) {
         assert_eq!(bind.as_deref(), Some("result"));
         assert!(matches!(&scrutinee.node, Expr::Var(name) if name == "req"));
         assert_eq!(arms.len(), 2);
-        assert_eq!(
-            arms[0].pat,
-            MatchPat::Name(LabelName::Static("ok".into()))
-        );
+        assert_eq!(arms[0].pat, MatchPat::Name(LabelName::Static("ok".into())));
         assert!(matches!(arms[0].body, MatchArmBody::ExprBreak(_)));
         assert_eq!(
             arms[1].pat,
@@ -447,10 +462,7 @@ fn f(req) {
         let Item::FunctionItem(function_item) = &items[0] else {
             panic!("expected function");
         };
-        let Stmt::Match {
-            bind, arms, ..
-        } = &function_item.blk[0].node
-        else {
+        let Stmt::Match { bind, arms, .. } = &function_item.blk[0].node else {
             panic!("expected match statement");
         };
         assert!(bind.is_none());
@@ -491,7 +503,6 @@ fn f(req) {
             }
         );
     }
-
 
     #[test]
     fn parses_match_bind_label_literal_scrutinee() {
@@ -549,10 +560,7 @@ fn f() >> int {
             Expr::Atom(LabelName::Static(name)) if name == "ok"
         ));
         assert_eq!(arms.len(), 3);
-        assert_eq!(
-            arms[0].pat,
-            MatchPat::Name(LabelName::Static("ok".into()))
-        );
+        assert_eq!(arms[0].pat, MatchPat::Name(LabelName::Static("ok".into())));
         assert_eq!(
             arms[1].pat,
             MatchPat::Name(LabelName::Static("error".into()))
@@ -700,9 +708,7 @@ fn ^fn(^if) { var ^return = ^if; ^return = ^return + 1; return ^return; }
         let items = parse_only(src, "label_atom.sprs").expect("parse");
         match &items[0] {
             Item::AtomItem(AtomDef {
-                ident,
-                is_public,
-                ..
+                ident, is_public, ..
             }) => {
                 assert_eq!(ident, "ready");
                 assert!(!*is_public);
@@ -734,11 +740,7 @@ fn ^fn(^if) { var ^return = ^if; ^return = ^return + 1; return ^return; }
     fn rejects_empty_grouped_inner_and_old_var_label() {
         assert!(parse_only("label :Color{}\n", "empty_grouped.sprs").is_err());
         assert!(parse_only("fn f() { label :red; }\n", "inner_label.sprs").is_err());
-        assert!(parse_only(
-            "var Color = :Color{:red, :blue};\n",
-            "old_var_label.sprs"
-        )
-        .is_err());
+        assert!(parse_only("var Color = :Color{:red, :blue};\n", "old_var_label.sprs").is_err());
     }
 
     #[test]
@@ -760,11 +762,8 @@ fn ^fn(^if) { var ^return = ^if; ^return = ^return + 1; return ^return; }
 
     #[test]
     fn parses_named_struct_and_self_types() {
-        let items = parse_only(
-            "struct A {} fn f(x >> A) >> A { return x; }",
-            "named.sprs",
-        )
-        .expect("parse");
+        let items =
+            parse_only("struct A {} fn f(x >> A) >> A { return x; }", "named.sprs").expect("parse");
         let Item::FunctionItem(function_item) = &items[1] else {
             panic!("expected function");
         };
@@ -772,7 +771,10 @@ fn ^fn(^if) { var ^return = ^if; ^return = ^return + 1; return ^return; }
             function_item.params[0].ty.as_ref().map(|annot| &annot.ty),
             Some(&Type::Named("A".into()))
         );
-        assert_eq!(function_item.ret_ty.as_ref(), Some(&Type::Named("A".into())));
+        assert_eq!(
+            function_item.ret_ty.as_ref(),
+            Some(&Type::Named("A".into()))
+        );
 
         let items = parse_only("struct Node { next >> Self }", "self.sprs").expect("parse");
         let Item::StructItem(Struct { fields, .. }) = &items[0] else {
@@ -791,4 +793,133 @@ fn ^fn(^if) { var ^return = ^if; ^return = ^return + 1; return ^return; }
         );
     }
 
+    #[test]
+    fn parses_function_build_and_use() {
+        let src = r#"
+function_build AddBuild {
+    @FbArgs(lhs >> i64, rhs >> i64);
+    @FbRetTy(i64);
+    @FbVisibility(pub);
+}
+
+fn add use AddBuild {
+    return lhs + rhs;
+}
+"#;
+        let items = parse_only(src, "fb.sprs").expect("parse");
+        match &items[0] {
+            Item::FunctionBuildItem(FunctionBuild {
+                ident,
+                directives,
+                is_public,
+                ..
+            }) => {
+                assert_eq!(ident, "AddBuild");
+                assert!(!*is_public);
+                assert_eq!(directives.len(), 3);
+                assert!(matches!(
+                    &directives[0],
+                    FunctionBuildDirective::Args { params, .. } if params.len() == 2
+                ));
+            }
+            other => panic!("expected FunctionBuildItem, got {other:?}"),
+        }
+        let Item::FunctionItem(function) = &items[1] else {
+            panic!("expected function");
+        };
+        assert_eq!(function.ident, "add");
+        assert_eq!(function.build_ref.as_deref(), Some("AddBuild"));
+        assert!(function.params.is_empty());
+        assert_eq!(function.ret_ty, None);
+        assert!(!function.is_public);
+    }
+
+    #[test]
+    fn parses_pub_function_build() {
+        let items = parse_only(
+            "pub function_build PublicBuild {}
+",
+            "fb.sprs",
+        )
+        .expect("parse");
+        let Item::FunctionBuildItem(FunctionBuild {
+            is_public, ident, ..
+        }) = &items[0]
+        else {
+            panic!("expected function_build");
+        };
+        assert_eq!(ident, "PublicBuild");
+        assert!(*is_public);
+    }
+
+    #[test]
+    fn parses_function_build_source_directive() {
+        let items = parse_only(
+            "#define FunctionBuild contracts
+fn main() {}
+",
+            "fb.sprs",
+        )
+        .expect("parse");
+        assert!(matches!(
+            &items[0],
+            Item::FunctionBuildSource { target, .. } if target == "contracts"
+        ));
+        assert!(matches!(&items[1], Item::FunctionItem(_)));
+    }
+
+    #[test]
+    fn rejects_mixed_inline_and_function_build() {
+        assert!(
+            parse_only(
+                "fn foo(x >> i64) use A {}
+",
+                "mix.sprs"
+            )
+            .is_err()
+        );
+        assert!(
+            parse_only(
+                "fn foo use A >> i64 {}
+",
+                "mix.sprs"
+            )
+            .is_err()
+        );
+        assert!(
+            parse_only(
+                "pub fn foo use A {}
+",
+                "mix.sprs"
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_function_build_directive() {
+        let err = parse_only(r#"function_build A { @println("x"); }"#, "bad.sprs").unwrap_err();
+        let message = format!("{err}");
+        assert!(
+            message.contains("invalid FunctionBuild directive") || message.contains("Unrecognized"),
+            "unexpected error: {message}"
+        );
+    }
+
+    #[test]
+    fn still_parses_normal_functions() {
+        let items = parse_only(
+            "pub fn add(lhs >> i64, rhs >> i64) >> i64 { return lhs + rhs; }
+",
+            "fn.sprs",
+        )
+        .expect("parse");
+        let Item::FunctionItem(function) = &items[0] else {
+            panic!("expected function");
+        };
+        assert!(function.is_public);
+        assert!(function.build_ref.is_none());
+        assert_eq!(function.params.len(), 2);
+        assert_eq!(function.ret_ty, Some(Type::TypeI64));
+    }
 }

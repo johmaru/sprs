@@ -3,7 +3,9 @@ use crate::front::error::{ErrorCategory, ErrorCode, Location, SprsError};
 use crate::front::span::Span;
 use crate::front::type_helper;
 use crate::llvm::builder_helper;
-use crate::llvm::compiler::{Compiler, EnumFrame, FnTypeInfo, LINUX_STR, OS, StructDef, WINDOWS_STR};
+use crate::llvm::compiler::{
+    Compiler, EnumFrame, FnTypeInfo, LINUX_STR, OS, StructDef, WINDOWS_STR,
+};
 use crate::llvm::parser::parse_only;
 use crate::llvm::value::build_label_is_error;
 use crate::naming;
@@ -76,6 +78,7 @@ impl<'ctx> Compiler<'ctx> {
                 known_structs.insert(struct_item.ident.clone());
             }
         }
+        self.apply_function_builds(&mut items, module_name, &path, &mut known_structs)?;
         resolve_item_types(&mut items, &known_structs, &path)?;
 
         // Declare all function prototypes
@@ -225,10 +228,12 @@ impl<'ctx> Compiler<'ctx> {
                                 true,
                             );
                             let panic_ptr = match panic_msg {
-                                Some(crate::llvm::compiler::StrConstantResult::Global(global_value)) => {
-                                    global_value.as_pointer_value()
-                                }
-                                Some(crate::llvm::compiler::StrConstantResult::Pointer(parameter)) => parameter,
+                                Some(crate::llvm::compiler::StrConstantResult::Global(
+                                    global_value,
+                                )) => global_value.as_pointer_value(),
+                                Some(crate::llvm::compiler::StrConstantResult::Pointer(
+                                    parameter,
+                                )) => parameter,
                                 None => {
                                     return Err(SprsError::Internal {
                                         message: "Failed to create panic message".to_string(),
@@ -267,6 +272,53 @@ impl<'ctx> Compiler<'ctx> {
             self.private_atom_defs.insert(private_atom);
         }
 
+        Ok(())
+    }
+
+    fn apply_function_builds(
+        &mut self,
+        items: &mut Vec<ast::Item>,
+        module_name: &str,
+        path: &str,
+        known_structs: &mut HashSet<String>,
+    ) -> Result<(), SprsError> {
+        use crate::llvm::function_build::{
+            FunctionBuildRegistry, collect_local_function_builds, function_build_source_directive,
+            import_public_builds_from_source, insert_builds, known_structs_from_items,
+            load_function_build_source, lower_functions_with_builds, resolve_function_build_types,
+        };
+
+        let mut registry = FunctionBuildRegistry::default();
+        let mut stack = vec![module_name.to_string()];
+        if let Some((source_name, span)) = function_build_source_directive(items, path)? {
+            let (mut ext_items, ext_path) = load_function_build_source(
+                &source_name,
+                span,
+                path,
+                &self.source_path,
+                &mut stack,
+            )?;
+            let mut ext_known: HashSet<String> = self.struct_defs.keys().cloned().collect();
+            ext_known.extend(known_structs_from_items(&ext_items));
+            resolve_item_types(&mut ext_items, &ext_known, &ext_path)?;
+            for item in &ext_items {
+                if let ast::Item::StructItem(struct_item) = item {
+                    if !self.struct_defs.contains_key(&struct_item.ident) {
+                        self.register_struct(
+                            struct_item.ident.clone(),
+                            struct_item.fields.clone(),
+                        )?;
+                        known_structs.insert(struct_item.ident.clone());
+                    }
+                }
+            }
+            import_public_builds_from_source(&ext_items, &ext_path, &mut registry)?;
+        }
+
+        resolve_function_build_types(items, known_structs, path)?;
+        let local = collect_local_function_builds(items, path, false)?;
+        insert_builds(&mut registry, local)?;
+        lower_functions_with_builds(items, &registry, path)?;
         Ok(())
     }
 
@@ -372,7 +424,11 @@ impl<'ctx> Compiler<'ctx> {
             func_name.to_string(),
             FnTypeInfo {
                 ret_ty: func.ret_ty.clone(),
-                params: func.params.iter().map(|parameter| parameter.ty.clone()).collect(),
+                params: func
+                    .params
+                    .iter()
+                    .map(|parameter| parameter.ty.clone())
+                    .collect(),
             },
         );
         // Plain source name also resolves for non-main calls / inference.
@@ -381,7 +437,11 @@ impl<'ctx> Compiler<'ctx> {
                 "main".to_string(),
                 FnTypeInfo {
                     ret_ty: func.ret_ty.clone(),
-                    params: func.params.iter().map(|parameter| parameter.ty.clone()).collect(),
+                    params: func
+                        .params
+                        .iter()
+                        .map(|parameter| parameter.ty.clone())
+                        .collect(),
                 },
             );
         }
@@ -410,8 +470,12 @@ fn resolve_item_types(
             ast::Item::StructItem(struct_item) => {
                 for field in &mut struct_item.fields {
                     if let Some(ty) = &mut field.ty {
-                        type_helper::resolve_type(ty, known_structs, Some(struct_item.ident.as_str()))
-                            .map_err(|message| semantic(path, field.span, message))?;
+                        type_helper::resolve_type(
+                            ty,
+                            known_structs,
+                            Some(struct_item.ident.as_str()),
+                        )
+                        .map_err(|message| semantic(path, field.span, message))?;
                     }
                 }
             }
@@ -451,20 +515,23 @@ mod tests {
 
     #[test]
     fn resolves_forward_struct_annotations_before_registration() {
-        let mut items = parse_only(
-            "struct A { b >> B } struct B { a >> A }",
-            "forward.sprs",
-        )
-        .expect("parse");
+        let mut items =
+            parse_only("struct A { b >> B } struct B { a >> A }", "forward.sprs").expect("parse");
         let known = collect_known_structs(&items);
         resolve_item_types(&mut items, &known, "forward.sprs").unwrap();
 
-        let Item::StructItem(Struct { fields: fields_a, .. }) = &items[0] else {
+        let Item::StructItem(Struct {
+            fields: fields_a, ..
+        }) = &items[0]
+        else {
             panic!("expected struct A");
         };
         assert_eq!(fields_a[0].ty.as_ref(), Some(&Type::Struct("B".into())));
 
-        let Item::StructItem(Struct { fields: fields_b, .. }) = &items[1] else {
+        let Item::StructItem(Struct {
+            fields: fields_b, ..
+        }) = &items[1]
+        else {
             panic!("expected struct B");
         };
         assert_eq!(fields_b[0].ty.as_ref(), Some(&Type::Struct("A".into())));
@@ -488,11 +555,8 @@ mod tests {
 
     #[test]
     fn rejects_undefined_named_type_with_location() {
-        let mut items = parse_only(
-            "struct A { value >> DoesNotExist }",
-            "invalid_named.sprs",
-        )
-        .expect("parse");
+        let mut items =
+            parse_only("struct A { value >> DoesNotExist }", "invalid_named.sprs").expect("parse");
         let known = collect_known_structs(&items);
         let err = resolve_item_types(&mut items, &known, "invalid_named.sprs").unwrap_err();
         match err {

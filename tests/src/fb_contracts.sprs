@@ -1,0 +1,24 @@
+pkg fb_contracts;
+
+struct Job {
+    id >> i64
+}
+
+pub function_build AddBuild {
+    @FbArgs(lhs >> i64, rhs >> i64);
+    @FbRetTy(i64);
+    @FbVisibility(pub);
+}
+
+pub function_build JobFn {
+    @FbArgs(job >> Job);
+    @FbRetTy(i64);
+    @FbVisibility(pub);
+}
+
+function_build InternalBuild {
+    @FbRetTy(str);
+}
+
+fn helper_not_imported() {
+}

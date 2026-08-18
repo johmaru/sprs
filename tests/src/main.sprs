@@ -12,6 +12,7 @@ import errors;
 import labels;
 import buffers;
 import unsafe_mem;
+import function_build;
 
 # === Main ===
 
@@ -85,6 +86,12 @@ fn main() {
     @println(functions.test_fib());
     @println(functions.early_return());
     @println(functions.deep_recursion());
+
+    @println("=== FunctionBuild ===");
+    @println(function_build.fb_add(3, 4));
+    @println(function_build.echo_a(9));
+    @println(function_build.echo_b(11));
+    @println(function_build.forward_value());
 
     @println("=== Lists ===");
     @println(data_structures.list_push_and_print());

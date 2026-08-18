@@ -45,6 +45,12 @@ pub enum Token {
     Num(i64),
     Float(f64),
     Function,
+    Use,
+    FunctionBuild,
+    Private,
+    FbArgs,
+    FbRetTy,
+    FbVisibility,
     Return,
     Preprocessor(String),
     Package,
@@ -157,6 +163,12 @@ enum RawTok {
     Else,
     #[token("while")]
     While,
+    #[token("@FbArgs", priority = 10)]
+    FbArgs,
+    #[token("@FbRetTy", priority = 10)]
+    FbRetTy,
+    #[token("@FbVisibility", priority = 10)]
+    FbVisibility,
     #[regex(r"@[A-Za-z_][A-Za-z0-9_]*", |lex| lex.slice()[1..].to_string())]
     MacroIdent(String),
     #[regex(r"[A-Za-z_][A-Za-z0-9_]*!?")]
@@ -178,6 +190,12 @@ enum RawTok {
     False,
     #[token("fn")]
     Function,
+    #[token("use")]
+    Use,
+    #[token("function_build")]
+    FunctionBuild,
+    #[token("private")]
+    Private,
     #[token(">>")]
     GtGt,
     #[token("?")]
@@ -194,6 +212,10 @@ enum RawTok {
     FatArrow,
     #[token("return")]
     Return,
+    #[regex(r"#define[ \t]+FunctionBuild[ \t]+[A-Za-z_][A-Za-z0-9_]*", |lex| {
+        lex.slice().split_ascii_whitespace().last().unwrap().to_owned()
+    }, priority = 5)]
+    FunctionBuildSource(String),
     #[regex(r"#[a-z]+[ \t]+[A-Za-z_][A-Za-z0-9_]*", |lex| lex.slice().split_ascii_whitespace().nth(1).unwrap().to_owned(), priority = 4)]
     Preprocessor(String),
     #[token("pkg")]
@@ -370,7 +392,16 @@ impl<'input> Iterator for Lexer<'input> {
             RawTok::False => Token::Bool(false),
             RawTok::WS => unreachable!(),
             RawTok::Function => Token::Function,
+            RawTok::Use => Token::Use,
+            RawTok::FunctionBuild => Token::FunctionBuild,
+            RawTok::Private => Token::Private,
+            RawTok::FbArgs => Token::FbArgs,
+            RawTok::FbRetTy => Token::FbRetTy,
+            RawTok::FbVisibility => Token::FbVisibility,
             RawTok::Return => Token::Return,
+            RawTok::FunctionBuildSource(value) => {
+                Token::Preprocessor(format!("FunctionBuild {}", value))
+            }
             RawTok::Preprocessor(value) => Token::Preprocessor(value),
             RawTok::Package => Token::Package,
             RawTok::Import => Token::Import,

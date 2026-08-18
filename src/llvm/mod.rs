@@ -1,13 +1,14 @@
 pub mod arithmetic;
 pub mod builder_helper;
-pub mod comparison;
 pub mod codegen;
+pub mod comparison;
 pub mod compiler;
-pub mod module_loader;
 pub mod control_flow;
 pub mod data_structures;
+pub mod function_build;
 pub mod llvm_executer;
 pub mod macros;
+pub mod module_loader;
 pub mod parser;
 pub mod value;
 pub mod variable;

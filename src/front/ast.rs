@@ -62,7 +62,7 @@ pub enum Expr {
     TypeF64,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct FunctionParam {
     pub ident: String,
     pub ty: Option<TypeAnnot>,
@@ -76,10 +76,40 @@ pub enum Item {
     VarItem(VarDecl),
     FunctionItem(Function),
     Preprocessor(String),
+    FunctionBuildSource { target: String, span: Span },
+    FunctionBuildItem(FunctionBuild),
     EnumItem(Enum),
     AtomItem(AtomDef),
     StructItem(Struct),
     HeapAllocItem(HeapAlloc),
+}
+
+/// Dedicated FunctionBuild contract directives (`@FbArgs` / `@FbRetTy` / `@FbVisibility`).
+/// These are not runtime macros and must not flow through `Expr::Macro`.
+#[derive(Debug, PartialEq, Clone)]
+pub enum FunctionBuildDirective {
+    Args {
+        params: Vec<FunctionParam>,
+        span: Span,
+    },
+    RetTy {
+        ty: Type,
+        span: Span,
+    },
+    Visibility {
+        is_public: bool,
+        span: Span,
+    },
+}
+
+/// Compile-time function contract. Phase 1 is static args / return / visibility only.
+#[derive(Debug, PartialEq, Clone)]
+pub struct FunctionBuild {
+    pub ident: String,
+    pub directives: Vec<FunctionBuildDirective>,
+    /// Visibility of the FunctionBuild declaration itself (`pub function_build`).
+    pub is_public: bool,
+    pub span: Span,
 }
 
 #[derive(Debug, PartialEq)]
@@ -91,6 +121,9 @@ pub struct Function {
     /// Declared success-path return type (`>> T`). Absent means unannotated.
     /// LLVM ABI still returns `runtime_value_type` so error labels (`{:error, _}`) can propagate.
     pub ret_ty: Option<Type>,
+    /// When set, params / ret_ty / is_public are filled from this FunctionBuild.
+    pub build_ref: Option<String>,
+    pub build_ref_span: Span,
     pub span: Span,
 }
 

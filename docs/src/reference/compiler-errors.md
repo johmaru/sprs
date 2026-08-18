@@ -46,7 +46,7 @@ The same number can cover several messages. The table lists patterns; a number i
 | SYN-003 | `ExtraToken '{token}'` |
 | SYN-004 | `UnrecognizedEOF` |
 | SYN-005 | User parse error containing `Invalid assignment target` (message is the parser string) |
-| SYN-006 | User parse errors containing `Expected IDENT token`, `Expected MACRO token`, `Expected NUM token`, `Expected FLOAT token`, or `Expected StrLiteral token`; also other `ParseError::User` messages that are not SYN-005 or SYN-007 |
+| SYN-006 | User parse errors containing `Expected IDENT token`, `Expected MACRO token`, `Expected NUM token`, `Expected FLOAT token`, or `Expected StrLiteral token`; `invalid FunctionBuild directive @{name}`; also other `ParseError::User` messages that are not SYN-005 or SYN-007 |
 | SYN-007 | User parse error containing `does not support struct init syntax` (for example `Macro '…' does not support struct init syntax. Use @init for struct initialization.`) |
 
 ### Type (`SPRS-TYP-…`)
@@ -81,6 +81,12 @@ There is no `SEM-001`, `SEM-012`, or `SEM-014` in the current compiler.
 | SEM-015 | `Undefined function: {name}`; `` `@raw` requires an unsafe block ``; `` `@free` requires an unsafe block `` |
 | SEM-016 | `Argument count mismatch: function `{fn}` expects {n} argument(s), found {m}` |
 | SEM-017 | `match patterns must be static :name in v1`; `payload pattern requires Label scrutinee`; `case _ must be the last match arm`; `non-exhaustive match on {enum}; missing {variants}` |
+| SEM-018 | ``undefined FunctionBuild `{name}` `` |
+| SEM-019 | ``duplicate FunctionBuild `{name}` `` |
+| SEM-020 | `duplicate FunctionBuild directive @{name}` |
+| SEM-022 | ``FunctionBuild `{name}` is private and cannot be used from an external source`` |
+| SEM-023 | ``multiple `#define FunctionBuild` directives in one file`` |
+| SEM-024 | `circular FunctionBuild source: {a} -> {b} -> ...` |
 
 ### Internal
 
