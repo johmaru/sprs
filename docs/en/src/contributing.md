@@ -21,16 +21,21 @@ sudo apt-get install zlib1g-dev libzstd-dev && sudo apt-get install libncurses5-
 
 ## Local documentation
 
-Build the mdBook from the repository root:
+From the repository root, confirm both books have the same Markdown files, then build English then Japanese:
 
 ```bash
-mdbook build docs
+diff \
+  <(find docs/en/src -type f -name '*.md' -printf '%P\n' | sort) \
+  <(find docs/ja/src -type f -name '*.md' -printf '%P\n' | sort)
+
+mdbook build docs/en
+mdbook build docs/ja
 ```
 
-Serve it locally:
+Serve both books together:
 
 ```bash
-mdbook serve docs --hostname 127.0.0.1 --port 3000
+python3 -m http.server 3000 --directory docs/book
 ```
 
-Then open `http://127.0.0.1:3000`. Generated HTML is written to `docs/book/` and is not committed.
+Then open `http://127.0.0.1:3000/` for English and `http://127.0.0.1:3000/ja/` for Japanese. Generated HTML is written to `docs/book/` and is not committed.

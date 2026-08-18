@@ -1,0 +1,7 @@
+[book]
+title = "Sprs ドキュメント"
+language = "ja"
+src = "src"
+
+[build]
+build-dir = "../book/ja"

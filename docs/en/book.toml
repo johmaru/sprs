@@ -4,4 +4,4 @@ language = "en"
 src = "src"
 
 [build]
-build-dir = "book"
+build-dir = "../book"

@@ -1,5 +1,7 @@
 # Sprs Documentation
 
+[日本語](ja/)
+
 Rust-based compiler for Sprs: a language designed for embedded and system control.
 
 This project implements a super simple compiler for a custom programming language called Sprs using Rust and LLVM via the Inkwell library. The compiler translates Sprs source code into LLVM IR, which is then compiled into machine code for execution.
