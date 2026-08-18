@@ -1,0 +1,7 @@
+[book]
+title = "Sprs Documentation"
+language = "en"
+src = "src"
+
+[build]
+build-dir = "book"

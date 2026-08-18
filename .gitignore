@@ -7,3 +7,4 @@ output.ll
 *.ll
 /build/
 tests/build/
+/docs/book/
