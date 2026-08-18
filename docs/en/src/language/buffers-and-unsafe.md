@@ -3,8 +3,8 @@
 ## Buffers
 
 `new(n)` allocates a zero-initialized Buffer of `n` bytes (negative → invalid handle; `0` is a valid empty buffer).
-Bytes are Integers in `0..=255`. Index sugar `buf[i]` reads/writes like `@bufGet` / `@bufSet`.
-Writes truncate to the low 8 bits. Out-of-bounds `@bufGet` / `buf[i]` reads return the `Unit` sentinel
+Bytes are Integers in `0..=255`. Index sugar `buf[i]` reads/writes like `@buf_get` / `@buf_set`.
+Writes truncate to the low 8 bits. Out-of-bounds `@buf_get` / `buf[i]` reads return the `Unit` sentinel
 (same convention as list indexing); out-of-bounds writes are no-ops.
 
 `destroy(x)` explicitly releases a heap value and marks the binding `Unit` (double `destroy` is a no-op).
@@ -13,10 +13,10 @@ explicit `destroy` is optional.
 
 ```sprs
 var a = new(4);
-@bufSet(a, 0, 10);
+@buf_set(a, 0, 10);
 a[1] = 20;
-@println(@bufLen(a));           # 4
-@println(a[0] + @bufGet(a, 1)); # 30
+@println(@buf_len(a));           # 4
+@println(a[0] + @buf_get(a, 1)); # 30
 @println(exist(a));             # true
 destroy(a);
 @println(exist(a));             # false
@@ -45,7 +45,7 @@ variable drops (including on `return`).
 fn demo() {
   var a = new(1);
   defer destroy(a);   # runs at scope exit before auto-drop
-  @bufSet(a, 0, 1);
+  @buf_set(a, 0, 1);
 
   var b = new(2);
   defer destroy(b);

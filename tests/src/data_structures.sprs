@@ -43,7 +43,21 @@ pub fn list_index_read() >> i64 {
     if first != 10 {
         return 0;
     }
+    if y[0] {
+        return 0;
+    }
     if y[1] != 20 {
+        return 0;
+    }
+    return 1;
+}
+
+pub fn list_index_moves_string() >> i64 {
+    var y = [];
+    @list_push(y, "owned");
+    var s = y[0];
+    destroy(s);
+    if y[0] {
         return 0;
     }
     return 1;
@@ -57,34 +71,34 @@ struct Point {
 }
 
 pub fn struct_create_x() >> i64 {
-    var p = @init(Point {
+    var p = init Point {
         x = 10,
-        y = 20
-    });
+        y = 20,
+    };
     return p.x;
 }
 
 pub fn struct_create_y() >> i64 {
-    var p = @init(Point {
+    var p = init Point {
         x = 100,
-        y = 200
-    });
+        y = 200,
+    };
     return p.y;
 }
 
 pub fn struct_both_fields() >> i64 {
-    var p = @init(Point {
+    var p = init Point {
         x = 5,
-        y = 15
-    });
+        y = 15,
+    };
     return p.x + p.y;
 }
 
 pub fn struct_in_function() >> i64 {
-    var p = @init(Point {
+    var p = init Point {
         x = 1,
-        y = 2
-    });
+        y = 2,
+    };
     var sum = p.x + p.y;
     return sum;
 }
@@ -111,67 +125,16 @@ struct Tree {
 }
 
 pub fn recursive_tree_child_value() >> i64 {
-    var leaf = @init(Tree {
+    var leaf = init Tree {
         value = 1,
-        children = []
-    });
-    var children = [leaf];
-    var root = @init(Tree {
-        value = 0,
-        children = children
-    });
-    return root.children[0].value;
-}
-
-# === Enum ===
-
-enum Palette {
-    Red,
-    Green,
-    Blue
-}
-
-pub fn enum_access() >> i64 {
-    var c = Palette.Red;
-    return 1;
-}
-
-pub fn enum_multiple() >> i64 {
-    var a = Palette.Red;
-    var b = Palette.Green;
-    var c = Palette.Blue;
-    return 3;
-}
-
-pub fn enum_in_list() >> i64 {
-    var y = [];
-    @list_push(y, Palette.Green);
-    return 1;
-}
-
-pub fn enum_eq_same() >> bool {
-    return Palette.Red == Palette.Red;
-}
-
-pub fn enum_eq_other() >> bool {
-    return Palette.Red == Palette.Green;
-}
-
-pub fn enum_eq_bare_atom() >> bool {
-    return Palette.Red == :Red;
-}
-
-pub fn enum_match_red() >> int {
-    var r = match Palette.Red {
-        case :Red => 1
-        case :Green => 2
-        case :Blue => 3
+        children = [],
     };
-    return r;
-}
-
-pub fn enum_print() {
-    @println(Palette.Red);
+    var children = [leaf];
+    var root = init Tree {
+        value = 0,
+        children = children,
+    };
+    return root.children[0].value;
 }
 
 pub struct Flag {
@@ -179,16 +142,16 @@ pub struct Flag {
 }
 
 pub fn flag_true() >> bool {
-    var p = @init(Flag {
-        ok = true
-    });
+    var p = init Flag {
+        ok = true,
+    };
     return p.ok;
 }
 
 pub fn flag_false() >> bool {
-    var p = @init(Flag {
-        ok = false
-    });
+    var p = init Flag {
+        ok = false,
+    };
     return p.ok;
 }
 
@@ -198,25 +161,46 @@ pub struct Box {
 
 pub fn struct_owned_string() >> str {
     var s = "owned";
-    var box = @init(Box {
-        value = s
-    });
+    var box = init Box {
+        value = s,
+    };
     return box.value;
 }
 
 pub fn struct_clone_string() >> str {
-    var box = @init(Box {
-        value = "copy"
-    });
+    var box = init Box {
+        value = "copy",
+    };
     var other = @clone(box);
     return other.value;
 }
 
 pub fn struct_move_invalid_field() >> bool {
-    var a = @init(Box {
-        value = "x"
-    });
+    var a = init Box {
+        value = "x",
+    };
     var b = a;
     return @is_error(a.value);
+}
+
+struct Counter {
+    value >> i64 = 0,
+    name >> str
+}
+
+# Default field: value omitted -> default 0 applies.
+pub fn init_default_value() >> i64 {
+    var c = init Counter {
+        name = "counter",
+    };
+    return c.value;
+}
+
+struct Empty {}
+
+# Zero-field struct initializer.
+pub fn init_empty() >> i64 {
+    var e = init Empty {};
+    return 1;
 }
 

@@ -8,7 +8,7 @@
 
 - [Types and Bindings](language/types-and-bindings.md)
 - [Functions and Control Flow](language/functions-and-control-flow.md)
-- [Enums and Structs](language/enums-and-structs.md)
+- [Structs](language/structs.md)
 - [Labels and Match](language/labels-and-match.md)
 - [Errors](language/errors.md)
 - [Buffers and Unsafe](language/buffers-and-unsafe.md)

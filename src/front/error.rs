@@ -314,13 +314,7 @@ fn build_json_report(error: &SprsError, source: &str) -> JsonErrorReport {
                         end_col_num,
                     )
                 }
-                None => (
-                    "<unknown>".to_string(),
-                    0,
-                    0,
-                    0,
-                    0,
-                ),
+                None => ("<unknown>".to_string(), 0, 0, 0, 0),
             };
             JsonErrorReport {
                 code: "SPRS-INTERNAL".to_string(),
@@ -334,7 +328,11 @@ fn build_json_report(error: &SprsError, source: &str) -> JsonErrorReport {
                     column: col,
                     end_line,
                     end_column: end_col,
-                    snippet: if line == 0 { String::new() } else { get_snippet(source, line) },
+                    snippet: if line == 0 {
+                        String::new()
+                    } else {
+                        get_snippet(source, line)
+                    },
                 },
                 expected: vec![],
                 expected_type: None,

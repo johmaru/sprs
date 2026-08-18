@@ -47,34 +47,34 @@ pub fn var_math() >> i64 {
     return d;
 }
 
-# === cp (always-clone) / @move ===
+# === clone / @move ===
 
-# Issue #30: cp var can be read twice without @clone
-pub fn cp_print_twice() >> i64 {
-    cp var greeting = "Hello, Sprs!";
-    @println(greeting);
+# @clone lets a value be read twice; the original stays valid.
+pub fn clone_print_twice() >> i64 {
+    var greeting = "Hello, Sprs!";
+    @println(@clone(greeting));
     @println(greeting);
     return 1;
 }
 
-# Issue #30: @move(cp) transfers ownership; binding becomes Unit
-pub fn cp_move_invalidates() >> i64 {
-    cp var greeting = "bye";
+# @move transfers ownership; the binding becomes Unit.
+pub fn move_invalidates() >> i64 {
+    var greeting = "bye";
     @println(@move(greeting));
-    @println(greeting);
+    @println(greeting);   # second read sees Unit after the move
     return 1;
 }
 
-# Reading a cp source into a new binding clones; source stays valid
-pub fn cp_assign_keeps_source() >> i64 {
-    cp var a = "keep";
-    var b = a;
+# Cloning into a new binding keeps the source valid.
+pub fn clone_assign_keeps_source() >> i64 {
+    var a = "keep";
+    var b = @clone(a);
     @println(a);
     @println(b);
     return 1;
 }
 
-# non-cp assign must move value (not store Unit)
+# plain assign must move value (not store Unit)
 pub fn assign_moves_string() >> i64 {
     var a = "from_a";
     var b = "old_b";
@@ -92,10 +92,10 @@ pub fn self_assign_string() >> i64 {
     return 1;
 }
 
-# cp passed to a function can be used again
-pub fn cp_call_twice() >> i64 {
-    cp var e = "arg";
-    @println(echo_str(e));
+# @clone passed to a function; the original can be used again
+pub fn clone_call_twice() >> i64 {
+    var e = "arg";
+    @println(echo_str(@clone(e)));
     @println(echo_str(e));
     return 1;
 }

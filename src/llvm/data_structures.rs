@@ -1,4 +1,6 @@
-use crate::llvm::value::{box_return_value, create_entry_block_alloca, create_error_label_from_str};
+use crate::llvm::value::{
+    box_return_value, create_entry_block_alloca, create_error_label_from_str,
+};
 use crate::llvm::variable::clone_runtime_value;
 use crate::{
     front::ast,
@@ -11,6 +13,7 @@ use inkwell::{
     AddressSpace,
     values::{BasicValueEnum, PointerValue, ValueKind},
 };
+use std::collections::HashMap;
 
 pub fn create_list<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
@@ -373,7 +376,6 @@ pub fn create_module_access<'ctx>(
     box_return_value(self_compiler, module, return_type, result_val)
 }
 
-
 fn copy_runtime_ptr<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
     dest: PointerValue<'ctx>,
@@ -394,7 +396,11 @@ fn ptr_is_null<'ctx>(
 ) -> inkwell::values::IntValue<'ctx> {
     let addr = self_compiler
         .builder
-        .build_ptr_to_int(ptr, self_compiler.context.i64_type(), &format!("{name}_addr"))
+        .build_ptr_to_int(
+            ptr,
+            self_compiler.context.i64_type(),
+            &format!("{name}_addr"),
+        )
         .unwrap();
     self_compiler
         .builder
@@ -498,7 +504,10 @@ pub fn create_field_access<'ctx>(
         .build_int_compare(
             inkwell::IntPredicate::EQ,
             struct_tag,
-            self_compiler.context.i32_type().const_int(Tag::Struct as u64, false),
+            self_compiler
+                .context
+                .i32_type()
+                .const_int(Tag::Struct as u64, false),
             "is_struct_tag",
         )
         .unwrap();
@@ -641,11 +650,14 @@ pub fn create_field_access<'ctx>(
                     "bool_field_access_res",
                 );
             }
-            crate::front::type_helper::Type::Float
-            | crate::front::type_helper::Type::TypeF64 => {
+            crate::front::type_helper::Type::Float | crate::front::type_helper::Type::TypeF64 => {
                 let val = self_compiler
                     .builder
-                    .build_load(self_compiler.context.i64_type(), field_ptr, "float_field_val")
+                    .build_load(
+                        self_compiler.context.i64_type(),
+                        field_ptr,
+                        "float_field_val",
+                    )
                     .unwrap()
                     .into_int_value();
                 self_compiler.build_runtime_value_store(
@@ -679,7 +691,10 @@ pub fn create_field_access<'ctx>(
                     .builder
                     .build_load(self_compiler.runtime_value_type, field_ptr, "field_val")
                     .unwrap();
-                self_compiler.builder.build_store(result_ptr, field_val).unwrap();
+                self_compiler
+                    .builder
+                    .build_store(result_ptr, field_val)
+                    .unwrap();
                 let cloned = clone_runtime_value(self_compiler, result_ptr, module)?;
                 copy_runtime_ptr(self_compiler, result_ptr, cloned, "generic_field_cloned");
             }
@@ -689,7 +704,10 @@ pub fn create_field_access<'ctx>(
             .builder
             .build_load(self_compiler.runtime_value_type, field_ptr, "field_val")
             .unwrap();
-        self_compiler.builder.build_store(result_ptr, field_val).unwrap();
+        self_compiler
+            .builder
+            .build_store(result_ptr, field_val)
+            .unwrap();
         let cloned = clone_runtime_value(self_compiler, result_ptr, module)?;
         copy_runtime_ptr(self_compiler, result_ptr, cloned, "untyped_field_cloned");
     }
@@ -705,21 +723,7 @@ pub fn create_struct_init<'ctx>(
     field_exprs: &[(String, Spanned<ast::Expr>)],
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
-    let result_ptr = create_entry_block_alloca(self_compiler, "struct_init_result")?;
-    let parent_fn = self_compiler.get_current_function();
-    let invalid_bb = self_compiler
-        .context
-        .append_basic_block(parent_fn, "struct_init_invalid");
-    let body_bb = self_compiler
-        .context
-        .append_basic_block(parent_fn, "struct_init_body");
-    let field_err_bb = self_compiler
-        .context
-        .append_basic_block(parent_fn, "struct_init_field_err");
-    let merge_bb = self_compiler
-        .context
-        .append_basic_block(parent_fn, "struct_init_merge");
-
+    // ---- field validation before any LLVM emission ----
     let struct_def =
         self_compiler
             .struct_defs
@@ -734,7 +738,97 @@ pub fn create_struct_init<'ctx>(
                 help: None,
             })?;
 
+    for (field_name, field_expr) in field_exprs {
+        if !struct_def.field_indices.contains_key(field_name) {
+            return Err(SprsError::Semantic {
+                code: ErrorCode {
+                    category: ErrorCategory::Semantic,
+                    number: 13,
+                },
+                location: Location::new(String::new(), field_expr.span),
+                message: format!(
+                    "unknown field `{}` in init {}",
+                    field_name, struct_name
+                ),
+                help: Some("fields must match the struct declaration".to_string()),
+            });
+        }
+    }
+    for (idx, (field_name, field_expr)) in field_exprs.iter().enumerate() {
+        if field_exprs[..idx]
+            .iter()
+            .any(|(previous, _)| previous == field_name)
+        {
+            return Err(SprsError::Semantic {
+                code: ErrorCode {
+                    category: ErrorCategory::Semantic,
+                    number: 13,
+                },
+                location: Location::new(String::new(), field_expr.span),
+                message: format!(
+                    "duplicate field `{}` in init {}",
+                    field_name, struct_name
+                ),
+                help: Some("each field may be initialized at most once".to_string()),
+            });
+        }
+    }
+    for field in &struct_def.fields {
+        let has_explicit = field_exprs.iter().any(|(name, _)| name == &field.ident);
+        if !has_explicit && field.default_value.is_none() {
+            return Err(SprsError::Semantic {
+                code: ErrorCode {
+                    category: ErrorCategory::Semantic,
+                    number: 13,
+                },
+                location: Location::new(String::new(), field.span),
+                message: format!(
+                    "missing required field `{}` in init {}",
+                    field.ident, struct_name
+                ),
+                help: Some(
+                    "provide a value or add a default to the field declaration".to_string(),
+                ),
+            });
+        }
+    }
+
+    // Fields in declaration order: explicit value wins, otherwise the
+    // field's `default_value` is evaluated at the init site. The struct
+    // definition data is cloned so later mutable compiler use does not
+    // conflict with the borrow.
+    let fields: Vec<crate::front::ast::StructField> = struct_def.fields.clone();
+    let field_indices: HashMap<String, u32> = struct_def.field_indices.clone();
     let llvm_type = struct_def.llvm_type;
+    let ordered_fields: Vec<(String, &Spanned<ast::Expr>, u32)> = fields
+        .iter()
+        .map(|field| {
+            let index = field_indices[&field.ident];
+            match field_exprs.iter().find(|(name, _)| name == &field.ident) {
+                Some((name, expr)) => (name.clone(), expr, index),
+                None => (
+                    field.ident.clone(),
+                    field.default_value.as_ref().expect("validated above"),
+                    index,
+                ),
+            }
+        })
+        .collect();
+
+    let result_ptr = create_entry_block_alloca(self_compiler, "struct_init_result")?;
+    let parent_fn = self_compiler.get_current_function();
+    let invalid_bb = self_compiler
+        .context
+        .append_basic_block(parent_fn, "struct_init_invalid");
+    let body_bb = self_compiler
+        .context
+        .append_basic_block(parent_fn, "struct_init_body");
+    let field_err_bb = self_compiler
+        .context
+        .append_basic_block(parent_fn, "struct_init_field_err");
+    let merge_bb = self_compiler
+        .context
+        .append_basic_block(parent_fn, "struct_init_merge");
 
     let struct_size = llvm_type.size_of().ok_or_else(|| SprsError::Internal {
         message: "struct type has no size".to_string(),
@@ -793,51 +887,17 @@ pub fn create_struct_init<'ctx>(
         )
         .unwrap();
 
-    for (field_name, field_expr) in field_exprs {
-        let struct_def = self_compiler
-            .struct_defs
-            .get(struct_name)
-            .expect("struct definition verified at function entry");
-        let index = struct_def
-            .field_indices
-            .get(field_name)
-            .copied()
-            .ok_or_else(|| SprsError::Semantic {
-                code: ErrorCode {
-                    category: ErrorCategory::Semantic,
-                    number: 13,
-                },
-                location: Location::new(String::new(), Span::DUMMY),
-                message: format!(
-                    "Field '{}' not found in struct '{}'",
-                    field_name, struct_name
-                ),
-                help: None,
-            })?;
-
-        let field_ty = struct_def
-            .fields
+    for (field_name, field_expr, index) in &ordered_fields {
+        let field_ty = fields
             .iter()
-            .find(|f| f.ident == *field_name)
-            .map(|f| f.ty.clone())
-            .ok_or_else(|| SprsError::Semantic {
-                code: ErrorCode {
-                    category: ErrorCategory::Semantic,
-                    number: 13,
-                },
-                location: Location::new(String::new(), Span::DUMMY),
-                message: format!(
-                    "Field definition for '{}' not found in struct '{}'",
-                    field_name, struct_name
-                ),
-                help: None,
-            })?;
+            .find(|f| &f.ident == field_name)
+            .and_then(|f| f.ty.clone());
 
         let value = self_compiler.compile_owned_expr(field_expr, module, "struct_field_owned")?;
 
         let field_ptr = self_compiler
             .builder
-            .build_struct_gep(llvm_type, struct_ptr, index, "field_ptr")
+            .build_struct_gep(llvm_type, struct_ptr, *index, "field_ptr")
             .map_err(|e| SprsError::Internal {
                 message: e.to_string(),
                 location: None,
@@ -903,11 +963,7 @@ pub fn create_struct_init<'ctx>(
                 _ => {
                     let val_to_store = self_compiler
                         .builder
-                        .build_load(
-                            self_compiler.runtime_value_type,
-                            value,
-                            "field_value",
-                        )
+                        .build_load(self_compiler.runtime_value_type, value, "field_value")
                         .unwrap();
                     self_compiler
                         .builder
@@ -924,7 +980,11 @@ pub fn create_struct_init<'ctx>(
                         .unwrap();
                     let tag = self_compiler
                         .builder
-                        .build_load(self_compiler.context.i32_type(), tag_ptr, "generic_field_tag")
+                        .build_load(
+                            self_compiler.context.i32_type(),
+                            tag_ptr,
+                            "generic_field_tag",
+                        )
                         .unwrap()
                         .into_int_value();
                     let data_ptr = self_compiler
@@ -938,7 +998,11 @@ pub fn create_struct_init<'ctx>(
                         .unwrap();
                     let data = self_compiler
                         .builder
-                        .build_load(self_compiler.context.i64_type(), data_ptr, "generic_field_data")
+                        .build_load(
+                            self_compiler.context.i64_type(),
+                            data_ptr,
+                            "generic_field_data",
+                        )
                         .unwrap()
                         .into_int_value();
                     track = Some((tag, data, false));
@@ -947,11 +1011,7 @@ pub fn create_struct_init<'ctx>(
         } else {
             let val_to_store = self_compiler
                 .builder
-                .build_load(
-                    self_compiler.runtime_value_type,
-                    value,
-                    "field_value",
-                )
+                .build_load(self_compiler.runtime_value_type, value, "field_value")
                 .unwrap();
             self_compiler
                 .builder
@@ -968,7 +1028,11 @@ pub fn create_struct_init<'ctx>(
                 .unwrap();
             let tag = self_compiler
                 .builder
-                .build_load(self_compiler.context.i32_type(), tag_ptr, "untyped_field_tag")
+                .build_load(
+                    self_compiler.context.i32_type(),
+                    tag_ptr,
+                    "untyped_field_tag",
+                )
                 .unwrap()
                 .into_int_value();
             let data_ptr = self_compiler
@@ -982,7 +1046,11 @@ pub fn create_struct_init<'ctx>(
                 .unwrap();
             let data = self_compiler
                 .builder
-                .build_load(self_compiler.context.i64_type(), data_ptr, "untyped_field_data")
+                .build_load(
+                    self_compiler.context.i64_type(),
+                    data_ptr,
+                    "untyped_field_data",
+                )
                 .unwrap()
                 .into_int_value();
             track = Some((tag, data, false));
@@ -1036,7 +1104,8 @@ pub fn create_struct_init<'ctx>(
         &[struct_tag.into(), struct_handle.into()],
         "drop_invalid_struct_field",
     );
-    let err_ptr = create_error_label_from_str(self_compiler, "Invalid struct field storage", module)?;
+    let err_ptr =
+        create_error_label_from_str(self_compiler, "Invalid struct field storage", module)?;
     copy_runtime_ptr(self_compiler, result_ptr, err_ptr, "init_field_err");
     let _ = self_compiler.builder.build_unconditional_branch(merge_bb);
 

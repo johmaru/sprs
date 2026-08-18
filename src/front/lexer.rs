@@ -1,3 +1,5 @@
+use crate::front::parse_error::ParserUserError;
+use crate::front::span::Span;
 use logos::Logos;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -35,6 +37,7 @@ pub enum Token {
     Semi,
     Comma,
     Colon,
+    QualifiedAtom(String),
     Macro(String),
     StrLiteral(String),
     Bool(bool),
@@ -42,45 +45,43 @@ pub enum Token {
     Else,
     While,
     Ident(String),
+    EscapedIdent(String),
     Num(i64),
     Float(f64),
     Function,
     Use,
     FunctionBuild,
     Private,
-    FbArgs,
-    FbRetTy,
-    FbVisibility,
     Return,
     Preprocessor(String),
     Package,
     Import,
     Var,
     Public,
-    Enum,
     Struct,
-    Copy,
-
     Ambi,
     InstanceCreate,
     Destroy,
     Exist,
     Unsafe,
     Defer,
+    Init,
+    Source,
+    Params,
+    ReturnTypeKw,
+    Visibility,
+    TypeParam,
+    When,
+    Is,
+    NeqKw,
+    And,
+    Or,
+    Not,
 
-    // System types
-    TypeInt,
-    TypeFloat,
     TypeBool,
     TypeStr,
-    TypeList,
-    TypeBuffer,
-    TypeRawPtr,
-    TypeRange,
     TypeUnit,
-    TypeError,
     TypeLabel,
-    TypeAtomKw,
 
     TypeI8,
     TypeU8,
@@ -94,6 +95,65 @@ pub enum Token {
     TypeF16,
     TypeF32,
     TypeF64,
+}
+
+impl Token {
+    /// Surface spelling of a reserved keyword token, if any.
+    pub fn keyword_name(&self) -> Option<&'static str> {
+        match self {
+            Token::If => Some("if"),
+            Token::Else => Some("else"),
+            Token::While => Some("while"),
+            Token::Function => Some("fn"),
+            Token::Use => Some("use"),
+            Token::FunctionBuild => Some("function_build"),
+            Token::Private => Some("private"),
+            Token::Return => Some("return"),
+            Token::Package => Some("pkg"),
+            Token::Import => Some("import"),
+            Token::Var => Some("var"),
+            Token::Public => Some("pub"),
+            Token::Struct => Some("struct"),
+            Token::Ambi => Some("ambi"),
+            Token::InstanceCreate => Some("new"),
+            Token::Destroy => Some("destroy"),
+            Token::Exist => Some("exist"),
+            Token::Unsafe => Some("unsafe"),
+            Token::Defer => Some("defer"),
+            Token::Match => Some("match"),
+            Token::Case => Some("case"),
+            Token::Break => Some("break"),
+            Token::Bool(_) => Some("true/false"),
+            Token::Init => Some("init"),
+            Token::Source => Some("source"),
+            Token::Params => Some("params"),
+            Token::ReturnTypeKw => Some("return_type"),
+            Token::Visibility => Some("visibility"),
+            Token::TypeParam => Some("type_param"),
+            Token::When => Some("when"),
+            Token::Is => Some("is"),
+            Token::NeqKw => Some("neq"),
+            Token::And => Some("and"),
+            Token::Or => Some("or"),
+            Token::Not => Some("not"),
+            Token::TypeBool => Some("bool"),
+            Token::TypeStr => Some("str"),
+            Token::TypeUnit => Some("unit"),
+            Token::TypeLabel => Some("label"),
+            Token::TypeI8 => Some("i8"),
+            Token::TypeU8 => Some("u8"),
+            Token::TypeI16 => Some("i16"),
+            Token::TypeU16 => Some("u16"),
+            Token::TypeI32 => Some("i32"),
+            Token::TypeU32 => Some("u32"),
+            Token::TypeI64 => Some("i64"),
+            Token::TypeU64 => Some("u64"),
+            Token::TypeF16 => Some("f16"),
+            Token::TypeF32 => Some("f32"),
+            Token::TypeF64 => Some("f64"),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Logos, Debug, Clone, PartialEq)]
@@ -150,9 +210,10 @@ enum RawTok {
     Comma,
     #[token(":")]
     Colon,
+    #[regex(r":[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*", |lex| lex.slice()[1..].to_string())]
+    QualifiedAtom(String),
     #[regex(r#""(\\.|[^"\\])*""#, |lex| {
         let slice = lex.slice();
-        // Strip the surrounding quotes, then unescape the content.
         let raw = &slice[1..slice.len() - 1];
         unescape_sprs_string(raw)
     })]
@@ -163,17 +224,13 @@ enum RawTok {
     Else,
     #[token("while")]
     While,
-    #[token("@FbArgs", priority = 10)]
-    FbArgs,
-    #[token("@FbRetTy", priority = 10)]
-    FbRetTy,
-    #[token("@FbVisibility", priority = 10)]
-    FbVisibility,
+    #[regex(r"@\^[A-Za-z_][A-Za-z0-9_]*")]
+    EscapedMacro,
     #[regex(r"@[A-Za-z_][A-Za-z0-9_]*", |lex| lex.slice()[1..].to_string())]
     MacroIdent(String),
-    #[regex(r"[A-Za-z_][A-Za-z0-9_]*!?")]
+    #[regex(r"[A-Za-z_][A-Za-z0-9_]*")]
     Ident,
-    #[regex(r"\^[A-Za-z_][A-Za-z0-9_]*!?", |lex| lex.slice()[1..].to_string())]
+    #[regex(r"\^[A-Za-z_][A-Za-z0-9_]*", |lex| lex.slice()[1..].to_string())]
     EscapedIdent(String),
     #[regex(r"[0-9]+\.[0-9]+([eE][+-]?[0-9]+)?")]
     #[regex(r"[0-9]+[eE][+-]?[0-9]+")]
@@ -212,10 +269,6 @@ enum RawTok {
     FatArrow,
     #[token("return")]
     Return,
-    #[regex(r"#define[ \t]+FunctionBuild[ \t]+[A-Za-z_][A-Za-z0-9_]*", |lex| {
-        lex.slice().split_ascii_whitespace().last().unwrap().to_owned()
-    }, priority = 5)]
-    FunctionBuildSource(String),
     #[regex(r"#[a-z]+[ \t]+[A-Za-z_][A-Za-z0-9_]*", |lex| lex.slice().split_ascii_whitespace().nth(1).unwrap().to_owned(), priority = 4)]
     Preprocessor(String),
     #[token("pkg")]
@@ -226,12 +279,8 @@ enum RawTok {
     Var,
     #[token("pub")]
     Public,
-    #[token("enum")]
-    Enum,
     #[token("struct")]
     Struct,
-    #[token("cp")]
-    Copy,
     #[token("ambi")]
     Ambi,
     #[token("new")]
@@ -244,31 +293,38 @@ enum RawTok {
     Unsafe,
     #[token("defer")]
     Defer,
-    // System types
-    #[token("int")]
-    TypeInt,
-    #[token("fp")]
-    TypeFloat,
+    #[token("init")]
+    Init,
+    #[token("source")]
+    Source,
+    #[token("params")]
+    Params,
+    #[token("return_type")]
+    ReturnTypeKw,
+    #[token("visibility")]
+    Visibility,
+    #[token("type_param")]
+    TypeParam,
+    #[token("when")]
+    When,
+    #[token("is")]
+    Is,
+    #[token("neq")]
+    NeqKw,
+    #[token("and")]
+    And,
+    #[token("or")]
+    Or,
+    #[token("not")]
+    Not,
     #[token("bool")]
     TypeBool,
     #[token("str")]
     TypeStr,
-    #[token("list")]
-    TypeList,
-    #[token("buffer")]
-    TypeBuffer,
-    #[token("rawptr")]
-    TypeRawPtr,
-    #[token("range")]
-    TypeRange,
     #[token("unit")]
     TypeUnit,
-    #[token("err")]
-    TypeError,
     #[token("label")]
     TypeLabel,
-    #[token("atom")]
-    TypeAtomKw,
 
     #[token("i8")]
     TypeI8,
@@ -287,11 +343,11 @@ enum RawTok {
     #[token("u64")]
     TypeU64,
 
-    #[token("fp16")]
+    #[token("f16")]
     TypeF16,
-    #[token("fp32")]
+    #[token("f32")]
     TypeF32,
-    #[token("fp64")]
+    #[token("f64")]
     TypeF64,
 }
 
@@ -310,20 +366,21 @@ impl<'input> Lexer<'input> {
 }
 
 impl<'input> Iterator for Lexer<'input> {
-    type Item = Result<(usize, Token, usize), String>;
+    type Item = Result<(usize, Token, usize), ParserUserError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let res = self.inner.next()?;
         let span = self.inner.span();
         let span_start = span.start;
         let span_end = span.end;
+        let err_span = Span::new(span_start, span_end);
 
         let tok = match res {
             Ok(token_value) => token_value,
             Err(()) => {
-                return Some(Err(format!(
-                    "invalid token at {}..{}",
-                    span_start, span_end
+                return Some(Err(ParserUserError::invalid_token(
+                    err_span,
+                    format!("invalid token at {}..{}", span_start, span_end),
                 )));
             }
         };
@@ -363,28 +420,37 @@ impl<'input> Iterator for Lexer<'input> {
             RawTok::Semi => Token::Semi,
             RawTok::Comma => Token::Comma,
             RawTok::Colon => Token::Colon,
-            RawTok::StrLiteral(span_start) => Token::StrLiteral(span_start),
+            RawTok::QualifiedAtom(name) => Token::QualifiedAtom(name),
+            RawTok::StrLiteral(value) => Token::StrLiteral(value),
             RawTok::If => Token::If,
             RawTok::Else => Token::Else,
             RawTok::While => Token::While,
             RawTok::Ident => Token::Ident(text.to_string()),
-            RawTok::EscapedIdent(name) => Token::Ident(name),
+            RawTok::EscapedIdent(name) => Token::EscapedIdent(name),
+            RawTok::EscapedMacro => {
+                return Some(Err(ParserUserError::syntax(
+                    1,
+                    err_span,
+                    "escaped identifier is not allowed in macro names",
+                    Some("use @name; ^ is only valid on identifiers".to_string()),
+                )));
+            }
             RawTok::MacroIdent(name) => Token::Macro(name),
             RawTok::Num => match text.parse::<i64>() {
                 Ok(integer_value) => Token::Num(integer_value),
-                Err(span_end) => {
-                    return Some(Err(format!(
-                        "invalid integer literal '{}': {}",
-                        text, span_end
+                Err(parse_err) => {
+                    return Some(Err(ParserUserError::invalid_token(
+                        err_span,
+                        format!("invalid integer literal '{}': {}", text, parse_err),
                     )));
                 }
             },
             RawTok::Float => match text.parse::<f64>() {
                 Ok(float_value) => Token::Float(float_value),
-                Err(span_end) => {
-                    return Some(Err(format!(
-                        "invalid float literal '{}': {}",
-                        text, span_end
+                Err(parse_err) => {
+                    return Some(Err(ParserUserError::invalid_token(
+                        err_span,
+                        format!("invalid float literal '{}': {}", text, parse_err),
                     )));
                 }
             },
@@ -395,42 +461,36 @@ impl<'input> Iterator for Lexer<'input> {
             RawTok::Use => Token::Use,
             RawTok::FunctionBuild => Token::FunctionBuild,
             RawTok::Private => Token::Private,
-            RawTok::FbArgs => Token::FbArgs,
-            RawTok::FbRetTy => Token::FbRetTy,
-            RawTok::FbVisibility => Token::FbVisibility,
             RawTok::Return => Token::Return,
-            RawTok::FunctionBuildSource(value) => {
-                Token::Preprocessor(format!("FunctionBuild {}", value))
-            }
             RawTok::Preprocessor(value) => Token::Preprocessor(value),
             RawTok::Package => Token::Package,
             RawTok::Import => Token::Import,
             RawTok::Var => Token::Var,
             RawTok::Public => Token::Public,
-            RawTok::Enum => Token::Enum,
             RawTok::Struct => Token::Struct,
             RawTok::Comment => return self.next(),
-            RawTok::Copy => Token::Copy,
             RawTok::Ambi => Token::Ambi,
             RawTok::InstanceCreate => Token::InstanceCreate,
             RawTok::Destroy => Token::Destroy,
             RawTok::Exist => Token::Exist,
             RawTok::Unsafe => Token::Unsafe,
             RawTok::Defer => Token::Defer,
-            // System types
-            RawTok::TypeInt => Token::TypeInt,
-            RawTok::TypeFloat => Token::TypeFloat,
+            RawTok::Init => Token::Init,
+            RawTok::Source => Token::Source,
+            RawTok::Params => Token::Params,
+            RawTok::ReturnTypeKw => Token::ReturnTypeKw,
+            RawTok::Visibility => Token::Visibility,
+            RawTok::TypeParam => Token::TypeParam,
+            RawTok::When => Token::When,
+            RawTok::Is => Token::Is,
+            RawTok::NeqKw => Token::NeqKw,
+            RawTok::And => Token::And,
+            RawTok::Or => Token::Or,
+            RawTok::Not => Token::Not,
             RawTok::TypeBool => Token::TypeBool,
             RawTok::TypeStr => Token::TypeStr,
-            RawTok::TypeList => Token::TypeList,
-            RawTok::TypeBuffer => Token::TypeBuffer,
-            RawTok::TypeRawPtr => Token::TypeRawPtr,
-            RawTok::TypeRange => Token::TypeRange,
             RawTok::TypeUnit => Token::TypeUnit,
-            RawTok::TypeError => Token::TypeError,
             RawTok::TypeLabel => Token::TypeLabel,
-            RawTok::TypeAtomKw => Token::TypeAtomKw,
-
             RawTok::TypeI8 => Token::TypeI8,
             RawTok::TypeU8 => Token::TypeU8,
             RawTok::TypeI16 => Token::TypeI16,
@@ -439,7 +499,6 @@ impl<'input> Iterator for Lexer<'input> {
             RawTok::TypeU32 => Token::TypeU32,
             RawTok::TypeI64 => Token::TypeI64,
             RawTok::TypeU64 => Token::TypeU64,
-
             RawTok::TypeF16 => Token::TypeF16,
             RawTok::TypeF32 => Token::TypeF32,
             RawTok::TypeF64 => Token::TypeF64,
@@ -460,7 +519,6 @@ fn unescape_sprs_string(raw: &str) -> String {
             out.push(character);
             continue;
         }
-        // Escape sequence.
         match chars.next() {
             Some('n') => out.push('\n'),
             Some('t') => out.push('\t'),
@@ -470,9 +528,7 @@ fn unescape_sprs_string(raw: &str) -> String {
             Some('"') => out.push('"'),
             Some('\'') => out.push('\''),
             Some('u') => {
-                // Expect `{XXXX}` (1..6 hex digits).
                 if chars.next() != Some('{') {
-                    // Not a valid \u escape — emit verbatim.
                     out.push_str("\\u");
                     continue;
                 }
@@ -498,12 +554,10 @@ fn unescape_sprs_string(raw: &str) -> String {
                 }
             }
             Some(other) => {
-                // Unknown escape: keep the backslash and the character.
                 out.push('\\');
                 out.push(other);
             }
             None => {
-                // Dangling backslash at end of string.
                 out.push('\\');
             }
         }

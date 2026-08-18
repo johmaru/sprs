@@ -15,7 +15,7 @@
 /// | List            | List         | 4            |
 /// | Range           | Range        | 5            |
 /// | Unit            | Unit         | 6            |
-/// | Enum(_)        | Atom         | 9            |
+/// | ClosedLabelSet(_) | Atom      | 9            |
 /// | Struct(_)       | Struct       | 8            |
 /// | 7              | (unused)     | (was Enum)   |
 /// | Label           | Label        | 10           |
@@ -60,7 +60,7 @@ pub enum Type {
     List,
     Range,
     Unit,
-    Enum(String),
+    ClosedLabelSet(String),
     Struct(String),
     Label,
     AtomVal,
@@ -114,10 +114,12 @@ impl Type {
             Type::List => Some(4),
             Type::Range => Some(5),
             Type::Unit => Some(6),
-            Type::Enum(_) => Some(9),
+            Type::ClosedLabelSet(_) => Some(9),
             Type::Struct(_) => Some(8),
             Type::AtomVal => Some(9),
-            Type::Label => Some(10),
+            // `Label` is the surface union of tags 9 (Atom) and 10 (Label):
+            // no single runtime tag can be statically assumed.
+            Type::Label => None,
             Type::Buffer => Some(11),
             Type::RawPtr => Some(12),
             Type::App(_, _) => None,
@@ -175,6 +177,53 @@ impl Type {
     }
 }
 
+impl std::fmt::Display for Type {
+    /// Canonical surface spelling of a type. `Int`/`Float` render as their
+    /// default widths (`i64`/`f64`); `App` renders constructor application
+    /// with `List(T)` / `Label(:name, T)` spelled canonically.
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Type::Any => write!(formatter, "Any"),
+            Type::Int => write!(formatter, "i64"),
+            Type::Float => write!(formatter, "f64"),
+            Type::Bool => write!(formatter, "bool"),
+            Type::Str => write!(formatter, "str"),
+            Type::List => write!(formatter, "List"),
+            Type::Range => write!(formatter, "Range"),
+            Type::Unit => write!(formatter, "unit"),
+            Type::ClosedLabelSet(name) | Type::Struct(name) | Type::Named(name) => {
+                write!(formatter, "{name}")
+            }
+            Type::Label => write!(formatter, "Label"),
+            Type::AtomVal => write!(formatter, "Atom"),
+            Type::Buffer => write!(formatter, "Buffer"),
+            Type::RawPtr => write!(formatter, "RawPtr"),
+            Type::App(name, args) => {
+                let args = args
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                write!(formatter, "{name}({args})")
+            }
+            Type::Param(name) => write!(formatter, "{name}"),
+            Type::Atom(name) => write!(formatter, ":{name}"),
+            Type::SelfType => write!(formatter, "Self"),
+            Type::TypeI8 => write!(formatter, "i8"),
+            Type::TypeU8 => write!(formatter, "u8"),
+            Type::TypeI16 => write!(formatter, "i16"),
+            Type::TypeU16 => write!(formatter, "u16"),
+            Type::TypeI32 => write!(formatter, "i32"),
+            Type::TypeU32 => write!(formatter, "u32"),
+            Type::TypeI64 => write!(formatter, "i64"),
+            Type::TypeU64 => write!(formatter, "u64"),
+            Type::TypeF16 => write!(formatter, "f16"),
+            Type::TypeF32 => write!(formatter, "f32"),
+            Type::TypeF64 => write!(formatter, "f64"),
+        }
+    }
+}
+
 /// Whether two static types are interchangeable for checking.
 ///
 /// Rules:
@@ -182,29 +231,22 @@ impl Type {
 /// - `Int` ≡ `TypeI64` (language default integer is i64)
 /// - `Float` ≡ `TypeF64` (language default float is f64)
 /// - `Struct` names must match; empty name (from tag recovery) matches any struct
-/// - `Enum` frame names must match (`Color.Red` is an Atom at runtime)
+/// - `ClosedLabelSet` names must match (`:Color.red` is an Atom at runtime)
 /// - `App(n1, a1)` ≡ `App(n2, a2)` when names and arities match and each
 ///   argument pair is compatible (recursively)
-/// - `Param(n1)` ≡ `Param(n2)` only when names match (no substitution yet; #29)
+/// - `Param(n1)` ≡ `Param(n2)` only when names match
 /// - `Atom(a)` ≡ `Atom(b)` only when `a == b` (label names are exact)
-/// - Named label applications:
-///   - `Label(:name)` ≡ `Label(:name, any)` (symmetric)
-///   - `Label(:name, T)` accepts `Label(:name)` — the expected side narrows
-///     the payload; the reverse (`Label(:name)` vs `Label(:name, T)`) is not
-///   - `App("Label", [Int])` (name free, payload `Int`) never matches
-///     `Label(:name, Int)` — a bare `Int` arg is not an `Atom`
+/// - Broad `Label` accepts payload-less atoms (`:name`), payload labels
+///   (`Label(:name, T)`), closed label sets, and the runtime-only flat
+///   `AtomVal` — it is the surface union of runtime tags 9 and 10
+/// - `Label(:name, T)` applications compare name and payload recursively;
+///   arity differences are incompatible
 /// - Flat monomorphic forms bridge empty / `Any`-arg applications:
 ///   - `List` ≡ `App("List", [])` ≡ `App("List", [Any])`
 ///   - `Range` ≡ `App("Range", [])` ≡ `App("Range", [Any])`
-///   - `Label` ≡ `App("Label", [])` ≡ `App("Label", [Any])`
-///   `App("List", [Int])` is not compatible with bare `List`; bare `Label` is
-///   not compatible with `Label(:name[, T])` either
-/// - Named atom applications (atoms carry no payload):
-///   - `AtomVal` ≡ `App("Atom", [])` ≡ `App("Atom", [Any])`
-///   - `App("Atom", [Atom(:name)])` ≡ `App("Atom", [Atom(:name), Any])` (symmetric)
-///   - the only named atom form is `App("Atom", [Atom(:name)])`; a payload
-///     arg other than `Any` is rejected
-///   - `AtomVal` is not compatible with `Atom(:name)` (same rule as `Label`)
+///   `App("List", [Int])` is not compatible with bare `List`
+/// - `AtomVal` is not a constructor name on the surface; the old
+///   `App("Atom", ...)` bridge has been removed
 pub fn types_compatible(expected: &Type, actual: &Type) -> bool {
     if expected == actual {
         return true;
@@ -220,16 +262,15 @@ pub fn types_compatible(expected: &Type, actual: &Type) -> bool {
     }
     match (expected, actual) {
         (Type::Struct(a), Type::Struct(b)) => a.is_empty() || b.is_empty() || a == b,
-        (Type::Enum(a), Type::Enum(b)) => a == b,
+        (Type::ClosedLabelSet(a), Type::ClosedLabelSet(b)) => a == b,
         (Type::Atom(a), Type::Atom(b)) => a == b,
+        // Broad `Label` is the surface union of payload-less atoms, payload
+        // labels, closed label set members, and the runtime-only flat `Atom`.
+        (Type::Label, Type::Atom(_)) | (Type::Atom(_), Type::Label) => true,
+        (Type::Label, Type::ClosedLabelSet(_)) | (Type::ClosedLabelSet(_), Type::Label) => true,
+        (Type::Label, Type::AtomVal) | (Type::AtomVal, Type::Label) => true,
         (Type::App(n1, a1), Type::App(n2, a2)) if n1 == "Label" && n2 == "Label" => {
             label_args_compatible(a1, a2)
-        }
-        (Type::App(n1, a1), Type::App(n2, a2)) if n1 == "Atom" && n2 == "Atom" => {
-            atom_args_compatible(a1, a2)
-        }
-        (Type::AtomVal, Type::App(n, args)) | (Type::App(n, args), Type::AtomVal) => {
-            n == "Atom" && is_untyped_collection_args(args)
         }
         (Type::App(n1, a1), Type::App(n2, a2)) => {
             n1 == n2
@@ -247,7 +288,9 @@ pub fn types_compatible(expected: &Type, actual: &Type) -> bool {
             n == "Range" && is_untyped_collection_args(args)
         }
         (Type::Label, Type::App(n, args)) | (Type::App(n, args), Type::Label) => {
-            n == "Label" && is_untyped_collection_args(args)
+            n == "Label"
+                && (is_untyped_collection_args(args)
+                    || matches!(args.first(), Some(Type::Atom(_))))
         }
         _ => false,
     }
@@ -264,47 +307,37 @@ fn is_untyped_collection_args(args: &[Type]) -> bool {
 
 /// Compatibility for `Label(:name[, T])` argument lists.
 ///
-/// - `Label(:name)` ≡ `Label(:name, any)` (symmetric)
-/// - `Label(:name, T)` accepts `Label(:name)` — the expected side narrows the
-///   payload; the reverse (`Label(:name)` vs `Label(:name, T)`) is not
-/// - same-arity lists recurse; a bare `Int` never matches `Atom(name)`
+/// - exact `:name` forms match by name only
+/// - `Label(:name, T)` recurses into the payload type
+/// - arity differences are incompatible (a payload-less `Label(:name)` is no
+///   longer a valid surface type)
 fn label_args_compatible(expected: &[Type], actual: &[Type]) -> bool {
     match (expected, actual) {
-        ([Type::Atom(e_name), Type::Any], [Type::Atom(a_name)]) => e_name == a_name,
-        ([Type::Atom(e_name)], [Type::Atom(a_name), Type::Any]) => e_name == a_name,
-        ([Type::Atom(e_name), _], [Type::Atom(a_name)]) => e_name == a_name,
-        (e, a) if e.len() == a.len() => e
-            .iter()
-            .zip(a.iter())
-            .all(|(x, y)| types_compatible(x, y)),
-        _ => false,
-    }
-}
-
-/// Compatibility for `Atom(:name[, Any])` argument lists.
-///
-/// Atoms carry no payload, so the only named form is a single `Atom(name)`.
-/// The `Any`-suffixed forms are symmetric bridge targets for the flat
-/// `AtomVal` keyword (`atom`).
-fn atom_args_compatible(expected: &[Type], actual: &[Type]) -> bool {
-    match (expected, actual) {
         ([Type::Atom(e_name)], [Type::Atom(a_name)]) => e_name == a_name,
-        ([Type::Atom(e_name)], [Type::Atom(a_name), Type::Any]) => e_name == a_name,
-        ([Type::Atom(e_name), Type::Any], [Type::Atom(a_name)]) => e_name == a_name,
+        ([Type::Atom(e_name), e_rest @ ..], [Type::Atom(a_name), a_rest @ ..]) => {
+            e_name == a_name
+                && e_rest.len() == a_rest.len()
+                && e_rest
+                    .iter()
+                    .zip(a_rest.iter())
+                    .all(|(x, y)| types_compatible(x, y))
+        }
         _ => false,
     }
 }
 
 /// Reject a payload-less label type annotation (`Label(:ok)`).
 ///
-/// Since bare `:ok` is now an Atom, `Label(:ok)` is a contradiction: a Label
-/// requires a payload. Callers should use `Atom(:ok)` instead. The flat
-/// `label`, the two-arg `Label(:name, T)` and the name-less
-/// `App("Label", [T])` forms stay valid.
+/// `:ok` is now an Atom, so `Label(:ok)` is a contradiction: a Label requires
+/// a payload. Callers should write `:ok` for the exact Atom, or
+/// `Label(:ok, T)` for a payload label. The bare `Label` (broad union) and
+/// the two-arg `Label(:name, T)` forms stay valid.
 pub fn reject_payloadless_label_type(ty: &Type) -> Result<(), String> {
     match ty {
         Type::App(n, args) if n == "Label" => match args.as_slice() {
-            [Type::Atom(_)] => Err("use Atom(:name) instead of Label(:name)".to_string()),
+            [Type::Atom(name)] => Err(format!(
+                "use :{name} instead of Label(:{name})"
+            )),
             _ => Ok(()),
         },
         _ => Ok(()),
@@ -326,14 +359,17 @@ pub fn is_error_label_type(ty: &Type) -> bool {
     }
 }
 
-/// Resolve compile-time `Named` / `Self` annotations against known structs.
+/// Resolve compile-time `Named` / `Self` annotations against known structs
+/// and closed label sets.
 ///
 /// `App` arguments are rewritten recursively so `List(Self)` and
-/// `List(NamedStruct)` become `List(Struct(...))`. Constructor names themselves
-/// are not validated.
+/// `List(NamedStruct)` become `List(Struct(...))`. A PascalCase name that
+/// matches a visible closed label set becomes `Type::ClosedLabelSet(name)`.
+/// Constructor names themselves are not validated.
 pub fn resolve_type(
     ty: &mut Type,
     known_structs: &std::collections::HashSet<String>,
+    known_closed_sets: &std::collections::HashSet<String>,
     self_struct: Option<&str>,
 ) -> Result<(), String> {
     match ty {
@@ -341,6 +377,9 @@ pub fn resolve_type(
             let name = name.clone();
             if known_structs.contains(&name) {
                 *ty = Type::Struct(name);
+                Ok(())
+            } else if known_closed_sets.contains(&name) {
+                *ty = Type::ClosedLabelSet(name);
                 Ok(())
             } else {
                 Err(format!("Undefined type: {}", name))
@@ -355,7 +394,7 @@ pub fn resolve_type(
         },
         Type::App(_, args) => {
             for arg in args {
-                resolve_type(arg, known_structs, self_struct)?;
+                resolve_type(arg, known_structs, known_closed_sets, self_struct)?;
             }
             Ok(())
         }
@@ -418,10 +457,14 @@ mod tests {
         assert_eq!(Type::List.tag_discriminant(), Some(4));
         assert_eq!(Type::Buffer.tag_discriminant(), Some(11));
         assert_eq!(Type::Range.tag_discriminant(), Some(5));
-        assert_eq!(Type::Label.tag_discriminant(), Some(10));
+        // Label is the surface union of tags 9/10: no static tag.
+        assert_eq!(Type::Label.tag_discriminant(), None);
         assert_eq!(Type::Any.tag_discriminant(), None);
         assert_eq!(Type::Atom("ok".into()).tag_discriminant(), None);
-        assert_eq!(Type::App("List".into(), vec![Type::Int]).tag_discriminant(), None);
+        assert_eq!(
+            Type::App("List".into(), vec![Type::Int]).tag_discriminant(),
+            None
+        );
         assert_eq!(Type::Param("T".into()).tag_discriminant(), None);
         assert_eq!(Type::from_tag_discriminant(4), Some(Type::List));
         assert_eq!(Type::AtomVal.tag_discriminant(), Some(9));
@@ -515,6 +558,7 @@ mod tests {
         let label_ok = Type::App("Label".into(), vec![Type::Atom("ok".into())]);
         let label_ok_any = Type::App("Label".into(), vec![Type::Atom("ok".into()), Type::Any]);
         let label_ok_int = Type::App("Label".into(), vec![Type::Atom("ok".into()), Type::Int]);
+        let label_ok_i64 = Type::App("Label".into(), vec![Type::Atom("ok".into()), Type::TypeI64]);
         let label_err = Type::App("Label".into(), vec![Type::Atom("error".into())]);
         let label_free_int = Type::App("Label".into(), vec![Type::Int]);
         let label_int_str = Type::App("Label".into(), vec![Type::Int, Type::Str]);
@@ -530,22 +574,26 @@ mod tests {
         ));
         assert!(!types_compatible(&Type::Atom("ok".into()), &Type::Int));
 
-        // Label(:name) ≡ Label(:name, any), both directions
-        assert!(types_compatible(&label_ok, &label_ok_any));
-        assert!(types_compatible(&label_ok_any, &label_ok));
+        // broad Label accepts payload-less atoms and payload labels
+        assert!(types_compatible(&Type::Label, &Type::Atom("ok".into())));
+        assert!(types_compatible(&Type::Label, &label_ok_int));
+        assert!(types_compatible(&label_ok_int, &Type::Label));
 
-        // Label(:ok, int) accepts Label(:ok) (expected narrows payload)…
-        assert!(types_compatible(&label_ok_int, &label_ok));
-        // …but the reverse does not
-        assert!(!types_compatible(&label_ok, &label_ok_int));
+        // exact label forms match by name only
+        assert!(types_compatible(&label_ok, &label_ok));
+        assert!(types_compatible(&label_ok_int, &label_ok_i64));
+        assert!(!types_compatible(&label_ok, &label_err));
+
+        // Label(:name, T) recurses into the payload
+        assert!(types_compatible(&label_ok_int, &label_ok_i64));
+        // Any payload is unconstrained, so Label(:ok, Int) ≡ Label(:ok, Any)
+        assert!(types_compatible(&label_ok_int, &label_ok_any));
+        assert!(!types_compatible(&label_ok_int, &label_ok));
+        assert!(!types_compatible(&label_ok, &label_ok_any));
 
         // names must match
-        assert!(!types_compatible(&label_ok, &label_err));
         assert!(!types_compatible(
-            &Type::App(
-                "Label".into(),
-                vec![Type::Atom("ok".into()), Type::Int]
-            ),
+            &Type::App("Label".into(), vec![Type::Atom("ok".into()), Type::Int]),
             &label_err
         ));
 
@@ -554,35 +602,44 @@ mod tests {
         assert!(!types_compatible(&label_ok_int, &label_free_int));
         assert!(!types_compatible(&label_int_str, &label_ok_int));
 
-        // bare Label stays incompatible with named forms
-        assert!(!types_compatible(&Type::Label, &label_ok));
-        assert!(!types_compatible(&label_ok_int, &Type::Label));
+        // closed label sets and flat AtomVal are accepted by broad Label
+        assert!(types_compatible(&Type::Label, &Type::ClosedLabelSet("Color".into())));
+        assert!(types_compatible(&Type::Label, &Type::AtomVal));
     }
 
     #[test]
-    fn types_compatible_enum_frames_by_name() {
+    fn types_compatible_closed_label_sets_by_name() {
         assert!(types_compatible(
-            &Type::Enum("Color".into()),
-            &Type::Enum("Color".into())
+            &Type::ClosedLabelSet("Color".into()),
+            &Type::ClosedLabelSet("Color".into())
         ));
         assert!(!types_compatible(
-            &Type::Enum("Color".into()),
-            &Type::Enum("Status".into())
+            &Type::ClosedLabelSet("Color".into()),
+            &Type::ClosedLabelSet("Status".into())
         ));
-        assert!(!types_compatible(&Type::Enum("Color".into()), &Type::AtomVal));
         assert!(!types_compatible(
-            &Type::Enum("Color".into()),
+            &Type::ClosedLabelSet("Color".into()),
+            &Type::AtomVal
+        ));
+        // the old App("Atom", ...) bridge is gone
+        assert!(!types_compatible(
+            &Type::ClosedLabelSet("Color".into()),
             &Type::App("Atom".into(), vec![])
+        ));
+        assert!(!types_compatible(
+            &Type::AtomVal,
+            &Type::App("Atom".into(), vec![Type::Atom("ok".into())])
+        ));
+        assert!(!types_compatible(
+            &Type::App("Atom".into(), vec![Type::Atom("ok".into())]),
+            &Type::Atom("ok".into())
         ));
     }
 
     #[test]
     fn is_error_label_type_matches_err_sugar_and_named_forms() {
         let err_sugar = Type::App("Label".into(), vec![Type::Atom("error".into())]);
-        let err_payload = Type::App(
-            "Label".into(),
-            vec![Type::Atom("error".into()), Type::Str],
-        );
+        let err_payload = Type::App("Label".into(), vec![Type::Atom("error".into()), Type::Str]);
         let ok_label = Type::App("Label".into(), vec![Type::Atom("ok".into())]);
         let ok_payload = Type::App("Label".into(), vec![Type::Atom("ok".into()), Type::Int]);
 
@@ -592,9 +649,10 @@ mod tests {
         assert!(!is_error_label_type(&ok_payload));
         assert!(!is_error_label_type(&Type::Label));
         assert!(!is_error_label_type(&Type::Any));
-        assert!(!is_error_label_type(
-            &Type::App("Result".into(), vec![Type::Int, err_sugar.clone()])
-        ));
+        assert!(!is_error_label_type(&Type::App(
+            "Result".into(),
+            vec![Type::Int, err_sugar.clone()]
+        )));
     }
 
     #[test]
@@ -602,32 +660,90 @@ mod tests {
         let mut known = HashSet::new();
         known.insert("Node".to_string());
         known.insert("A".to_string());
+        let mut closed = HashSet::new();
+        closed.insert("ConnectionState".to_string());
 
         let mut self_ty = Type::SelfType;
-        resolve_type(&mut self_ty, &known, Some("Node")).unwrap();
+        resolve_type(&mut self_ty, &known, &closed, Some("Node")).unwrap();
         assert_eq!(self_ty, Type::Struct("Node".into()));
 
         let mut list_self = Type::App("List".into(), vec![Type::SelfType]);
-        resolve_type(&mut list_self, &known, Some("Node")).unwrap();
+        resolve_type(&mut list_self, &known, &closed, Some("Node")).unwrap();
         assert_eq!(
             list_self,
             Type::App("List".into(), vec![Type::Struct("Node".into())])
         );
 
         let mut named = Type::Named("A".into());
-        resolve_type(&mut named, &known, None).unwrap();
+        resolve_type(&mut named, &known, &closed, None).unwrap();
         assert_eq!(named, Type::Struct("A".into()));
+
+        let mut set_named = Type::Named("ConnectionState".into());
+        resolve_type(&mut set_named, &known, &closed, None).unwrap();
+        assert_eq!(set_named, Type::ClosedLabelSet("ConnectionState".into()));
 
         let mut unknown = Type::Named("Nope".into());
         assert_eq!(
-            resolve_type(&mut unknown, &known, None).unwrap_err(),
+            resolve_type(&mut unknown, &known, &closed, None).unwrap_err(),
             "Undefined type: Nope"
         );
 
         let mut bad_self = Type::SelfType;
         assert_eq!(
-            resolve_type(&mut bad_self, &known, None).unwrap_err(),
+            resolve_type(&mut bad_self, &known, &closed, None).unwrap_err(),
             "`Self` is only valid in struct field type annotations"
         );
+    }
+
+    #[test]
+    fn display_renders_canonical_surface_spellings() {
+        assert_eq!(Type::Int.to_string(), "i64");
+        assert_eq!(Type::Float.to_string(), "f64");
+        assert_eq!(Type::TypeI8.to_string(), "i8");
+        assert_eq!(Type::TypeU64.to_string(), "u64");
+        assert_eq!(Type::TypeF16.to_string(), "f16");
+        assert_eq!(Type::TypeF64.to_string(), "f64");
+        assert_eq!(Type::Bool.to_string(), "bool");
+        assert_eq!(Type::Str.to_string(), "str");
+        assert_eq!(Type::Unit.to_string(), "unit");
+        assert_eq!(Type::Any.to_string(), "Any");
+        assert_eq!(Type::List.to_string(), "List");
+        assert_eq!(Type::Range.to_string(), "Range");
+        assert_eq!(Type::Buffer.to_string(), "Buffer");
+        assert_eq!(Type::RawPtr.to_string(), "RawPtr");
+        assert_eq!(Type::Label.to_string(), "Label");
+        assert_eq!(Type::AtomVal.to_string(), "Atom");
+        assert_eq!(Type::Atom("ok".into()).to_string(), ":ok");
+        assert_eq!(
+            Type::App("List".into(), vec![Type::Int]).to_string(),
+            "List(i64)"
+        );
+        assert_eq!(
+            Type::App("Label".into(), vec![Type::Atom("ok".into()), Type::Str]).to_string(),
+            "Label(:ok, str)"
+        );
+        assert_eq!(
+            Type::App("Result".into(), vec![Type::Int, Type::Str]).to_string(),
+            "Result(i64, str)"
+        );
+        assert_eq!(Type::Param("T".into()).to_string(), "T");
+        assert_eq!(Type::Struct("Job".into()).to_string(), "Job");
+        assert_eq!(
+            Type::ClosedLabelSet("ConnectionState".into()).to_string(),
+            "ConnectionState"
+        );
+    }
+
+    #[test]
+    fn reject_payloadless_label_type_uses_atom_spelling() {
+        let bad = Type::App("Label".into(), vec![Type::Atom("ok".into())]);
+        assert_eq!(
+            reject_payloadless_label_type(&bad).unwrap_err(),
+            "use :ok instead of Label(:ok)"
+        );
+        let ok = Type::App("Label".into(), vec![Type::Atom("ok".into()), Type::Int]);
+        assert!(reject_payloadless_label_type(&ok).is_ok());
+        assert!(reject_payloadless_label_type(&Type::Label).is_ok());
+        assert!(reject_payloadless_label_type(&Type::Atom("ok".into())).is_ok());
     }
 }

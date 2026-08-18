@@ -63,3 +63,5 @@ pkg test;
            return b;
       }
 ```
+
+`pkg` / `import` 名は `snake_case` です（`SPRS-SEM-025`）。裸のキーワードは使えません（`function_build` はキーワードなので、パッケージ名は `fn_builds` にするか `^function_build` と書きます）。

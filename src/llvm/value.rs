@@ -216,15 +216,8 @@ pub fn create_list_from_expr<'ctx>(
             .compile_expr(elem, module)?
             .into_pointer_value();
         let (val_ptr, source_var) = if let ast::Expr::Var(name) = &elem.node {
-            if let Some(src) = self_compiler.get_variables(name) {
-                if src.always_clone {
-                    (
-                        clone_runtime_value(self_compiler, src.value.into_pointer_value(), module)?,
-                        None,
-                    )
-                } else {
-                    (compiled_val_ptr, Some((src.value, name)))
-                }
+            if self_compiler.get_variables(name).is_some() {
+                (compiled_val_ptr, Some((compiled_val_ptr.into(), name)))
             } else {
                 (compiled_val_ptr, None)
             }
@@ -258,7 +251,12 @@ pub fn create_integer<'ctx>(
     self_compiler.build_runtime_value_store(
         ptr,
         StoreTag::Int(Tag::Integer as u64),
-        StoreValue::Int(self_compiler.context.i64_type().const_int(*number_value as u64, true)),
+        StoreValue::Int(
+            self_compiler
+                .context
+                .i64_type()
+                .const_int(*number_value as u64, true),
+        ),
         "int",
     );
 
@@ -385,13 +383,9 @@ pub fn create_label<'ctx>(
 
     let mut source_to_move: Option<(BasicValueEnum<'ctx>, String)> = None;
     let final_payload_ptr = if let ast::Expr::Var(source_name) = &payload.node {
-        if let Some(source) = self_compiler.get_variables(source_name) {
-            if source.always_clone {
-                clone_runtime_value(self_compiler, source.value.into_pointer_value(), module)?
-            } else {
-                source_to_move = Some((source.value, source_name.clone()));
-                initial_payload_ptr
-            }
+        if self_compiler.get_variables(source_name).is_some() {
+            source_to_move = Some((initial_payload_ptr.into(), source_name.clone()));
+            initial_payload_ptr
         } else {
             initial_payload_ptr
         }
@@ -668,26 +662,20 @@ pub(crate) fn build_dynamic_string<'ctx>(
                 }
             }
             LabelNamePart::Ident(ident) => {
-                let binding = self_compiler.get_variables(ident).ok_or_else(|| {
-                    SprsError::Semantic {
-                        code: ErrorCode {
-                            category: ErrorCategory::Semantic,
-                            number: 2,
-                        },
-                        location: Location::new(String::new(), Span::DUMMY),
-                        message: format!(
-                            "Undefined variable in dynamic label name: {}",
-                            ident
-                        ),
-                        help: None,
-                    }
-                })?;
+                let binding =
+                    self_compiler
+                        .get_variables(ident)
+                        .ok_or_else(|| SprsError::Semantic {
+                            code: ErrorCode {
+                                category: ErrorCategory::Semantic,
+                                number: 2,
+                            },
+                            location: Location::new(String::new(), Span::DUMMY),
+                            message: format!("Undefined variable in dynamic label name: {}", ident),
+                            help: None,
+                        })?;
                 match &binding.ty {
-                    Type::Int
-                    | Type::Bool
-                    | Type::Str
-                    | Type::Any
-                    | Type::TypeI64 => {}
+                    Type::Int | Type::Bool | Type::Str | Type::Any | Type::TypeI64 => {}
                     other => {
                         return Err(SprsError::Semantic {
                             code: ErrorCode {
@@ -696,7 +684,7 @@ pub(crate) fn build_dynamic_string<'ctx>(
                             },
                             location: Location::new(String::new(), Span::DUMMY),
                             message: format!(
-                                "dynamic label name part `{}` has type {:?}; only int/bool/str allowed",
+                                "dynamic label name part `{}` has type {}; only int/bool/str allowed",
                                 ident, other
                             ),
                             help: None,
@@ -775,14 +763,12 @@ pub(crate) fn build_dynamic_string<'ctx>(
                     .unwrap()
                     .get_parent()
                     .unwrap();
-                let panic_bb = self_compiler.context.append_basic_block(
-                    parent_fn,
-                    &format!("dyn_label_panic_{}", part_idx),
-                );
-                let ok_bb = self_compiler.context.append_basic_block(
-                    parent_fn,
-                    &format!("dyn_label_ok_{}", part_idx),
-                );
+                let panic_bb = self_compiler
+                    .context
+                    .append_basic_block(parent_fn, &format!("dyn_label_panic_{}", part_idx));
+                let ok_bb = self_compiler
+                    .context
+                    .append_basic_block(parent_fn, &format!("dyn_label_ok_{}", part_idx));
                 self_compiler
                     .builder
                     .build_conditional_branch(is_invalid, panic_bb, ok_bb)
@@ -798,7 +784,11 @@ pub(crate) fn build_dynamic_string<'ctx>(
                     .as_pointer_value();
                 self_compiler
                     .builder
-                    .build_call(panic_fn, &[msg.into()], &format!("dyn_label_panic_call_{}", part_idx))
+                    .build_call(
+                        panic_fn,
+                        &[msg.into()],
+                        &format!("dyn_label_panic_call_{}", part_idx),
+                    )
                     .unwrap();
                 self_compiler.builder.build_unreachable().unwrap();
                 self_compiler.builder.position_at_end(ok_bb);
@@ -902,34 +892,54 @@ pub fn create_typed_zero<'ctx>(
 pub fn create_int8<'ctx>(compiler: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, SprsError> {
     create_typed_zero(compiler, Tag::Int8, "int8")
 }
-pub fn create_uint8<'ctx>(compiler: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, SprsError> {
+pub fn create_uint8<'ctx>(
+    compiler: &mut Compiler<'ctx>,
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
     create_typed_zero(compiler, Tag::Uint8, "uint8")
 }
-pub fn create_int16<'ctx>(compiler: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, SprsError> {
+pub fn create_int16<'ctx>(
+    compiler: &mut Compiler<'ctx>,
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
     create_typed_zero(compiler, Tag::Int16, "int16")
 }
-pub fn create_uint16<'ctx>(compiler: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, SprsError> {
+pub fn create_uint16<'ctx>(
+    compiler: &mut Compiler<'ctx>,
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
     create_typed_zero(compiler, Tag::Uint16, "uint16")
 }
-pub fn create_int32<'ctx>(compiler: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, SprsError> {
+pub fn create_int32<'ctx>(
+    compiler: &mut Compiler<'ctx>,
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
     create_typed_zero(compiler, Tag::Int32, "int32")
 }
-pub fn create_uint32<'ctx>(compiler: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, SprsError> {
+pub fn create_uint32<'ctx>(
+    compiler: &mut Compiler<'ctx>,
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
     create_typed_zero(compiler, Tag::Uint32, "uint32")
 }
-pub fn create_int64<'ctx>(compiler: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, SprsError> {
+pub fn create_int64<'ctx>(
+    compiler: &mut Compiler<'ctx>,
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
     create_typed_zero(compiler, Tag::Int64, "int64")
 }
-pub fn create_uint64<'ctx>(compiler: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, SprsError> {
+pub fn create_uint64<'ctx>(
+    compiler: &mut Compiler<'ctx>,
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
     create_typed_zero(compiler, Tag::Uint64, "uint64")
 }
-pub fn create_float16<'ctx>(compiler: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, SprsError> {
+pub fn create_float16<'ctx>(
+    compiler: &mut Compiler<'ctx>,
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
     create_typed_zero(compiler, Tag::Float16, "f16")
 }
-pub fn create_float32<'ctx>(compiler: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, SprsError> {
+pub fn create_float32<'ctx>(
+    compiler: &mut Compiler<'ctx>,
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
     create_typed_zero(compiler, Tag::Float32, "f32")
 }
-pub fn create_float64<'ctx>(compiler: &mut Compiler<'ctx>) -> Result<BasicValueEnum<'ctx>, SprsError> {
+pub fn create_float64<'ctx>(
+    compiler: &mut Compiler<'ctx>,
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
     create_typed_zero(compiler, Tag::Float64, "f64")
 }
 
@@ -1062,15 +1072,8 @@ pub fn prepare_call_args<'ctx>(
             .compile_expr(arg, module)?
             .into_pointer_value();
         let (arg_ptr, source_var) = if let ast::Expr::Var(name) = &arg.node {
-            if let Some(src) = self_compiler.get_variables(name) {
-                if src.always_clone {
-                    (
-                        clone_runtime_value(self_compiler, src.value.into_pointer_value(), module)?,
-                        None,
-                    )
-                } else {
-                    (compiled_arg_ptr, Some((src.value, name)))
-                }
+            if self_compiler.get_variables(name).is_some() {
+                (compiled_arg_ptr, Some((compiled_arg_ptr.into(), name)))
             } else {
                 (compiled_arg_ptr, None)
             }

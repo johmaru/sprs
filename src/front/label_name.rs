@@ -49,7 +49,9 @@ pub fn parse_dynamic_label_template(input: &str) -> Result<Vec<LabelNamePart>, S
                     ));
                 }
                 cursor_index += 1;
-                while cursor_index < chars.len() && (chars[cursor_index].is_ascii_alphanumeric() || chars[cursor_index] == '_') {
+                while cursor_index < chars.len()
+                    && (chars[cursor_index].is_ascii_alphanumeric() || chars[cursor_index] == '_')
+                {
                     cursor_index += 1;
                 }
                 if cursor_index >= chars.len() || chars[cursor_index] != '}' {

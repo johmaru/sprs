@@ -5,9 +5,9 @@
 `new(n)` は `n` バイトのゼロ初期化 Buffer を割り当てます（負数 → 無効ハンドル。
 `0` は有効な空 Buffer です）。
 バイトは `0..=255` の Integer です。
-添字糖衣 `buf[i]` は `@bufGet` / `@bufSet` と同様に読み書きします。
+添字糖衣 `buf[i]` は `@buf_get` / `@buf_set` と同様に読み書きします。
 書き込みは下位 8 ビットへ切り詰めます。
-範囲外の `@bufGet` / `buf[i]` 読み取りは `Unit` 番兵を返します
+範囲外の `@buf_get` / `buf[i]` 読み取りは `Unit` 番兵を返します
 （リスト添字と同じ規約）。
 範囲外の書き込みは何もしません。
 
@@ -17,10 +17,10 @@
 
 ```sprs
 var a = new(4);
-@bufSet(a, 0, 10);
+@buf_set(a, 0, 10);
 a[1] = 20;
-@println(@bufLen(a));           # 4
-@println(a[0] + @bufGet(a, 1)); # 30
+@println(@buf_len(a));           # 4
+@println(a[0] + @buf_get(a, 1)); # 30
 @println(exist(a));             # true
 destroy(a);
 @println(exist(a));             # false
@@ -51,7 +51,7 @@ Buffer は他のヒープ値と同じ自動 drop 経路に参加します。
 fn demo() {
   var a = new(1);
   defer destroy(a);   # runs at scope exit before auto-drop
-  @bufSet(a, 0, 1);
+  @buf_set(a, 0, 1);
 
   var b = new(2);
   defer destroy(b);

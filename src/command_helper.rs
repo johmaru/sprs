@@ -57,10 +57,7 @@ pub fn get_all_arguments(args: &[String]) -> Vec<String> {
         .collect()
 }
 
-pub fn init_project(
-    mut name: Option<&str>,
-    force: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub fn init_project(mut name: Option<&str>, force: bool) -> Result<(), Box<dyn std::error::Error>> {
     use std::io::Write;
 
     if name.is_none() {
@@ -75,18 +72,10 @@ pub fn init_project(
     // Protect existing files unless --force was given (BUG-M03).
     if !force {
         if Path::new(toml_path).exists() {
-            return Err(format!(
-                "{} already exists. Use --force to overwrite.",
-                toml_path
-            )
-            .into());
+            return Err(format!("{} already exists. Use --force to overwrite.", toml_path).into());
         }
         if Path::new(&src_path).exists() {
-            return Err(format!(
-                "{} already exists. Use --force to overwrite.",
-                src_path
-            )
-            .into());
+            return Err(format!("{} already exists. Use --force to overwrite.", src_path).into());
         }
     }
 
@@ -103,7 +92,10 @@ pub fn init_project(
     let toml_str = toml::to_string_pretty(&config)?;
     let mut file = File::create(toml_path)?;
     file.write_all(toml_str.as_bytes())?;
-    println!("Project initialized successfully with {}", naming::CONFIG_FILE);
+    println!(
+        "Project initialized successfully with {}",
+        naming::CONFIG_FILE
+    );
 
     std::fs::create_dir_all("src")?;
 
@@ -127,7 +119,11 @@ pub fn help_print(help: HelpCommand) {
     match help {
         HelpCommand::All => {
             println!("{} Compiler Full Help:", naming::LANG_DISPLAY_NAME);
-            println!("Usage: {} <source_file{}> [options]", naming::LANG_NAME, naming::SOURCE_EXT);
+            println!(
+                "Usage: {} <source_file{}> [options]",
+                naming::LANG_NAME,
+                naming::SOURCE_EXT
+            );
             println!("Options:");
             println!("---This Section is 'Command' Section---");
             println!("  init <?args>  Initialize the project");
@@ -141,13 +137,19 @@ pub fn help_print(help: HelpCommand) {
             println!();
             println!(
                 "{} is the {} compiler, a simple compiler for the {} programming language.",
-                naming::LANG_DISPLAY_NAME, naming::LANG_DISPLAY_NAME, naming::LANG_DISPLAY_NAME
+                naming::LANG_DISPLAY_NAME,
+                naming::LANG_DISPLAY_NAME,
+                naming::LANG_DISPLAY_NAME
             );
             println!("For more information, visit the official documentation.");
         }
         HelpCommand::NoArg => {
             println!("{} Compiler Help:", naming::LANG_DISPLAY_NAME);
-            println!("Usage: {} <source_file{}> [options]", naming::LANG_NAME, naming::SOURCE_EXT);
+            println!(
+                "Usage: {} <source_file{}> [options]",
+                naming::LANG_NAME,
+                naming::SOURCE_EXT
+            );
             println!("Options:");
             println!("---This Section is 'Command' Section---");
             println!("  init <?args>  Initialize the project");

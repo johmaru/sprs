@@ -59,15 +59,8 @@ pub fn call_builtin_macro_list_push<'ctx>(
         .compile_expr(&args[1], module)?
         .into_pointer_value();
     let (val_ptr, source_var) = if let ast::Expr::Var(name) = &args[1].node {
-        if let Some(src) = self_compiler.get_variables(name) {
-            if src.always_clone {
-                (
-                    clone_runtime_value(self_compiler, src.value.into_pointer_value(), module)?,
-                    None,
-                )
-            } else {
-                (compiled_val_ptr, Some((src.value, name)))
-            }
+        if self_compiler.get_variables(name).is_some() {
+            (compiled_val_ptr, Some((compiled_val_ptr.into(), name)))
         } else {
             (compiled_val_ptr, None)
         }
@@ -137,7 +130,7 @@ pub fn call_builtin_macro_list_push<'ctx>(
     return Ok(res_ptr.into());
 }
 
-/// @bufLen(buf) — length of a Buffer as Integer (0 for stale / non-Buffer).
+/// @buf_len(buf) — length of a Buffer as Integer (0 for stale / non-Buffer).
 pub fn call_builtin_macro_buf_len<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
     args: &[Spanned<ast::Expr>],
@@ -150,7 +143,7 @@ pub fn call_builtin_macro_buf_len<'ctx>(
                 number: 13,
             },
             location: Location::new(String::new(), Span::DUMMY),
-            message: "bufLen expects 1 argument".to_string(),
+            message: "@buf_len expects 1 argument".to_string(),
             help: None,
         });
     }
@@ -210,7 +203,7 @@ pub fn call_builtin_macro_buf_len<'ctx>(
     Ok(res_ptr.into())
 }
 
-/// @bufGet(buf, i) — read one byte as Integer; OOB / stale → Unit sentinel.
+/// @buf_get(buf, i) — read one byte as Integer; OOB / stale → Unit sentinel.
 pub fn call_builtin_macro_buf_get<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
     args: &[Spanned<ast::Expr>],
@@ -223,7 +216,7 @@ pub fn call_builtin_macro_buf_get<'ctx>(
                 number: 13,
             },
             location: Location::new(String::new(), Span::DUMMY),
-            message: "bufGet expects 2 arguments".to_string(),
+            message: "@buf_get expects 2 arguments".to_string(),
             help: None,
         });
     }
@@ -276,7 +269,7 @@ pub fn call_builtin_macro_buf_get<'ctx>(
     }
 }
 
-/// @bufSet(buf, i, v) — write byte `v` (low 8 bits) at index `i`. OOB → no-op.
+/// @buf_set(buf, i, v) — write byte `v` (low 8 bits) at index `i`. OOB → no-op.
 pub fn call_builtin_macro_buf_set<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
     args: &[Spanned<ast::Expr>],
@@ -289,7 +282,7 @@ pub fn call_builtin_macro_buf_set<'ctx>(
                 number: 13,
             },
             location: Location::new(String::new(), Span::DUMMY),
-            message: "bufSet expects 3 arguments".to_string(),
+            message: "@buf_set expects 3 arguments".to_string(),
             help: None,
         });
     }
@@ -608,18 +601,6 @@ pub fn call_builtin_macro_move<'ctx>(
             help: None,
         })?;
 
-    if !source.always_clone {
-        return Err(SprsError::Semantic {
-            code: ErrorCode {
-                category: ErrorCategory::Semantic,
-                number: 13,
-            },
-            location: Location::new(String::new(), args[0].span),
-            message: format!("@move expects a cp variable: {}", name),
-            help: None,
-        });
-    }
-
     let source_ptr = source.value.into_pointer_value();
     let moved_ptr = var_load_at_init_variable(self_compiler, source_ptr, "move_arg")?;
     move_variable(self_compiler, &source_ptr.into(), name);
@@ -659,9 +640,9 @@ pub fn call_builtin_macro_cast<'ctx>(
         ast::Expr::TypeI64 => "i64",
         ast::Expr::TypeU64 => "u64",
 
-        ast::Expr::TypeF16 => "fp16",
-        ast::Expr::TypeF32 => "fp32",
-        ast::Expr::TypeF64 => "fp64",
+        ast::Expr::TypeF16 => "f16",
+        ast::Expr::TypeF32 => "f32",
+        ast::Expr::TypeF64 => "f64",
         _ => {
             return Err(SprsError::Semantic {
                 code: ErrorCode {
@@ -1086,7 +1067,7 @@ pub fn call_builtin_macro_cast<'ctx>(
             (new_tag, new_data)
         }
 
-        "fp16" => {
+        "f16" => {
             let new_tag = self_compiler
                 .context
                 .i32_type()
@@ -1120,7 +1101,7 @@ pub fn call_builtin_macro_cast<'ctx>(
             (new_tag, new_data_ext)
         }
 
-        "fp32" => {
+        "f32" => {
             let new_tag = self_compiler
                 .context
                 .i32_type()
@@ -1154,7 +1135,7 @@ pub fn call_builtin_macro_cast<'ctx>(
             (new_tag, new_data_ext)
         }
 
-        "fp64" => {
+        "f64" => {
             let new_tag = self_compiler
                 .context
                 .i32_type()
@@ -1333,11 +1314,8 @@ pub fn call_builtin_macro_fcast<'ctx>(
         .build_conditional_branch(is_invalid, error_bb, success_bb);
 
     self_compiler.builder.position_at_end(error_bb);
-    let error_ptr = create_error_label_from_str(
-        self_compiler,
-        "TypeError: unexpected tag in @fcast",
-        module,
-    )?;
+    let error_ptr =
+        create_error_label_from_str(self_compiler, "TypeError: unexpected tag in @fcast", module)?;
     let _ = self_compiler
         .builder
         .build_unconditional_branch(final_merge);
@@ -1920,9 +1898,8 @@ pub fn call_builtin_macro_label_is<'ctx>(
                     number: 3,
                 },
                 location: Location::new(String::new(), args[1].span),
-                message:
-                    "@label_is second argument must be an atom such as :name or :\"{i}-item\""
-                        .to_string(),
+                message: "@label_is second argument must be an atom such as :name or :\"{i}-item\""
+                    .to_string(),
                 help: None,
             });
         }
@@ -1988,8 +1965,7 @@ pub fn call_builtin_macro_label_is<'ctx>(
             // compare ids with the actual label's name (also interned).
             // No temporary Label is created (Labels now require a payload).
             let atom_from_string = self_compiler.get_runtime_fn(module, "__atom_from_string")?;
-            let (expected_str, temps_to_drop) =
-                build_dynamic_string(self_compiler, parts, module)?;
+            let (expected_str, temps_to_drop) = build_dynamic_string(self_compiler, parts, module)?;
             let expected_id = match self_compiler
                 .builder
                 .build_call(

@@ -42,7 +42,7 @@ RawPtr の `data` は素のアドレスです。
 | Function Name   | Description                          |
 |-----------------|--------------------------------------|
 | __list_new | 新しいリストを作る |
-| __list_get | 添字でリストから要素を取る |
+| __list_get | リスト要素の destructive take。元スロットは Unit になる |
 | __list_push | リスト末尾へ要素を追加する |
 | __range_new | 新しい Range を作る |
 | __println | 値をコンソールへ表示する |

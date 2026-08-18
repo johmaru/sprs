@@ -18,17 +18,17 @@ examples:
 @list_push(y, z);
 ```
 
-* `@bufLen(buf)`: Buffer length as Integer (`0` for stale / non-Buffer)
-* `@bufGet(buf, i)`: read one byte as Integer; OOB / stale → `Unit`
-* `@bufSet(buf, i, v)`: write low 8 bits of `v` at `i`; OOB → no-op
+* `@buf_len(buf)`: Buffer length as Integer (`0` for stale / non-Buffer)
+* `@buf_get(buf, i)`: read one byte as Integer; OOB / stale → `Unit`
+* `@buf_set(buf, i, v)`: write low 8 bits of `v` at `i`; OOB → no-op
 
 examples:
 
 ```sprs
 var a = new(2);
-@bufSet(a, 0, 7);
-@println(@bufGet(a, 0));
-@println(@bufLen(a));
+@buf_set(a, 0, 7);
+@println(@buf_get(a, 0));
+@println(@buf_len(a));
 ```
 
 See [Buffers and Unsafe](../language/buffers-and-unsafe.md) for Buffer allocation, indexing, `destroy`, `exist`, `unsafe`, RawPtr, and `defer`.
@@ -59,16 +59,16 @@ var a = "hello";
 
 ```
 
-* `@move(value)`: Move out of a `cp` binding for one use (invalidates the binding)
+* `@move(value)`: Move out of a variable (invalidates the binding)
 
 examples:
 
 ```sprs
-cp var a = "hello";
+var a = "hello";
 @println(@move(a)); # a becomes Unit
 ```
 
-See [Memory Management](memory-management.md) for move semantics, `cp var`, `@clone`, `@move`, and automatic drop.
+See [Memory Management](memory-management.md) for move semantics, `@clone`, `@move`, and automatic drop.
 
 * `@cast(value, type)`: Cast the value to the specified type
 
@@ -80,7 +80,7 @@ var b = @cast(a, i8); # cast to i8
 @println(b); # prints 100 as i8
 ```
 
-* `@fcast(value)`: Explicitly convert an `int`, `bool`, or `str` value to `str`.
+* `@fcast(value)`: Explicitly convert an integer, `bool`, or `str` value to `str`.
   Unsupported values return the catchable error `TypeError: unexpected tag in @fcast`;
   an existing error is returned unchanged. No implicit string conversion is performed.
 
@@ -92,14 +92,7 @@ var ok = 5 == 5;
 * `@lshift(value, shift_amount)`: exactly two arguments. Integer tags only. Signed tags (`Integer`, `i8`, `i16`, `i32`, `i64`) use `shl` / arithmetic right shift. Unsigned tags (`u8`..`u64`) use `shl` / logical right shift. A non-integer value produces the error label `"@lshift expects an integer value"`. An existing error-label argument is returned unchanged. The result keeps the tag of `value`.
 * `@rshift(value, shift_amount)`: same rules as `@lshift`. The non-integer message is `"@rshift expects an integer value"`.
 * `@not(value)`: exactly one argument. Boolean `true` when `data == 0`, otherwise `false`. This is not bitwise complement.
-* `@init(TypeName { field = value, ... })`: struct initialization. Calling `@init(...)` as an ordinary macro is `SPRS-SEM-005` (`struct initialization requires @init(TypeName { field: value, ... }) syntax`). See [Enums and Structs](../language/enums-and-structs.md) for the full form.
-
-```sprs
-var p = @init(Point {
-  x = 10,
-  y = 20
-});
-```
+Struct initialization is the core form `init TypeName { field = value, ... }`, not a macro. `@init` is an unknown macro (`SPRS-SEM-003`). See [Structs](../language/structs.md).
 
 
 * `@attach(expr, <:name)`: Clone `expr` into the function-local attach slot `<:name`.
@@ -129,7 +122,7 @@ See [Labels and Match](../language/labels-and-match.md) for Atom/Label syntax, a
 * `@is_error(value)`: `true` when `value` is an error label.
 * `@error_message(value)`: String payload directly when the reason is a String; other payloads are rendered using the normal value formatter.
 
-See [Errors](../language/errors.md) for `err`, `Label(:error, T)`, `?`, uncaught `main` errors, integer overflow, and division by zero.
+See [Errors](../language/errors.md) for `Label(:error, T)`, `?`, uncaught `main` errors, integer overflow, and division by zero.
 
 **Note:** `@cast` macro is faster than normal int type, because it use i8 and u8 llvm type directly.
 

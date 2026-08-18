@@ -4,9 +4,7 @@ Compile-time codes (`SPRS-SYN-001`, `--error-format`) are documented in [Compile
 
 ## Error labels
 
-Errors are ordinary labels, not a dedicated runtime value. `err` is syntax sugar
-for `Label(:error, any)`, and `@error(reason)` creates `{:error, reason}` with
-exactly one argument.
+Errors are ordinary labels, not a dedicated runtime value. Write `Label(:error, Any)` (or broad `Label`) in signatures. `@error(reason)` creates `{:error, reason}` with exactly one argument. There is no `err` type alias.
 
 The same value can be created directly as a normal label literal. Use
 `Label(:error, T)` when the error name and payload type should be part of the
@@ -24,10 +22,10 @@ fn main() {
 }
 ```
 
-`err` and `@error(reason)` are shorthand for the same label convention:
+`@error(reason)` is shorthand for the same label convention:
 
 ```sprs
-fn make_error() >> err {
+fn make_error() >> Label(:error, Any) {
   return @error("file not found");
 }
 
@@ -64,7 +62,7 @@ integer value; on overflow the full label `{:error, :overflow}` is returned.
 the same way as on any other error label.
 
 ```sprs
-fn propagate_overflow() >> int {
+fn propagate_overflow() >> i64 {
   var value = (9223372036854775807 + 1)?;
   return value;
 }
@@ -77,6 +75,6 @@ fn inspect_overflow() {
 }
 ```
 
-Different integer tags still promote to the default `int` as before; `++`
+Different integer tags still promote to the default `i64` as before; `++`
 and `--` are not covered by this contract. Division by zero keeps the
 existing `{:error, "Division by zero"}` label.

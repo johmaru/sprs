@@ -6,7 +6,9 @@ use crate::front::label_name::LabelName;
 use crate::front::span::Span;
 use crate::front::span::Spanned;
 use crate::front::type_helper;
-use crate::front::type_helper::{Type, is_error_label_type, reject_payloadless_label_type, types_compatible};
+use crate::front::type_helper::{
+    Type, is_error_label_type, reject_payloadless_label_type, types_compatible,
+};
 use crate::llvm::builder_helper;
 use crate::llvm::builder_helper::BuilderExt;
 use crate::llvm::builder_helper::Comparison;
@@ -14,13 +16,13 @@ use crate::llvm::builder_helper::ContextExt;
 use crate::llvm::builder_helper::EqNeq;
 use crate::llvm::builder_helper::UpDown;
 use crate::llvm::compiler::{Compiler, Tag};
+use crate::llvm::function_build::{CallContractError, resolve_call_contract};
 use crate::llvm::value::{build_label_is_error, create_atom, create_label};
 use crate::naming;
 use inkwell::AddressSpace;
 use inkwell::module::Module;
 use inkwell::types::{BasicMetadataTypeEnum, BasicTypeEnum};
 use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue, ValueKind};
-
 
 fn is_int_family(ty: &Type) -> bool {
     matches!(
@@ -46,17 +48,9 @@ fn is_float_family(ty: &Type) -> bool {
 
 fn infer_binary_arith_type(lhs: &Type, rhs: &Type) -> Type {
     if is_int_family(lhs) && is_int_family(rhs) {
-        if lhs == rhs {
-            lhs.clone()
-        } else {
-            Type::Int
-        }
+        if lhs == rhs { lhs.clone() } else { Type::Int }
     } else if is_float_family(lhs) && is_float_family(rhs) {
-        if lhs == rhs {
-            lhs.clone()
-        } else {
-            Type::Float
-        }
+        if lhs == rhs { lhs.clone() } else { Type::Float }
     } else {
         lhs.clone()
     }
@@ -70,7 +64,11 @@ impl<'ctx> Compiler<'ctx> {
         }
     }
 
-    /// Check call arity and annotated parameter types against argument expressions.
+    /// Check call arity and parameter types against argument expressions.
+    ///
+    /// Plain functions reuse the same call-contract resolver as FunctionBuild
+    /// (empty type parameters / when rules), so arity and annotated parameter
+    /// types share one code path.
     pub fn check_call_arguments(
         &self,
         fn_name: &str,
@@ -80,53 +78,125 @@ impl<'ctx> Compiler<'ctx> {
             return Ok(());
         };
 
-        let expected = sig.params.len();
-        let actual = args.len();
-        if expected != actual {
-            let span = args
-                .first()
-                .map(|argument| argument.span)
-                .unwrap_or(Span::DUMMY);
-            return Err(SprsError::Semantic {
-                code: ErrorCode {
-                    category: ErrorCategory::Semantic,
-                    number: 16,
-                },
-                location: self.location(span),
-                message: format!(
-                    "Argument count mismatch: function `{}` expects {} argument(s), found {}",
-                    fn_name, expected, actual
-                ),
-                help: None,
-            });
-        }
-
-        for (idx, (param_annot, arg)) in sig.params.iter().zip(args.iter()).enumerate() {
-            let Some(annot) = param_annot else {
-                continue;
-            };
-            let actual_ty = self.infer_type(arg);
-            if !types_compatible(&annot.ty, &actual_ty) {
-                return Err(SprsError::Type {
+        let actuals: Vec<Type> = args.iter().map(|arg| self.infer_type(arg)).collect();
+        let contract = crate::llvm::function_build::ResolvedFunctionSignature {
+            params: sig
+                .params
+                .iter()
+                .map(|ty| ast::FunctionParam {
+                    ident: String::new(),
+                    ty: ty.clone(),
+                    span: Span::DUMMY,
+                })
+                .collect(),
+            ret_ty: sig.ret_ty.clone(),
+            is_public: false,
+            type_params: sig.type_params.clone(),
+            when_rules: sig.when_rules.clone(),
+        };
+        match resolve_call_contract(&contract, &actuals) {
+            Ok(_) => Ok(()),
+            Err(CallContractError::Arity { expected, actual }) => {
+                let span = args
+                    .first()
+                    .map(|argument| argument.span)
+                    .unwrap_or(Span::DUMMY);
+                Err(SprsError::Semantic {
+                    code: ErrorCode {
+                        category: ErrorCategory::Semantic,
+                        number: 16,
+                    },
+                    location: self.location(span),
+                    message: format!(
+                        "Argument count mismatch: function `{}` expects {} argument(s), found {}",
+                        fn_name, expected, actual
+                    ),
+                    help: None,
+                })
+            }
+            Err(err) => {
+                let span = args
+                    .first()
+                    .map(|argument| argument.span)
+                    .unwrap_or(Span::DUMMY);
+                let (message, expected_type, actual_type) = match &err {
+                    CallContractError::TypeConflict { message } => (
+                        format!("Type mismatch in call to `{}`: {}", fn_name, message),
+                        None,
+                        None,
+                    ),
+                    CallContractError::UnresolvedTypeParam { name } => (
+                        format!(
+                            "Type mismatch in call to `{}`: type parameter `{}` was not resolved to a concrete type",
+                            fn_name, name
+                        ),
+                        None,
+                        None,
+                    ),
+                    CallContractError::NotConcrete { message } => (
+                        format!("Type mismatch in call to `{}`: {}", fn_name, message),
+                        None,
+                        None,
+                    ),
+                    CallContractError::MultipleMatches => (
+                        format!(
+                            "Type mismatch in call to `{}`: multiple `when` rules matched",
+                            fn_name
+                        ),
+                        None,
+                        None,
+                    ),
+                    CallContractError::Arity { .. } => unreachable!("handled above"),
+                };
+                Err(SprsError::Type {
                     code: ErrorCode {
                         category: ErrorCategory::Type,
                         number: 7,
                     },
-                    location: self.location(arg.span),
-                    message: format!(
-                        "Type mismatch: argument {} of `{}` expects {:?}, found {:?}",
-                        idx + 1,
-                        fn_name,
-                        annot.ty,
-                        actual_ty
-                    ),
-                    expected_type: Some(format!("{:?}", annot.ty)),
-                    actual_type: Some(format!("{:?}", actual_ty)),
+                    location: self.location(span),
+                    message,
+                    expected_type,
+                    actual_type,
                     help: None,
-                });
+                })
             }
         }
-        Ok(())
+    }
+
+    /// Infer the return type of a call through the FunctionBuild call-contract
+    /// resolver. Plain functions (no type params / when rules) fall back to
+    /// the declared `ret_ty`; resolution failures yield `Any`.
+    fn infer_call_return_type(
+        &self,
+        name: &str,
+        args: &[Spanned<ast::Expr>],
+    ) -> Type {
+        let Some(sig) = self.fn_types.get(name) else {
+            return Type::Any;
+        };
+        if sig.type_params.is_empty() && sig.when_rules.is_empty() {
+            return sig.ret_ty.clone().unwrap_or(Type::Any);
+        }
+        let actuals: Vec<Type> = args.iter().map(|arg| self.infer_type(arg)).collect();
+        let contract = crate::llvm::function_build::ResolvedFunctionSignature {
+            params: sig
+                .params
+                .iter()
+                .map(|ty| ast::FunctionParam {
+                    ident: String::new(),
+                    ty: ty.clone(),
+                    span: Span::DUMMY,
+                })
+                .collect(),
+            ret_ty: sig.ret_ty.clone(),
+            is_public: false,
+            type_params: sig.type_params.clone(),
+            when_rules: sig.when_rules.clone(),
+        };
+        resolve_call_contract(&contract, &actuals)
+            .ok()
+            .flatten()
+            .unwrap_or(Type::Any)
     }
 
     pub(crate) fn infer_type(&self, expr: &Spanned<ast::Expr>) -> Type {
@@ -210,16 +280,10 @@ impl<'ctx> Compiler<'ctx> {
                 }
                 result.unwrap_or(Type::Any)
             }
-            ast::Expr::Call(name, _) => self
-                .fn_types
-                .get(name)
-                .and_then(|sig| sig.ret_ty.clone())
-                .unwrap_or(Type::Any),
-            ast::Expr::ModuleAccess(_, function_name, _) => self
-                .fn_types
-                .get(function_name)
-                .and_then(|sig| sig.ret_ty.clone())
-                .unwrap_or(Type::Any),
+            ast::Expr::Call(name, args) => self.infer_call_return_type(name, args),
+            ast::Expr::ModuleAccess(_, function_name, args) => {
+                self.infer_call_return_type(function_name, args)
+            }
             ast::Expr::Macro(ident, args) => match ident.as_str() {
                 "cast" => {
                     if args.len() >= 2 {
@@ -273,7 +337,10 @@ impl<'ctx> Compiler<'ctx> {
             ast::Expr::Exist(_) => Type::Bool,
             ast::Expr::Atom(name) => match name {
                 LabelName::Static(static_name) => {
-                    Type::App("Atom".into(), vec![Type::Atom(static_name.clone())])
+                    match self.resolve_closed_label_member(static_name, expr.span) {
+                        Ok(Some(set)) => Type::ClosedLabelSet(set),
+                        _ => Type::App("Atom".into(), vec![Type::Atom(static_name.clone())]),
+                    }
                 }
                 LabelName::Dynamic(_) => Type::AtomVal,
             },
@@ -301,11 +368,6 @@ impl<'ctx> Compiler<'ctx> {
             }
             ast::Expr::AttachSlot(_) => Type::Any,
             ast::Expr::FieldAccess(lhs, rhs) => {
-                if let ast::Expr::Var(name) = &lhs.node {
-                    if self.enum_frames.contains_key(name) {
-                        return Type::Enum(name.clone());
-                    }
-                }
                 if let Type::Struct(struct_name) = self.infer_type(lhs) {
                     if let Some(def) = self.struct_defs.get(&struct_name) {
                         if let Some(field) = def.fields.iter().find(|field| field.ident == *rhs) {
@@ -393,16 +455,14 @@ impl<'ctx> Compiler<'ctx> {
                     .and_then(|signature| signature.params.get(idx).cloned().flatten())
             });
             if let Some(argument) = &annot {
-                reject_payloadless_label_type(&argument.ty).map_err(|msg| {
-                    SprsError::Semantic {
-                        code: ErrorCode {
-                            category: ErrorCategory::Semantic,
-                            number: 11,
-                        },
-                        location: self.location(param.span),
-                        message: msg,
-                        help: None,
-                    }
+                reject_payloadless_label_type(&argument.ty).map_err(|msg| SprsError::Semantic {
+                    code: ErrorCode {
+                        category: ErrorCategory::Semantic,
+                        number: 11,
+                    },
+                    location: self.location(param.span),
+                    message: msg,
+                    help: None,
                 })?;
             }
             let (param_ty, is_ambi, is_annotated) = match annot {
@@ -413,7 +473,6 @@ impl<'ctx> Compiler<'ctx> {
                 param.ident.clone(),
                 alloca.into(),
                 param_ty,
-                false,
                 is_ambi,
                 is_annotated,
             );
@@ -462,14 +521,10 @@ impl<'ctx> Compiler<'ctx> {
         let Some(binding) = self.get_variables(&name) else {
             return Ok(compiled);
         };
-        if binding.always_clone {
-            builder_helper::clone_runtime_value(self, binding.value.into_pointer_value(), module)
-        } else {
-            let val_ptr = binding.value.into_pointer_value();
-            let copied = builder_helper::var_load_at_init_variable(self, val_ptr, temp_name)?;
-            builder_helper::move_variable(self, &val_ptr.into(), &name);
-            Ok(copied)
-        }
+        let val_ptr = binding.value.into_pointer_value();
+        let copied = builder_helper::var_load_at_init_variable(self, val_ptr, temp_name)?;
+        builder_helper::move_variable(self, &val_ptr.into(), &name);
+        Ok(copied)
     }
 
     /// Process a `return` statement: type-check the expression, convert it
@@ -532,11 +587,11 @@ impl<'ctx> Compiler<'ctx> {
             },
             location: self.location(expr.span),
             message: format!(
-                "Type mismatch: Function declares >> {:?} but return expression has {:?}",
+                "Type mismatch: Function declares >> {} but return expression has {}",
                 expected_ty, actual
             ),
-            expected_type: Some(format!("{:?}", expected_ty)),
-            actual_type: Some(format!("{:?}", actual)),
+            expected_type: Some(format!("{}", expected_ty)),
+            actual_type: Some(format!("{}", actual)),
             help: None,
         })
     }
@@ -564,11 +619,11 @@ impl<'ctx> Compiler<'ctx> {
                         },
                         location: self.location(expr.span),
                         message: format!(
-                            "Type mismatch: Function expects pointer type (e.g. str) but got {:?} from expression {:?}",
+                            "Type mismatch: Function expects pointer type (e.g. str) but got {} from expression {:?}",
                             expr_type, expr
                         ),
                         expected_type: Some("pointer".to_string()),
-                        actual_type: Some(format!("{:?}", expr_type)),
+                        actual_type: Some(format!("{}", expr_type)),
                         help: None,
                     });
                 }
@@ -583,11 +638,11 @@ impl<'ctx> Compiler<'ctx> {
                             },
                             location: self.location(expr.span),
                             message: format!(
-                                "Type mismatch: Function expects Bool but got {:?} from expression {:?}",
+                                "Type mismatch: Function expects Bool but got {} from expression {:?}",
                                 expr_type, expr
                             ),
                             expected_type: Some("Bool".to_string()),
-                            actual_type: Some(format!("{:?}", expr_type)),
+                            actual_type: Some(format!("{}", expr_type)),
                             help: None,
                         });
                     }
@@ -601,11 +656,11 @@ impl<'ctx> Compiler<'ctx> {
                             },
                             location: self.location(expr.span),
                             message: format!(
-                                "Type mismatch: Function expects Int type but got {:?} from expression {:?}",
+                                "Type mismatch: Function expects Int type but got {} from expression {:?}",
                                 expr_type, expr
                             ),
                             expected_type: Some("Int".to_string()),
-                            actual_type: Some(format!("{:?}", expr_type)),
+                            actual_type: Some(format!("{}", expr_type)),
                             help: None,
                         });
                     }
@@ -620,11 +675,11 @@ impl<'ctx> Compiler<'ctx> {
                         },
                         location: self.location(expr.span),
                         message: format!(
-                            "Type mismatch: Function expects Float type but got {:?} from expression {:?}",
+                            "Type mismatch: Function expects Float type but got {} from expression {:?}",
                             expr_type, expr
                         ),
                         expected_type: Some("Float".to_string()),
-                        actual_type: Some(format!("{:?}", expr_type)),
+                        actual_type: Some(format!("{}", expr_type)),
                         help: None,
                     });
                 }
@@ -728,39 +783,15 @@ impl<'ctx> Compiler<'ctx> {
 
                     let var_type = self.infer_type(init_expr);
 
-                    if var.always_clone {
-                        let expensive_cp = matches!(var_type, Type::Struct(_))
-                            || matches!(
-                                &init_expr.node,
-                                ast::Expr::List(_)
-                                    | ast::Expr::Range(_, _)
-                                    | ast::Expr::StructInit(_, _)
-                            );
-                        if expensive_cp {
-                            eprintln!(
-                                "warning: `cp` on non-str heap value `{}` deep-copies on every use (Phase 1 recommends `cp` mainly for `str`)",
-                                var.ident
-                            );
-                        }
-                    }
-
                     let init_val = if let ast::Expr::Var(src_val_name) = &init_expr.node {
                         if let Some(src) = self.get_variables(src_val_name) {
-                            if src.always_clone {
-                                builder_helper::clone_runtime_value(
-                                    self,
-                                    src.value.into_pointer_value(),
-                                    module,
-                                )?
-                            } else {
-                                let copied_val = builder_helper::var_load_at_init_variable(
-                                    self,
-                                    compiled_init_val,
-                                    &var.ident,
-                                )?;
-                                builder_helper::move_variable(self, &src.value, &var.ident);
-                                copied_val
-                            }
+                            let copied_val = builder_helper::var_load_at_init_variable(
+                                self,
+                                compiled_init_val,
+                                &var.ident,
+                            )?;
+                            builder_helper::move_variable(self, &src.value, &var.ident);
+                            copied_val
                         } else {
                             builder_helper::var_load_at_init_variable(
                                 self,
@@ -775,14 +806,7 @@ impl<'ctx> Compiler<'ctx> {
                             &var.ident,
                         )?
                     };
-                    self.add_variable(
-                        var.ident.clone(),
-                        init_val.into(),
-                        var_type,
-                        var.always_clone,
-                        false,
-                        false,
-                    );
+                    self.add_variable(var.ident.clone(), init_val.into(), var_type, false, false);
                 }
                 ast::Stmt::Return(expr_opt) => {
                     self.compile_return(expr_opt, module)?;
@@ -820,9 +844,6 @@ impl<'ctx> Compiler<'ctx> {
                 }
                 ast::Stmt::Expr(expr) => {
                     self.compile_expr(expr, module)?;
-                }
-                ast::Stmt::EnumItem(enm) => {
-                    self.register_enum(enm)?;
                 }
                 ast::Stmt::Assign(assign_stmt) => {
                     self.emit_named_assign(
@@ -895,15 +916,17 @@ impl<'ctx> Compiler<'ctx> {
         module: &Module<'ctx>,
         span: Span,
     ) -> Result<PointerValue<'ctx>, SprsError> {
-        let target = self.get_variables(name).ok_or_else(|| SprsError::Semantic {
-            code: ErrorCode {
-                category: ErrorCategory::Semantic,
-                number: 2,
-            },
-            location: self.location(span),
-            message: format!("Undefined variable: {}", name),
-            help: None,
-        })?;
+        let target = self
+            .get_variables(name)
+            .ok_or_else(|| SprsError::Semantic {
+                code: ErrorCode {
+                    category: ErrorCategory::Semantic,
+                    number: 2,
+                },
+                location: self.location(span),
+                message: format!("Undefined variable: {}", name),
+                help: None,
+            })?;
         let target_ptr = target.value.into_pointer_value();
 
         // Self-assign is a no-op: drop-then-load on the same binding
@@ -916,15 +939,17 @@ impl<'ctx> Compiler<'ctx> {
 
         let val_ptr = self.compile_owned_expr(rhs, module, "assign_owned")?;
 
-        let target = self.get_variables(name).ok_or_else(|| SprsError::Semantic {
-            code: ErrorCode {
-                category: ErrorCategory::Semantic,
-                number: 2,
-            },
-            location: self.location(span),
-            message: format!("Undefined variable: {}", name),
-            help: None,
-        })?;
+        let target = self
+            .get_variables(name)
+            .ok_or_else(|| SprsError::Semantic {
+                code: ErrorCode {
+                    category: ErrorCategory::Semantic,
+                    number: 2,
+                },
+                location: self.location(span),
+                message: format!("Undefined variable: {}", name),
+                help: None,
+            })?;
 
         let rhs_ty = self.infer_type(rhs);
         if target.is_annotated && !target.is_ambi {
@@ -936,11 +961,11 @@ impl<'ctx> Compiler<'ctx> {
                     },
                     location: self.location(span),
                     message: format!(
-                        "Type mismatch: cannot assign {:?} to fixed binding `{}` of type {:?}",
+                        "Type mismatch: cannot assign {} to fixed binding `{}` of type {}",
                         rhs_ty, name, target.ty
                     ),
-                    expected_type: Some(format!("{:?}", target.ty)),
-                    actual_type: Some(format!("{:?}", rhs_ty)),
+                    expected_type: Some(format!("{}", target.ty)),
+                    actual_type: Some(format!("{}", rhs_ty)),
                     help: Some(
                         "use `>> ambi T` if this parameter should allow dynamic reassignment"
                             .to_string(),
@@ -1013,9 +1038,9 @@ impl<'ctx> Compiler<'ctx> {
                 match ident.as_str() {
                     "println" => Ok(builder_helper::call_builtin_macro_println(self, args, module)?),
                     "list_push" => Ok(builder_helper::call_builtin_macro_list_push(self, args, module)?),
-                    "bufLen" => Ok(builder_helper::call_builtin_macro_buf_len(self, args, module)?),
-                    "bufGet" => Ok(builder_helper::call_builtin_macro_buf_get(self, args, module)?),
-                    "bufSet" => Ok(builder_helper::call_builtin_macro_buf_set(self, args, module)?),
+                    "buf_len" => Ok(builder_helper::call_builtin_macro_buf_len(self, args, module)?),
+                    "buf_get" => Ok(builder_helper::call_builtin_macro_buf_get(self, args, module)?),
+                    "buf_set" => Ok(builder_helper::call_builtin_macro_buf_set(self, args, module)?),
                     "clone" => Ok(builder_helper::call_builtin_macro_clone(self, args, module)?),
                     "move" => Ok(builder_helper::call_builtin_macro_move(self, args, module)?),
                     "raw" => Ok(builder_helper::call_builtin_macro_raw(self, args, module)?),
@@ -1032,12 +1057,6 @@ impl<'ctx> Compiler<'ctx> {
                     "label_payload" => Ok(builder_helper::call_builtin_macro_label_payload(self, args, module)?),
                     "label_name" => Ok(builder_helper::call_builtin_macro_label_name(self, args, module)?),
                     "error" => Ok(builder_helper::call_builtin_macro_error(self, args, module)?),
-                    "init" => Err(SprsError::Semantic {
-                        code: ErrorCode { category: ErrorCategory::Semantic, number: 5 },
-                        location: self.location(expr.span),
-                        message: "struct initialization requires @init(TypeName { field: value, ... }) syntax".to_string(),
-                        help: None,
-                    }),
                     _ => Err(SprsError::Semantic {
                         code: ErrorCode { category: ErrorCategory::Semantic, number: 3 },
                         location: self.location(expr.span),
@@ -1047,29 +1066,6 @@ impl<'ctx> Compiler<'ctx> {
                 }
             }
             ast::Expr::FieldAccess(lhs, rhs) => {
-                if let ast::Expr::Var(name) = &lhs.node {
-                    if self.enum_frames.contains_key(name) {
-                        let full_name = format!("{}.{}", name, rhs);
-                        let variant_known = self.enum_frames[name]
-                            .variants
-                            .iter()
-                            .any(|variant| variant == rhs);
-                        if self.private_enum_variants.contains(&full_name) || !variant_known {
-                            return Err(SprsError::Semantic {
-                                code: ErrorCode { category: ErrorCategory::Semantic, number: 4 },
-                                location: self.location(expr.span),
-                                message: format!("Undefined enum variant: {}", full_name),
-                                help: None,
-                            });
-                        }
-                        return Ok(create_atom(
-                            self,
-                            &LabelName::Static(full_name),
-                            module,
-                        )?);
-                    }
-                }
-
                 let lhs_type = self.infer_type(lhs);
 
                 let struct_name = match lhs_type {
@@ -1216,7 +1212,12 @@ impl<'ctx> Compiler<'ctx> {
                 )?)
             }
             ast::Expr::Unit() => Ok(builder_helper::create_unit(self)?),
-            ast::Expr::Atom(name) => Ok(create_atom(self, name, module)?),
+            ast::Expr::Atom(name) => {
+                if let LabelName::Static(static_name) = name {
+                    self.resolve_closed_label_member(static_name, expr.span)?;
+                }
+                Ok(create_atom(self, name, module)?)
+            }
             ast::Expr::Label(name, payload) => {
                 Ok(create_label(self, name, payload, module)?)
             }

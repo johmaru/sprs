@@ -13,7 +13,7 @@ pub fn test() >> str {
                 return c;
             }
 
-            # Keep >> str: int branches return a string marker instead of a++ / a+2.
+            # Keep >> str: i64 branches return a string marker instead of a++ / a+2.
             if a != 4 {
                 return "neq";
             } else {

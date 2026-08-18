@@ -1,12 +1,12 @@
 pkg labels;
 
 pub label :ready;
-label :Color{:red, :blue}
+label Color { red, blue }
 label :local_atom;
 
 
 # Dynamic label name + payload
-pub fn dynamic_payload() >> int {
+pub fn dynamic_payload() >> i64 {
     var item_index = 10;
     var labeled_value = {:"{item_index}-item", 42};
     if @label_is(labeled_value, :"{item_index}-item") {
@@ -21,11 +21,11 @@ pub fn dynamic_name() >> str {
     return @label_name(labeled_value);
 }
 
-fn wrap(input_value >> int) >> Label(:ok, int) {
+fn wrap(input_value >> i64) >> Label(:ok, i64) {
     return {:ok, input_value};
 }
 
-pub fn typed_label_payload() >> int {
+pub fn typed_label_payload() >> i64 {
     return @label_payload(wrap(7));
 }
 
@@ -43,7 +43,7 @@ pub fn atom_identity() >> bool {
     return false;
 }
 
-pub fn attach_slot_roundtrip() >> int {
+pub fn attach_slot_roundtrip() >> i64 {
     @attach({:ok, 7}, <:item);
     return @label_payload(<:item);
 }
@@ -56,7 +56,7 @@ pub fn slot_and_atom_display() {
 
 # --- match (v1: static patterns) ---
 
-pub fn match_label_bind() >> int {
+pub fn match_label_bind() >> i64 {
     match {:ok, 7} ?(var r) {
         case :ok => 1 break;
         case :error => 0 break;
@@ -64,7 +64,7 @@ pub fn match_label_bind() >> int {
     return r;
 }
 
-pub fn match_payload_bind() >> int {
+pub fn match_payload_bind() >> i64 {
     match {:ok, 7} ?(var r) {
         case {:ok, x} => x break;
         case :error => 0 break;
@@ -72,7 +72,7 @@ pub fn match_payload_bind() >> int {
     return r;
 }
 
-pub fn match_atom_bind() >> int {
+pub fn match_atom_bind() >> i64 {
     match :ok ?(var r) {
         case :ok => 1 break;
         case :error => 0 break;
@@ -80,7 +80,7 @@ pub fn match_atom_bind() >> int {
     return r;
 }
 
-pub fn match_no_bind_block() >> int {
+pub fn match_no_bind_block() >> i64 {
     var flag = 0;
     match :error {
         case :ok => {
@@ -93,7 +93,7 @@ pub fn match_no_bind_block() >> int {
     return flag;
 }
 
-pub fn match_expr_wildcard() >> int {
+pub fn match_expr_wildcard() >> i64 {
     var r = match :ok {
         case :ok => 1
         case :error => 0
@@ -102,7 +102,7 @@ pub fn match_expr_wildcard() >> int {
     return r;
 }
 
-pub fn match_expr_default() >> int {
+pub fn match_expr_default() >> i64 {
     var r = match :unknown {
         case :ok => 1
         case :error => 0
@@ -111,7 +111,7 @@ pub fn match_expr_default() >> int {
     return r;
 }
 
-pub fn match_expr_payload() >> int {
+pub fn match_expr_payload() >> i64 {
     var r = match {:ok, 7} {
         case {:ok, x} => x
         case _ => 0
@@ -137,12 +137,12 @@ pub fn match_expr_move_str() >> str {
 }
 
 pub fn match_expr_clone_str() >> str {
-    cp var s = "hello";
+    var s = "hello";
     var r = match :ok {
-        case :ok => s
+        case :ok => @clone(s)
         case _ => "x"
     };
-    # `cp` keeps s usable; dropping both must not double-free.
+    # @clone keeps s usable in the arm; _keep then moves the original.
     var _keep = s;
     return r;
 }
@@ -156,13 +156,58 @@ pub fn match_stmt_payload_str() >> str {
 }
 
 pub fn color_frame_identity() >> bool {
-    var color = Color.red;
-    if color == Color.red {
+    var color = :Color.red;
+    if color == :Color.red {
         if color != :red {
             return true;
         }
     }
     return false;
+}
+
+label Palette { red, green, blue }
+
+pub fn palette_access() >> i64 {
+    var c = :Palette.red;
+    return 1;
+}
+
+pub fn palette_multiple() >> i64 {
+    var a = :Palette.red;
+    var b = :Palette.green;
+    var c = :Palette.blue;
+    return 3;
+}
+
+pub fn palette_in_list() >> i64 {
+    var y = [];
+    @list_push(y, :Palette.green);
+    return 1;
+}
+
+pub fn palette_eq_same() >> bool {
+    return :Palette.red == :Palette.red;
+}
+
+pub fn palette_eq_other() >> bool {
+    return :Palette.red == :Palette.green;
+}
+
+pub fn palette_eq_bare_atom() >> bool {
+    return :Palette.red == :red;
+}
+
+pub fn palette_match_red() >> i64 {
+    var r = match :Palette.red {
+        case :Palette.red => 1
+        case :Palette.green => 2
+        case :Palette.blue => 3
+    };
+    return r;
+}
+
+pub fn palette_print() {
+    @println(:Palette.red);
 }
 
 fn local_atom_arg(value) >> bool {
@@ -192,7 +237,7 @@ pub fn local_atom_paths() >> bool {
     return false;
 }
 
-pub fn shadow_local_atom() >> int {
+pub fn shadow_local_atom() >> i64 {
     var local_atom = 7;
     return local_atom;
 }
