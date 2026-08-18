@@ -1,0 +1,172 @@
+pkg errors;
+
+# === Error Mechanism (labels) ===
+
+# Test: @error creates an error label `{:error, reason}`
+fn make_error() >> err {
+    return @error("test error");
+}
+
+# Test: @is_error detects error labels
+pub fn check_error() >> bool {
+    var error_value = make_error();
+    return @is_error(error_value);
+}
+
+# Test: @error_message extracts the reason
+pub fn get_error_message() >> str {
+    var error_value = make_error();
+    return @error_message(error_value);
+}
+
+# Test: ? propagation — returns the error label without running the rest
+pub fn propagate_error() >> err {
+    var error_value = make_error()?;
+    return error_value; # unreachable when error propagates
+}
+
+# Test: label reason (non-string payload renders via format_sprs_value)
+pub fn label_reason_message() >> str {
+    return @error_message(@error(:enoent));
+}
+
+# Test: short-circuit (error + 1 should preserve the error)
+pub fn short_circuit_test() >> bool {
+    var error_value = make_error();
+    var calculated_value = error_value + 1;
+    return @is_error(calculated_value);
+}
+
+# Test: div by zero returns catchable error label
+pub fn div_zero_is_error() >> bool {
+    var error_value = 5 / 0;
+    return @is_error(error_value);
+}
+
+# Test: div by zero error message
+pub fn div_zero_message() >> str {
+    var error_value = 5 / 0;
+    return @error_message(error_value);
+}
+
+# Test: mod by zero returns catchable error label
+pub fn mod_zero_is_error() >> bool {
+    var error_value = 5 % 0;
+    return @is_error(error_value);
+}
+
+# Test: non-error is not an error
+pub fn not_an_error() >> bool {
+    var normal_value = 42;
+    return @is_error(normal_value);
+}
+
+# Test: ? does not propagate ordinary labels such as :ok
+fn make_ok() >> Label(:ok, int) {
+    return {:ok, 7};
+}
+
+pub fn question_keeps_ok() >> int {
+    var ok_value = make_ok()?;
+    return @label_payload(ok_value);
+}
+
+fn make_try_ok() >> str {
+    return "try-ok";
+}
+
+pub fn question_moves_string() >> str {
+    var text = make_try_ok()?;
+    return text;
+}
+
+fn stored_error() >> err {
+    var stored = @error("stored");
+    return stored?;
+}
+
+pub fn stored_error_message() >> str {
+    return @error_message(stored_error());
+}
+
+# Overflow: same-width + hits every integer tag max+1.
+pub fn overflow_add_boundaries() >> bool {
+    if @not(@is_error(@cast(127, i8) + @cast(1, i8))) {
+        return false;
+    }
+    if @not(@is_error(@cast(255, u8) + @cast(1, u8))) {
+        return false;
+    }
+    if @not(@is_error(@cast(32767, i16) + @cast(1, i16))) {
+        return false;
+    }
+    if @not(@is_error(@cast(65535, u16) + @cast(1, u16))) {
+        return false;
+    }
+    if @not(@is_error(@cast(2147483647, i32) + @cast(1, i32))) {
+        return false;
+    }
+    if @not(@is_error(@cast(4294967295, u32) + @cast(1, u32))) {
+        return false;
+    }
+    if @not(@is_error(9223372036854775807 + 1)) {
+        return false;
+    }
+    return true;
+}
+
+# Overflow: - * / % covering signed, unsigned, narrow, and 64-bit.
+pub fn overflow_other_ops() >> bool {
+    if @not(@is_error(@cast(-128, i8) - @cast(1, i8))) {
+        return false;
+    }
+    if @not(@is_error(@cast(0, u8) - @cast(1, u8))) {
+        return false;
+    }
+    if @not(@is_error(@cast(100, i8) * @cast(100, i8))) {
+        return false;
+    }
+    if @not(@is_error(@lshift(@cast(1, u64), 63) * @cast(2, u64))) {
+        return false;
+    }
+    if @not(@is_error(@lshift(@cast(1, i64), 63) / @cast(-1, i64))) {
+        return false;
+    }
+    if @not(@is_error(@lshift(@cast(1, i64), 63) % @cast(-1, i64))) {
+        return false;
+    }
+    return true;
+}
+
+pub fn propagate_overflow() >> int {
+    var value = (9223372036854775807 + 1)?;
+    return value;
+}
+
+pub fn overflow_label_contract() >> bool {
+    var value = 9223372036854775807 + 1;
+    if @not(@label_payload(value) == :overflow) {
+        return false;
+    }
+    if @not(@error_message(value) == ":overflow") {
+        return false;
+    }
+    if @not(@is_error(value + 1)) {
+        return false;
+    }
+    if @not(@label_payload(propagate_overflow()) == :overflow) {
+        return false;
+    }
+    return true;
+}
+
+pub fn overflow_normal_boundaries() >> bool {
+    if @not(@cast(126, i8) + @cast(1, i8) == @cast(127, i8)) {
+        return false;
+    }
+    if @not(@cast(127, i8) + @cast(1, i16) == 128) {
+        return false;
+    }
+    return true;
+}
+

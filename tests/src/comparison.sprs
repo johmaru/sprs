@@ -1,0 +1,178 @@
+pkg comparison;
+
+# === Comparison ===
+
+pub fn eq_as_bool() >> bool {
+    return 5 == 5;
+}
+
+pub fn eq_true() >> i64 {
+    if 5 == 5 {
+        return 1;
+    }
+    return 0;
+}
+
+pub fn eq_false() >> i64 {
+    if 5 == 3 {
+        return 1;
+    }
+    return 0;
+}
+
+pub fn neq_true() >> i64 {
+    if 5 != 3 {
+        return 1;
+    }
+    return 0;
+}
+
+pub fn neq_false() >> i64 {
+    if 5 != 5 {
+        return 1;
+    }
+    return 0;
+}
+
+pub fn lt_true() >> i64 {
+    if 3 < 5 {
+        return 1;
+    }
+    return 0;
+}
+
+pub fn lt_false() >> i64 {
+    if 5 < 3 {
+        return 1;
+    }
+    return 0;
+}
+
+pub fn gt_true() >> i64 {
+    if 5 > 3 {
+        return 1;
+    }
+    return 0;
+}
+
+pub fn gt_false() >> i64 {
+    if 3 > 5 {
+        return 1;
+    }
+    return 0;
+}
+
+pub fn le_true() >> i64 {
+    if 5 <= 5 {
+        return 1;
+    }
+    return 0;
+}
+
+pub fn le_false() >> i64 {
+    if 6 <= 5 {
+        return 1;
+    }
+    return 0;
+}
+
+pub fn ge_true() >> i64 {
+    if 5 >= 5 {
+        return 1;
+    }
+    return 0;
+}
+
+pub fn ge_false() >> i64 {
+    if 4 >= 5 {
+        return 1;
+    }
+    return 0;
+}
+
+# === Shift (lshift/rshift macros) ===
+
+pub fn lshift_basic() >> i64 {
+    return @lshift(1, 4);
+}
+
+pub fn lshift_zero() >> i64 {
+    return @lshift(100, 0);
+}
+
+pub fn lshift_large() >> i64 {
+    return @lshift(1, 20);
+}
+
+pub fn rshift_basic() >> i64 {
+    return @rshift(256, 4);
+}
+
+pub fn rshift_zero() >> i64 {
+    return @rshift(100, 0);
+}
+
+pub fn rshift_to_zero() >> i64 {
+    return @rshift(1, 4);
+}
+
+pub fn shift_with_vars() >> i64 {
+    var v = 16;
+    var n = 2;
+    return @lshift(v, n);
+}
+
+pub fn shift_in_expr() >> i64 {
+    return @lshift(1, 4) + @rshift(256, 4);
+}
+
+pub fn rshift_signed_negative() >> i64 {
+    var neg = 0 - 8;
+    return @rshift(neg, 2);
+}
+
+pub fn lshift_then_rshift() >> i64 {
+    var x = 3;
+    return @rshift(@lshift(x, 4), 2);
+}
+
+pub fn shift_chain() >> i64 {
+    return @lshift(@rshift(@lshift(255, 8), 4), 2);
+}
+
+pub fn rshift_all_bits() >> i64 {
+    var v = 0 - 1;
+    return @rshift(v, 63);
+}
+
+# === Not (@not macro) ===
+
+pub fn not_zero() >> i64 {
+    if @not(0) { return 1; } else { return 0; }
+    return 0;
+}
+
+pub fn not_nonzero() >> i64 {
+    if @not(5) { return 1; } else { return 0; }
+    return 0;
+}
+
+pub fn not_negative() >> i64 {
+    var v = 0 - 3;
+    if @not(v) { return 1; } else { return 0; }
+    return 0;
+}
+
+pub fn not_expr() >> i64 {
+    if @not(1 + 1) { return 1; } else { return 0; }
+    return 0;
+}
+
+pub fn not_in_if() >> i64 {
+    if @not(0) {
+        return 42;
+    } else {
+        return 0;
+    }
+    return 0;
+}

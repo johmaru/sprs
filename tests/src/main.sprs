@@ -1,0 +1,257 @@
+pkg main;
+
+import arithmetic;
+import comparison;
+import control_flow;
+import variables;
+import functions;
+import data_structures;
+import types;
+import test;
+import errors;
+import labels;
+import buffers;
+import unsafe_mem;
+import function_build;
+
+# === Main ===
+
+fn main() {
+    @println("=== Arithmetic ===");
+    @println(arithmetic.add_basic());
+    @println(arithmetic.sub_basic());
+    @println(arithmetic.mul_basic());
+    @println(arithmetic.div_basic());
+    @println(arithmetic.mod_basic());
+    @println(arithmetic.neg_sub());
+    @println(arithmetic.complex_expr());
+    @println(arithmetic.precedence());
+    @println(arithmetic.all_ops());
+    @println(arithmetic.chained());
+    @println(arithmetic.zero_div_pattern());
+    @println(arithmetic.large_numbers());
+    @println(arithmetic.sub_to_zero());
+
+    @println("=== Comparison ===");
+    @println(comparison.eq_as_bool());
+    @println(comparison.eq_true());
+    @println(comparison.eq_false());
+    @println(comparison.neq_true());
+    @println(comparison.neq_false());
+    @println(comparison.lt_true());
+    @println(comparison.lt_false());
+    @println(comparison.gt_true());
+    @println(comparison.gt_false());
+    @println(comparison.le_true());
+    @println(comparison.le_false());
+    @println(comparison.ge_true());
+    @println(comparison.ge_false());
+
+    @println("=== Control Flow ===");
+    @println(control_flow.if_then());
+    @println(control_flow.if_else());
+    @println(control_flow.if_elseif_chain());
+    @println(control_flow.while_basic());
+    @println(control_flow.nested_if());
+    @println(control_flow.while_with_if());
+    @println(control_flow.if_returns_early());
+    @println(control_flow.while_counter());
+
+    @println("=== Variables ===");
+    @println(variables.var_assign());
+    @println(variables.var_reassign());
+    @println(variables.multiple_vars());
+    @println(variables.var_shadow());
+    @println(variables.var_in_loop());
+    @println(variables.var_math());
+    @println(variables.chained_assign());
+    @println(variables.chained_assign_string());
+    @println(variables.str_eq_same());
+    @println(variables.escaped_keyword_var());
+
+    @println("=== cp / @move ===");
+    @println(variables.cp_print_twice());
+    @println(variables.cp_move_invalidates());
+    @println(variables.cp_assign_keeps_source());
+    @println(variables.assign_moves_string());
+    @println(variables.self_assign_string());
+    @println(variables.cp_call_twice());
+
+    @println("=== Functions ===");
+    @println(functions.call_with_args());
+    @println(functions.nested_calls());
+    @println(functions.function_with_locals());
+    @println(functions.call_private());
+    @println(functions.test_recursion());
+    @println(functions.test_fib());
+    @println(functions.early_return());
+    @println(functions.deep_recursion());
+
+    @println("=== FunctionBuild ===");
+    @println(function_build.fb_add(3, 4));
+    @println(function_build.echo_a(9));
+    @println(function_build.echo_b(11));
+    @println(function_build.forward_value());
+
+    @println("=== Lists ===");
+    @println(data_structures.list_push_and_print());
+    @println(data_structures.list_with_vars());
+    @println(data_structures.list_build_loop());
+    @println(data_structures.list_empty());
+    @println(data_structures.list_index_read());
+
+    @println("=== Cast ===");
+    @println(types.cast_i8());
+    @println(types.cast_u8());
+    @println(types.cast_i16());
+    @println(types.cast_u16());
+    @println(types.cast_i32());
+    @println(types.cast_u32());
+    @println(types.cast_i64());
+    @println(types.cast_u64());
+    @println(types.cast_arithmetic());
+    @println(types.cast_loop());
+    @println(types.cast_mixed());
+    @println(types.fcast_int());
+    @println(types.fcast_bool());
+    @println(types.fcast_str());
+    @println(types.fcast_unsupported_is_error());
+    @println(types.fcast_unsupported_message());
+    @println(types.fcast_preserves_error());
+    @println("bool test : " + @fcast(comparison.eq_as_bool()));
+    @println("=== BUG-L08 Verify ===");
+    @println(types.cast_uint32_to_fp64());
+    @println(types.cast_int32_to_fp64());
+    @println("=== Shift ===");
+    @println(comparison.lshift_basic());
+    @println(comparison.lshift_zero());
+    @println(comparison.lshift_large());
+    @println(comparison.rshift_basic());
+    @println(comparison.rshift_zero());
+    @println(comparison.rshift_to_zero());
+    @println(comparison.shift_with_vars());
+    @println(comparison.shift_in_expr());
+    @println(comparison.rshift_signed_negative());
+    @println(comparison.lshift_then_rshift());
+    @println(comparison.shift_chain());
+    @println(comparison.rshift_all_bits());
+    @println("=== Not ===");
+    @println(comparison.not_zero());
+    @println(comparison.not_nonzero());
+    @println(comparison.not_negative());
+    @println(comparison.not_expr());
+    @println(comparison.not_in_if());
+    @println("=== Float ===");
+    @println(types.float_add());
+    @println(types.float_sub());
+    @println(types.float_mul());
+    @println(types.float_div());
+    @println(types.float_complex());
+    @println(types.float_var_arith());
+    # @cast(..., fp16/fp32) is incompatible with >> fp
+    @println(types.float_while_loop());
+    @println(types.float_nested());
+    @println(types.float_mixed());
+    @println("=== String ===");
+    @println(types.call_str_fn());
+    @println(types.get_greeting());
+    @println(types.get_static_str());
+
+    @println("=== Increment ===");
+    @println(arithmetic.incr_basic());
+    @println(arithmetic.decr_basic());
+    @println(arithmetic.incr_in_loop());
+    @println(arithmetic.decr_in_loop());
+    @println(arithmetic.incr_multiple());
+    @println(arithmetic.decr_to_zero());
+    @println(arithmetic.incr_and_use());
+
+    @println("=== Struct ===");
+    @println(data_structures.struct_create_x());
+    @println(data_structures.struct_create_y());
+    @println(data_structures.struct_both_fields());
+    @println(data_structures.struct_in_function());
+    @println(data_structures.flag_true());
+    @println(data_structures.flag_false());
+    @println(data_structures.struct_owned_string());
+    @println(data_structures.struct_clone_string());
+    @println(data_structures.struct_move_invalid_field());
+    @println(data_structures.recursive_tree_child_value());
+
+    @println("=== Enum ===");
+    @println(data_structures.enum_access());
+    @println(data_structures.enum_multiple());
+    @println(data_structures.enum_in_list());
+    @println(data_structures.enum_eq_same());
+    @println(data_structures.enum_eq_other());
+    @println(data_structures.enum_eq_bare_atom());
+    @println(data_structures.enum_match_red());
+    data_structures.enum_print();
+
+    @println("=== Module Import ===");
+    @println(test.test());
+
+    @println("=== Error Mechanism ===");
+    @println(errors.check_error());
+    @println(errors.get_error_message());
+    @println(errors.propagate_error());
+    @println(errors.label_reason_message());
+    @println(errors.short_circuit_test());
+    @println(errors.div_zero_is_error());
+    @println(errors.div_zero_message());
+    @println(errors.mod_zero_is_error());
+    @println(errors.not_an_error());
+    @println(errors.question_keeps_ok());
+    @println(errors.question_moves_string());
+    @println(errors.stored_error_message());
+    @println(errors.overflow_add_boundaries());
+    @println(errors.overflow_other_ops());
+    @println(errors.overflow_label_contract());
+    @println(errors.overflow_normal_boundaries());
+
+    @println("=== Labels ===");
+    @println(labels.dynamic_payload());
+    @println(labels.dynamic_name());
+    @println(labels.typed_label_payload());
+    @println(labels.static_label_is());
+    @println(labels.atom_identity());
+    @println(labels.attach_slot_roundtrip());
+    labels.slot_and_atom_display();
+    @println(labels.match_label_bind());
+    @println(labels.match_payload_bind());
+    @println(labels.match_atom_bind());
+    @println(labels.match_no_bind_block());
+    @println(labels.match_expr_wildcard());
+    @println(labels.match_expr_default());
+    @println(labels.match_expr_payload());
+    @println(labels.match_expr_payload_str());
+    @println(labels.match_expr_move_str());
+    @println(labels.match_expr_clone_str());
+    @println(labels.match_stmt_payload_str());
+    @println(ready == :ready);
+    @println(labels.color_frame_identity());
+    @println(labels.local_atom_paths());
+    @println(labels.shadow_local_atom());
+
+    @println("=== Buffer ===");
+    @println(buffers.buf_macro_roundtrip());
+    @println(buffers.buf_index_sugar());
+    @println(buffers.buf_destroy_exist());
+    @println(buffers.buf_scope_exit_no_destroy());
+    @println(buffers.buf_oob_get());
+    @println(buffers.buf_demo_output());
+
+    @println("=== Unsafe/Defer ===");
+    @println(unsafe_mem.raw_free_roundtrip());
+    @println(unsafe_mem.defer_destroy_ok());
+    @println(unsafe_mem.defer_with_raw_free());
+    @println(unsafe_mem.raw_ptr_print());
+    @println(unsafe_mem.raw_exist_demo());
+
+    # XFAIL: Strings (>> str segfaults — Type::Str ptr bug)
+    # XFAIL: return var (move semantics resets tag to Unit)
+
+    @println("=== All Tests Done ===");
+
+    # div/mod by zero now return catchable error labels (see Error Mechanism section)
+}

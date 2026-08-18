@@ -1,0 +1,145 @@
+pkg types;
+
+# === Cast ===
+
+# Narrow @cast results must be widened before `>> i64` (SPRS-TYP-005).
+pub fn cast_i8() >> i64 {
+    return @cast(@cast(100, i8), i64);
+}
+
+pub fn cast_u8() >> i64 {
+    return @cast(@cast(200, u8), i64);
+}
+
+pub fn cast_i16() >> i64 {
+    return @cast(@cast(1000, i16), i64);
+}
+
+pub fn cast_u16() >> i64 {
+    return @cast(@cast(50000, u16), i64);
+}
+
+pub fn cast_i32() >> i64 {
+    return @cast(@cast(100000, i32), i64);
+}
+
+pub fn cast_u32() >> i64 {
+    return @cast(@cast(3000000000, u32), i64);
+}
+
+pub fn cast_i64() >> i64 {
+    return @cast(999999999999, i64);
+}
+
+pub fn cast_u64() >> i64 {
+    return @cast(@cast(99999999999, u64), i64);
+}
+
+pub fn cast_arithmetic() >> i64 {
+    return @cast(@cast(10, i32) + @cast(5, i32), i64);
+}
+
+pub fn cast_loop() >> i64 {
+    var i = @cast(0, i8);
+    var count = 0;
+    while i < @cast(5, i8) {
+        count = count + 1;
+        i = i + @cast(1, i8);
+    }
+    return count;
+}
+
+# BUG-L08 verification: Uint* tag -> fp64 cast
+# Uses 4294967295 (0xFFFFFFFF) — bit pattern with sign bit set.
+# - Original bug (default bb_f64, bit_cast): ~2.12e-314 (garbage)
+# - Wrong fix (SITOFP): 4294967295.0 (same as correct for u32, but for u64 max it'd be negative)
+# - Correct fix (UITOFP): 4294967295.0
+# For definitive 3-way discrimination we need u64 max, but -1 is not parseable (BUG-F04b).
+# u32 with sign bit set still validates that Uint32 routes to bb_uint (UITOFP) not bb_int (SITOFP):
+#   SITOFP(0xFFFFFFFF as i32) = -1.0, UITOFP(0xFFFFFFFF as u32) = 4294967295.0
+pub fn cast_uint32_to_fp64() >> fp {
+    return @cast(@cast(4294967295, u32), fp64);
+}
+pub fn cast_int32_to_fp64() >> fp {
+    return @cast(@cast(2147483647, i32), fp64);
+}
+
+pub fn cast_mixed() >> i64 { return @cast(1, i8) + @cast(2, i16) + @cast(3, i32); }
+
+pub fn fcast_int() >> str { return @fcast(42); }
+pub fn fcast_bool() >> str { return @fcast(true); }
+pub fn fcast_str() >> str { return @fcast("hello"); }
+pub fn fcast_unsupported_is_error() >> bool { return @is_error(@fcast([1])); }
+pub fn fcast_unsupported_message() >> str { return @error_message(@fcast([1])); }
+pub fn fcast_preserves_error() >> str { return @error_message(@fcast(@error("original"))); }
+
+
+# === Float ===
+
+pub fn float_add() >> fp {
+    return 1.5 + 2.5;
+}
+
+pub fn float_sub() >> fp {
+    return 10.0 - 3.5;
+}
+
+pub fn float_mul() >> fp {
+    return 2.5 * 4.0;
+}
+
+pub fn float_div() >> fp {
+    return 10.0 / 4.0;
+}
+
+pub fn float_complex() >> fp {
+    return (1.5 + 2.5) * 2.0;
+}
+
+pub fn float_var_arith() >> fp {
+    var a = 5.2;
+    var b = 7.3;
+    return a + b;
+}
+
+# XFAIL: >> fp + @cast return (infer_type @cast bug)
+# fn float_cast_f16() >> fp { return @cast(1.5, fp16); }
+# fn float_cast_f32() >> fp { return @cast(3.14, fp32); }
+# fn float_cast_f64() >> fp { return @cast(2.71828, fp64); }
+
+pub fn float_while_loop() >> i64 {
+    var v = @cast(0.0, fp16);
+    var count = 0;
+    while v < @cast(1.0, fp16) {
+        count = count + 1;
+        v = v + @cast(0.25, fp16);
+    }
+    return count;
+}
+
+pub fn float_nested() >> fp {
+    return (1.0 + 2.0) * (3.0 + 4.0);
+}
+
+pub fn float_mixed() >> fp {
+    var x = 12.3;
+    return x + 0.1;
+}
+
+# === String ===
+
+pub fn get_greeting() >> str {
+    return "hello" + " world";
+}
+
+pub fn get_static_str() >> str {
+    return "sprs";
+}
+
+pub fn call_str_fn() >> i64 {
+    var s = get_greeting();
+    @println(s);
+    var s2 = get_static_str();
+    @println(s2);
+    return 1;
+}

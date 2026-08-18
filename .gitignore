@@ -4,3 +4,7 @@ libruntime.a
 main_exec
 output.ll
 *.o
+*.ll
+/build/
+tests/build/
+/docs/book/

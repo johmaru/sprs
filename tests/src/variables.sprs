@@ -1,0 +1,135 @@
+pkg variables;
+
+# === Variables ===
+
+pub fn var_assign() >> i64 {
+    var x = 10;
+    x = 20;
+    return x;
+}
+
+pub fn var_reassign() >> i64 {
+    var x = 1;
+    x = 2;
+    x = 3;
+    return x;
+}
+
+pub fn multiple_vars() >> i64 {
+    var a = 1;
+    var b = 2;
+    var c = 3;
+    return a + b + c;
+}
+
+pub fn var_shadow() >> i64 {
+    var x = 1;
+    var x = 2;
+    return x;
+}
+
+pub fn var_in_loop() >> i64 {
+    var total = 0;
+    var i = 0;
+    while i < 5 {
+        var temp = i * 2;
+        total = total + temp;
+        i = i + 1;
+    }
+    return total;
+}
+
+pub fn var_math() >> i64 {
+    var a = 10;
+    var b = 20;
+    var c = a + b;
+    var d = c * 2;
+    return d;
+}
+
+# === cp (always-clone) / @move ===
+
+# Issue #30: cp var can be read twice without @clone
+pub fn cp_print_twice() >> i64 {
+    cp var greeting = "Hello, Sprs!";
+    @println(greeting);
+    @println(greeting);
+    return 1;
+}
+
+# Issue #30: @move(cp) transfers ownership; binding becomes Unit
+pub fn cp_move_invalidates() >> i64 {
+    cp var greeting = "bye";
+    @println(@move(greeting));
+    @println(greeting);
+    return 1;
+}
+
+# Reading a cp source into a new binding clones; source stays valid
+pub fn cp_assign_keeps_source() >> i64 {
+    cp var a = "keep";
+    var b = a;
+    @println(a);
+    @println(b);
+    return 1;
+}
+
+# non-cp assign must move value (not store Unit)
+pub fn assign_moves_string() >> i64 {
+    var a = "from_a";
+    var b = "old_b";
+    b = a;
+    @println(b);
+    @println(a);
+    return 1;
+}
+
+# self-assign is a no-op
+pub fn self_assign_string() >> i64 {
+    var s = "self";
+    s = s;
+    @println(s);
+    return 1;
+}
+
+# cp passed to a function can be used again
+pub fn cp_call_twice() >> i64 {
+    cp var e = "arg";
+    @println(echo_str(e));
+    @println(echo_str(e));
+    return 1;
+}
+
+fn echo_str(x) {
+    return x;
+}
+
+pub fn chained_assign() >> i64 {
+    var a;
+    var b;
+    var c = 3;
+    a = b = c;
+    return a;
+}
+
+pub fn str_eq_same() >> i64 {
+    if "ab" + "c" == "abc" {
+        return 1;
+    }
+    return 0;
+}
+
+pub fn escaped_keyword_var() >> i64 {
+    var ^fn = 41;
+    ^fn = ^fn + 1;
+    return ^fn;
+}
+
+pub fn chained_assign_string() >> str {
+    var a;
+    var b;
+    var c = "chain";
+    a = b = c;
+    return a;
+}
+

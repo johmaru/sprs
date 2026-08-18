@@ -19,39 +19,68 @@ pub enum Token {
     EqEq,
     Neq,
     Lt,
+    LtColon,
     Gt,
     GtGt,
+    Question,
+    QuestionLParen,
+    Match,
+    Case,
+    Break,
+    FatArrow,
     Le,
     Ge,
     Dot,
     DotDot,
     Semi,
     Comma,
+    Colon,
+    Macro(String),
     StrLiteral(String),
     Bool(bool),
     If,
-    Then,
     Else,
     While,
     Ident(String),
     Num(i64),
     Float(f64),
     Function,
+    Use,
+    FunctionBuild,
+    Private,
+    FbArgs,
+    FbRetTy,
+    FbVisibility,
     Return,
-    Preprocessor,
+    Preprocessor(String),
     Package,
     Import,
     Var,
     Public,
     Enum,
     Struct,
+    Copy,
+
+    Ambi,
+    InstanceCreate,
+    Destroy,
+    Exist,
+    Unsafe,
+    Defer,
 
     // System types
     TypeInt,
     TypeFloat,
     TypeBool,
     TypeStr,
+    TypeList,
+    TypeBuffer,
+    TypeRawPtr,
+    TypeRange,
     TypeUnit,
+    TypeError,
+    TypeLabel,
+    TypeAtomKw,
 
     TypeI8,
     TypeU8,
@@ -101,6 +130,8 @@ enum RawTok {
     EqEq,
     #[token("!=")]
     Neq,
+    #[token("<:")]
+    LtColon,
     #[token("<")]
     Lt,
     #[token(">")]
@@ -117,28 +148,41 @@ enum RawTok {
     Semi,
     #[token(",")]
     Comma,
-    #[regex(r#""[^"]*""#, |lex| {
+    #[token(":")]
+    Colon,
+    #[regex(r#""(\\.|[^"\\])*""#, |lex| {
         let slice = lex.slice();
-        slice[1..slice.len()-1].to_string()
+        // Strip the surrounding quotes, then unescape the content.
+        let raw = &slice[1..slice.len() - 1];
+        unescape_sprs_string(raw)
     })]
     StrLiteral(String),
     #[token("if")]
     If,
-    #[token("then")]
-    Then,
     #[token("else")]
     Else,
     #[token("while")]
     While,
+    #[token("@FbArgs", priority = 10)]
+    FbArgs,
+    #[token("@FbRetTy", priority = 10)]
+    FbRetTy,
+    #[token("@FbVisibility", priority = 10)]
+    FbVisibility,
+    #[regex(r"@[A-Za-z_][A-Za-z0-9_]*", |lex| lex.slice()[1..].to_string())]
+    MacroIdent(String),
     #[regex(r"[A-Za-z_][A-Za-z0-9_]*!?")]
     Ident,
-    #[regex(r"[0-9]+\.[0-9]+")]
+    #[regex(r"\^[A-Za-z_][A-Za-z0-9_]*!?", |lex| lex.slice()[1..].to_string())]
+    EscapedIdent(String),
+    #[regex(r"[0-9]+\.[0-9]+([eE][+-]?[0-9]+)?")]
+    #[regex(r"[0-9]+[eE][+-]?[0-9]+")]
     Float,
     #[regex(r"[0-9]+")]
     Num,
     #[regex(r"[ \t\r\n\f]+", logos::skip)]
     WS,
-    #[regex(r"# [^\n]*", logos::skip)]
+    #[regex(r"#[^\n]*", logos::skip, allow_greedy = true)]
     Comment,
     #[token("true")]
     True,
@@ -146,12 +190,34 @@ enum RawTok {
     False,
     #[token("fn")]
     Function,
+    #[token("use")]
+    Use,
+    #[token("function_build")]
+    FunctionBuild,
+    #[token("private")]
+    Private,
     #[token(">>")]
     GtGt,
+    #[token("?")]
+    Question,
+    #[token("?(")]
+    QuestionLParen,
+    #[token("match")]
+    Match,
+    #[token("case")]
+    Case,
+    #[token("break")]
+    Break,
+    #[token("=>")]
+    FatArrow,
     #[token("return")]
     Return,
-    #[token("#define")]
-    Preprocessor,
+    #[regex(r"#define[ \t]+FunctionBuild[ \t]+[A-Za-z_][A-Za-z0-9_]*", |lex| {
+        lex.slice().split_ascii_whitespace().last().unwrap().to_owned()
+    }, priority = 5)]
+    FunctionBuildSource(String),
+    #[regex(r"#[a-z]+[ \t]+[A-Za-z_][A-Za-z0-9_]*", |lex| lex.slice().split_ascii_whitespace().nth(1).unwrap().to_owned(), priority = 4)]
+    Preprocessor(String),
     #[token("pkg")]
     Package,
     #[token("import")]
@@ -164,7 +230,20 @@ enum RawTok {
     Enum,
     #[token("struct")]
     Struct,
-
+    #[token("cp")]
+    Copy,
+    #[token("ambi")]
+    Ambi,
+    #[token("new")]
+    InstanceCreate,
+    #[token("destroy")]
+    Destroy,
+    #[token("exist")]
+    Exist,
+    #[token("unsafe")]
+    Unsafe,
+    #[token("defer")]
+    Defer,
     // System types
     #[token("int")]
     TypeInt,
@@ -174,8 +253,22 @@ enum RawTok {
     TypeBool,
     #[token("str")]
     TypeStr,
+    #[token("list")]
+    TypeList,
+    #[token("buffer")]
+    TypeBuffer,
+    #[token("rawptr")]
+    TypeRawPtr,
+    #[token("range")]
+    TypeRange,
     #[token("unit")]
     TypeUnit,
+    #[token("err")]
+    TypeError,
+    #[token("label")]
+    TypeLabel,
+    #[token("atom")]
+    TypeAtomKw,
 
     #[token("i8")]
     TypeI8,
@@ -222,16 +315,21 @@ impl<'input> Iterator for Lexer<'input> {
     fn next(&mut self) -> Option<Self::Item> {
         let res = self.inner.next()?;
         let span = self.inner.span();
-        let s = span.start;
-        let e = span.end;
+        let span_start = span.start;
+        let span_end = span.end;
 
         let tok = match res {
-            Ok(t) => t,
-            Err(()) => return Some(Err(format!("invalid token at {}..{}", s, e))),
+            Ok(token_value) => token_value,
+            Err(()) => {
+                return Some(Err(format!(
+                    "invalid token at {}..{}",
+                    span_start, span_end
+                )));
+            }
         };
 
-        let text = &self.input[s..e];
-        let t = match tok {
+        let text = &self.input[span_start..span_end];
+        let token_value = match tok {
             RawTok::LBrace => Token::LBrace,
             RawTok::RBrace => Token::RBrace,
             RawTok::LBracket => Token::LBracket,
@@ -248,29 +346,63 @@ impl<'input> Iterator for Lexer<'input> {
             RawTok::Assign => Token::Assign,
             RawTok::EqEq => Token::EqEq,
             RawTok::Neq => Token::Neq,
+            RawTok::LtColon => Token::LtColon,
             RawTok::Lt => Token::Lt,
             RawTok::Gt => Token::Gt,
             RawTok::GtGt => Token::GtGt,
+            RawTok::Question => Token::Question,
+            RawTok::QuestionLParen => Token::QuestionLParen,
+            RawTok::Match => Token::Match,
+            RawTok::Case => Token::Case,
+            RawTok::Break => Token::Break,
+            RawTok::FatArrow => Token::FatArrow,
             RawTok::Le => Token::Le,
             RawTok::Ge => Token::Ge,
             RawTok::Dot => Token::Dot,
             RawTok::DotDot => Token::DotDot,
             RawTok::Semi => Token::Semi,
             RawTok::Comma => Token::Comma,
-            RawTok::StrLiteral(s) => Token::StrLiteral(s),
+            RawTok::Colon => Token::Colon,
+            RawTok::StrLiteral(span_start) => Token::StrLiteral(span_start),
             RawTok::If => Token::If,
-            RawTok::Then => Token::Then,
             RawTok::Else => Token::Else,
             RawTok::While => Token::While,
             RawTok::Ident => Token::Ident(text.to_string()),
-            RawTok::Num => Token::Num(text.parse().unwrap()),
-            RawTok::Float => Token::Float(text.parse().unwrap()),
+            RawTok::EscapedIdent(name) => Token::Ident(name),
+            RawTok::MacroIdent(name) => Token::Macro(name),
+            RawTok::Num => match text.parse::<i64>() {
+                Ok(integer_value) => Token::Num(integer_value),
+                Err(span_end) => {
+                    return Some(Err(format!(
+                        "invalid integer literal '{}': {}",
+                        text, span_end
+                    )));
+                }
+            },
+            RawTok::Float => match text.parse::<f64>() {
+                Ok(float_value) => Token::Float(float_value),
+                Err(span_end) => {
+                    return Some(Err(format!(
+                        "invalid float literal '{}': {}",
+                        text, span_end
+                    )));
+                }
+            },
             RawTok::True => Token::Bool(true),
             RawTok::False => Token::Bool(false),
             RawTok::WS => unreachable!(),
             RawTok::Function => Token::Function,
+            RawTok::Use => Token::Use,
+            RawTok::FunctionBuild => Token::FunctionBuild,
+            RawTok::Private => Token::Private,
+            RawTok::FbArgs => Token::FbArgs,
+            RawTok::FbRetTy => Token::FbRetTy,
+            RawTok::FbVisibility => Token::FbVisibility,
             RawTok::Return => Token::Return,
-            RawTok::Preprocessor => Token::Preprocessor,
+            RawTok::FunctionBuildSource(value) => {
+                Token::Preprocessor(format!("FunctionBuild {}", value))
+            }
+            RawTok::Preprocessor(value) => Token::Preprocessor(value),
             RawTok::Package => Token::Package,
             RawTok::Import => Token::Import,
             RawTok::Var => Token::Var,
@@ -278,13 +410,26 @@ impl<'input> Iterator for Lexer<'input> {
             RawTok::Enum => Token::Enum,
             RawTok::Struct => Token::Struct,
             RawTok::Comment => return self.next(),
-
+            RawTok::Copy => Token::Copy,
+            RawTok::Ambi => Token::Ambi,
+            RawTok::InstanceCreate => Token::InstanceCreate,
+            RawTok::Destroy => Token::Destroy,
+            RawTok::Exist => Token::Exist,
+            RawTok::Unsafe => Token::Unsafe,
+            RawTok::Defer => Token::Defer,
             // System types
             RawTok::TypeInt => Token::TypeInt,
             RawTok::TypeFloat => Token::TypeFloat,
             RawTok::TypeBool => Token::TypeBool,
             RawTok::TypeStr => Token::TypeStr,
+            RawTok::TypeList => Token::TypeList,
+            RawTok::TypeBuffer => Token::TypeBuffer,
+            RawTok::TypeRawPtr => Token::TypeRawPtr,
+            RawTok::TypeRange => Token::TypeRange,
             RawTok::TypeUnit => Token::TypeUnit,
+            RawTok::TypeError => Token::TypeError,
+            RawTok::TypeLabel => Token::TypeLabel,
+            RawTok::TypeAtomKw => Token::TypeAtomKw,
 
             RawTok::TypeI8 => Token::TypeI8,
             RawTok::TypeU8 => Token::TypeU8,
@@ -299,6 +444,69 @@ impl<'input> Iterator for Lexer<'input> {
             RawTok::TypeF32 => Token::TypeF32,
             RawTok::TypeF64 => Token::TypeF64,
         };
-        Some(Ok((s, t, e)))
+        Some(Ok((span_start, token_value, span_end)))
     }
+}
+
+/// Unescape a Sprs string literal body (the text between the enclosing `"`s).
+/// Supports: `\n`, `\t`, `\r`, `\0`, `\\`, `\"`, `\'`, and `\u{XXXX}`.
+/// An unknown escape or a dangling backslash is passed through literally so
+/// the user sees the raw characters rather than a panic.
+fn unescape_sprs_string(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut chars = raw.chars();
+    while let Some(character) = chars.next() {
+        if character != '\\' {
+            out.push(character);
+            continue;
+        }
+        // Escape sequence.
+        match chars.next() {
+            Some('n') => out.push('\n'),
+            Some('t') => out.push('\t'),
+            Some('r') => out.push('\r'),
+            Some('0') => out.push('\0'),
+            Some('\\') => out.push('\\'),
+            Some('"') => out.push('"'),
+            Some('\'') => out.push('\''),
+            Some('u') => {
+                // Expect `{XXXX}` (1..6 hex digits).
+                if chars.next() != Some('{') {
+                    // Not a valid \u escape — emit verbatim.
+                    out.push_str("\\u");
+                    continue;
+                }
+                let mut hex = String::new();
+                let mut depth = 0;
+                for ch in chars.by_ref() {
+                    depth += 1;
+                    if depth > 6 {
+                        break;
+                    }
+                    if ch == '}' {
+                        break;
+                    }
+                    if ch.is_ascii_hexdigit() {
+                        hex.push(ch);
+                    } else {
+                        break;
+                    }
+                }
+                match u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
+                    Some(ch) => out.push(ch),
+                    None => out.push_str("\\u{"),
+                }
+            }
+            Some(other) => {
+                // Unknown escape: keep the backslash and the character.
+                out.push('\\');
+                out.push(other);
+            }
+            None => {
+                // Dangling backslash at end of string.
+                out.push('\\');
+            }
+        }
+    }
+    out
 }

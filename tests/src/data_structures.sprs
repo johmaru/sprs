@@ -1,0 +1,222 @@
+pkg data_structures;
+
+# === Lists (list_push only, no index — create_index bug) ===
+
+pub fn list_push_and_print() >> i64 {
+    var y = [];
+    @list_push(y, 42);
+    @list_push(y, 100);
+    @list_push(y, 200);
+    return 1;
+}
+
+pub fn list_with_vars() >> i64 {
+    var y = [];
+    var z = 20;
+    @list_push(y, z);
+    var w = 30;
+    @list_push(y, w);
+    return 1;
+}
+
+pub fn list_build_loop() >> i64 {
+    var y = [];
+    var i = 0;
+    while i < 5 {
+        @list_push(y, i);
+        i = i + 1;
+    }
+    return 1;
+}
+
+pub fn list_empty() >> i64 {
+    var y = [];
+    return 1;
+}
+
+# create_index List branch (former XFAIL: StructValue panic)
+pub fn list_index_read() >> i64 {
+    var y = [];
+    @list_push(y, 10);
+    @list_push(y, 20);
+    var first = y[0];
+    if first != 10 {
+        return 0;
+    }
+    if y[1] != 20 {
+        return 0;
+    }
+    return 1;
+}
+
+# === Struct ===
+
+struct Point {
+    x >> i64,
+    y >> i64
+}
+
+pub fn struct_create_x() >> i64 {
+    var p = @init(Point {
+        x = 10,
+        y = 20
+    });
+    return p.x;
+}
+
+pub fn struct_create_y() >> i64 {
+    var p = @init(Point {
+        x = 100,
+        y = 200
+    });
+    return p.y;
+}
+
+pub fn struct_both_fields() >> i64 {
+    var p = @init(Point {
+        x = 5,
+        y = 15
+    });
+    return p.x + p.y;
+}
+
+pub fn struct_in_function() >> i64 {
+    var p = @init(Point {
+        x = 1,
+        y = 2
+    });
+    var sum = p.x + p.y;
+    return sum;
+}
+
+struct PointHolder {
+    point >> Point
+}
+
+fn identity_point(value >> Point) >> Point {
+    return value;
+}
+
+struct ForwardA {
+    b >> ForwardB
+}
+
+struct ForwardB {
+    a >> ForwardA
+}
+
+struct Tree {
+    value >> i64,
+    children >> List(Self)
+}
+
+pub fn recursive_tree_child_value() >> i64 {
+    var leaf = @init(Tree {
+        value = 1,
+        children = []
+    });
+    var children = [leaf];
+    var root = @init(Tree {
+        value = 0,
+        children = children
+    });
+    return root.children[0].value;
+}
+
+# === Enum ===
+
+enum Palette {
+    Red,
+    Green,
+    Blue
+}
+
+pub fn enum_access() >> i64 {
+    var c = Palette.Red;
+    return 1;
+}
+
+pub fn enum_multiple() >> i64 {
+    var a = Palette.Red;
+    var b = Palette.Green;
+    var c = Palette.Blue;
+    return 3;
+}
+
+pub fn enum_in_list() >> i64 {
+    var y = [];
+    @list_push(y, Palette.Green);
+    return 1;
+}
+
+pub fn enum_eq_same() >> bool {
+    return Palette.Red == Palette.Red;
+}
+
+pub fn enum_eq_other() >> bool {
+    return Palette.Red == Palette.Green;
+}
+
+pub fn enum_eq_bare_atom() >> bool {
+    return Palette.Red == :Red;
+}
+
+pub fn enum_match_red() >> int {
+    var r = match Palette.Red {
+        case :Red => 1
+        case :Green => 2
+        case :Blue => 3
+    };
+    return r;
+}
+
+pub fn enum_print() {
+    @println(Palette.Red);
+}
+
+pub struct Flag {
+    ok >> bool
+}
+
+pub fn flag_true() >> bool {
+    var p = @init(Flag {
+        ok = true
+    });
+    return p.ok;
+}
+
+pub fn flag_false() >> bool {
+    var p = @init(Flag {
+        ok = false
+    });
+    return p.ok;
+}
+
+pub struct Box {
+    value >> str
+}
+
+pub fn struct_owned_string() >> str {
+    var s = "owned";
+    var box = @init(Box {
+        value = s
+    });
+    return box.value;
+}
+
+pub fn struct_clone_string() >> str {
+    var box = @init(Box {
+        value = "copy"
+    });
+    var other = @clone(box);
+    return other.value;
+}
+
+pub fn struct_move_invalid_field() >> bool {
+    var a = @init(Box {
+        value = "x"
+    });
+    var b = a;
+    return @is_error(a.value);
+}
+

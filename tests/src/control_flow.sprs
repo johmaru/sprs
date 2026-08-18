@@ -1,0 +1,87 @@
+pkg control_flow;
+
+# === Control Flow ===
+
+pub fn if_then() >> i64 {
+    var x = 5;
+    if x > 3 {
+        return 1;
+    }
+    return 0;
+}
+
+pub fn if_else() >> i64 {
+    var x = 2;
+    if x > 3 {
+        return 1;
+    } else {
+        return 2;
+    }
+    return 0;
+}
+
+pub fn if_elseif_chain() >> i64 {
+    var x = 15;
+    if x < 10 {
+        return 1;
+    }
+    if x < 20 {
+        return 2;
+    }
+    if x < 30 {
+        return 3;
+    }
+    return 0;
+}
+
+pub fn while_basic() >> i64 {
+    var i = 0;
+    var sum = 0;
+    while i < 10 {
+        sum = sum + i;
+        i = i + 1;
+    }
+    return sum;
+}
+
+pub fn nested_if() >> i64 {
+    var x = 5;
+    var y = 10;
+    if x > 0 {
+        if y > 5 {
+            return 1;
+        }
+        return 2;
+    }
+    return 0;
+}
+
+pub fn while_with_if() >> i64 {
+    var i = 0;
+    var found = 0;
+    while i <= 20 {
+        if i == 10 {
+            found = i;
+        }
+        i = i + 1;
+    }
+    return found;
+}
+
+pub fn if_returns_early() >> i64 {
+    var x = 42;
+    if x == 42 {
+        return 100;
+    }
+    return 0;
+}
+
+pub fn while_counter() >> i64 {
+    var count = 0;
+    var i = 0;
+    while i < 100 {
+        count = count + 1;
+        i = i + 1;
+    }
+    return count;
+}

@@ -1,0 +1,57 @@
+pkg function_build;
+
+#define FunctionBuild fb_contracts
+
+struct Point {
+    x >> i64
+}
+
+function_build PointFn {
+    @FbArgs(point >> Point);
+    @FbRetTy(i64);
+    @FbVisibility(pub);
+}
+
+function_build Empty {}
+
+fn forward use LaterBuild {
+    return 7;
+}
+
+function_build LaterBuild {
+    @FbRetTy(i64);
+    @FbVisibility(pub);
+}
+
+function_build UnaryI64 {
+    @FbArgs(value >> i64);
+    @FbRetTy(i64);
+    @FbVisibility(pub);
+}
+
+fn fb_add use AddBuild {
+    return lhs + rhs;
+}
+
+fn echo_a use UnaryI64 {
+    return value;
+}
+
+fn echo_b use UnaryI64 {
+    return value;
+}
+
+fn forward_value use LaterBuild {
+    return forward();
+}
+
+fn empty_ok use Empty {
+}
+
+fn point_x use PointFn {
+    return point.x;
+}
+
+fn job_id use JobFn {
+    return job.id;
+}

@@ -1,0 +1,2 @@
+[env]
+LLVM_SYS_221_PREFIX = "/usr/lib/llvm-22"

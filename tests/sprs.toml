@@ -1,0 +1,4 @@
+name = "test_suite"
+version = "0.1.0"
+src_dir = "src"
+out_dir = "build"

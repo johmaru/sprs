@@ -1,0 +1,69 @@
+name: Docs
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - README.md
+      - AGENTS.md
+      - docs/**
+      - .github/workflows/docs.yml
+  pull_request:
+    paths:
+      - README.md
+      - AGENTS.md
+      - docs/**
+      - .github/workflows/docs.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install mdBook
+        run: |
+          set -euo pipefail
+          url="https://github.com/rust-lang/mdBook/releases/download/v0.5.4/mdbook-v0.5.4-x86_64-unknown-linux-gnu.tar.gz"
+          expected="3f28de05dafca9d0f2eab99c662116b0e37b89b1d96a08f8f430b9eeae958cd7"
+          curl -sSL "$url" -o mdbook.tar.gz
+          echo "${expected}  mdbook.tar.gz" | sha256sum -c -
+          tar -xzf mdbook.tar.gz
+          sudo mv mdbook /usr/local/bin/mdbook
+          mdbook --version
+
+      - name: Build book
+        run: mdbook build docs
+
+      - name: Configure Pages
+        if: github.ref == 'refs/heads/master'
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        if: github.ref == 'refs/heads/master'
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: docs/book
+
+  deploy:
+    if: github.ref == 'refs/heads/master'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

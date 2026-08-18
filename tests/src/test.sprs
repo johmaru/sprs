@@ -5,18 +5,19 @@ pub fn test() >> str {
             var b = 10;
             var c = "hello" + " world";
 
-            println!(c);
+            @println(c);
 
             # test equality
 
-            if a == 4 then {
+            if a == 4 {
                 return c;
             }
 
-            if a != 4 then {
-                return a++;
+            # Keep >> str: int branches return a string marker instead of a++ / a+2.
+            if a != 4 {
+                return "neq";
             } else {
-                return a + 2;
+                return "eq-else";
             }
 
             return c;

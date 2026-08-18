@@ -1,0 +1,55 @@
+pkg functions;
+
+# === Functions ===
+
+pub fn add(a, b) >> i64 { return a + b; }
+pub fn call_with_args() >> i64 { return add(3, 4); }
+pub fn nested_calls() >> i64 { return add(add(1, 2), add(3, 4)); }
+pub fn function_with_locals() >> i64 {
+    var a = 10;
+    var b = 20;
+    var c = add(a, b);
+    return c;
+}
+
+pub fn private_helper(n) >> i64 {
+    return n * 2;
+}
+
+pub fn call_private() >> i64 {
+    return private_helper(5);
+}
+
+pub fn factorial(n) >> i64 {
+    if n <= 1 {
+        return 1;
+    }
+    return n * factorial(n - 1);
+}
+
+pub fn test_recursion() >> i64 {
+    return factorial(5);
+}
+
+pub fn fibonacci(n) >> i64 {
+    if n <= 1 {
+        return n;
+    }
+    return fibonacci(n - 1) + fibonacci(n - 2);
+}
+
+pub fn test_fib() >> i64 {
+    return fibonacci(10);
+}
+
+pub fn early_return() >> i64 {
+    var x = 5;
+    if x > 0 {
+        return 100;
+    }
+    return 0;
+}
+
+pub fn deep_recursion() >> i64 {
+    return factorial(7);
+}
