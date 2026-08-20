@@ -529,6 +529,12 @@ fn resolve_item_types(
                         .map_err(|message| semantic(path, func.span, message))?;
                 }
             }
+            ast::Item::VarItem(var) => {
+                if let Some(annot) = &mut var.ty {
+                    type_helper::resolve_type(&mut annot.ty, known_structs, known_closed_sets, None)
+                        .map_err(|message| semantic(path, var.span, message))?;
+                }
+            }
             _ => {}
         }
     }

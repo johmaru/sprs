@@ -739,6 +739,15 @@ impl<'ctx> Compiler<'ctx> {
                 ],
                 false,
             ),
+            "__list_set" => void_type.fn_type(
+                &[
+                    i64_type.into(), // list handle
+                    i64_type.into(), // index
+                    i32_type.into(), // value tag
+                    i64_type.into(), // value data
+                ],
+                false,
+            ),
             // Buffer slot construction (fixed-size byte array via `new(n)`).
             "__buffer_new" => i64_type.fn_type(&[i64_type.into()], false),
             "__buffer_len" => i64_type.fn_type(&[i64_type.into()], false),

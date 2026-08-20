@@ -52,6 +52,30 @@ pub fn call_builtin_macro_list_push<'ctx>(
             help: None,
         });
     }
+    {
+        use crate::front::type_helper::{list_element, types_assignable, Type};
+        let list_ty = self_compiler.infer_type(&args[0]);
+        if let Some(elem_ty) = list_element(&list_ty) {
+            if !matches!(elem_ty, Type::Any) {
+                let val_ty = self_compiler.infer_type_in(&args[1], Some(elem_ty));
+                if !types_assignable(elem_ty, &val_ty) {
+                    return Err(SprsError::Type {
+                        code: ErrorCode {
+                            category: ErrorCategory::Type,
+                            number: 6,
+                        },
+                        location: self_compiler.location(args[1].span),
+                        message: format!(
+                            "Type mismatch: list element has {val_ty}, expected {elem_ty}"
+                        ),
+                        expected_type: Some(format!("{elem_ty}")),
+                        actual_type: Some(format!("{val_ty}")),
+                        help: None,
+                    });
+                }
+            }
+        }
+    }
     let list_ptr = self_compiler
         .compile_expr(&args[0], module)?
         .into_pointer_value();

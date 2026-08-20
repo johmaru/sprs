@@ -65,19 +65,13 @@ fn error_value() >> Label(:error, Any) { return @error(100, "x"); }
     fn parses_app_type_annotations() {
         let src = r#"
 fn first_function(xs >> List(i64)) >> List(i64) { return xs; }
-fn second_function() >> Result(i64, Label(:error, Any)) { return 1; }
+fn second_function(job >> Process(str)) >> Process(str) { return job; }
 fn third_function(xs >> List(Any)) >> List(Any) { return xs; }
 "#;
         let items = parse_only(src, "test.sprs").expect("parse");
 
         let list_int = Type::App("List".into(), vec![Type::TypeI64]);
-        let result_int_err = Type::App(
-            "Result".into(),
-            vec![
-                Type::TypeI64,
-                Type::App("Label".into(), vec![Type::Atom("error".into()), Type::Any]),
-            ],
-        );
+        let process_str = Type::App("Process".into(), vec![Type::Str]);
 
         match &items[0] {
             Item::FunctionItem(function_item) => {
@@ -94,7 +88,7 @@ fn third_function(xs >> List(Any)) >> List(Any) { return xs; }
         }
         match &items[1] {
             Item::FunctionItem(function_item) => {
-                assert_eq!(function_item.ret_ty.as_ref(), Some(&result_int_err));
+                assert_eq!(function_item.ret_ty.as_ref(), Some(&process_str));
             }
             other => panic!("expected second function, got {:?}", other),
         }
@@ -119,17 +113,11 @@ fn third_function(xs >> List(Any)) >> List(Any) { return xs; }
 
     #[test]
     fn parses_nested_app_type_annotation() {
-        let src = "fn nested_value(input_value >> List(Result(i64, Label(:error, Any)))) { return; }\n";
+        let src = "fn nested_value(input_value >> List(Process(i64))) { return; }\n";
         let items = parse_only(src, "test.sprs").expect("parse");
         let expected = Type::App(
             "List".into(),
-            vec![Type::App(
-                "Result".into(),
-                vec![
-                    Type::TypeI64,
-                    Type::App("Label".into(), vec![Type::Atom("error".into()), Type::Any]),
-                ],
-            )],
+            vec![Type::App("Process".into(), vec![Type::TypeI64])],
         );
         match &items[0] {
             Item::FunctionItem(function_item) => {
@@ -1110,5 +1098,52 @@ fn main() {}
         assert!(function.build_ref.is_none());
         assert_eq!(function.params.len(), 2);
         assert_eq!(function.ret_ty, Some(Type::TypeI64));
+    }
+
+    #[test]
+    fn parses_var_type_annotation() {
+        let src = "fn f() { var xs >> List(i64) = [1, 2, 3]; }\n";
+        let items = parse_only(src, "var_ty.sprs").expect("parse");
+        match &items[0] {
+            Item::FunctionItem(function_item) => match &function_item.blk[0].node {
+                crate::front::ast::Stmt::Var(var) => {
+                    assert_eq!(
+                        var.ty.as_ref().map(|a| &a.ty),
+                        Some(&Type::App("List".into(), vec![Type::TypeI64]))
+                    );
+                }
+                other => panic!("expected var, got {other:?}"),
+            },
+            other => panic!("expected function, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_unknown_type_constructor() {
+        let err = parse_only(
+            "fn f(x >> Result(i64, str)) { return; }\n",
+            "bad_ctor.sprs",
+        )
+        .unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("unknown type constructor") || msg.contains("Result"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn rejects_process_wrong_arity() {
+        let err = parse_only("fn f(x >> Process(i64, str)) { return; }\n", "arity.sprs")
+            .unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(msg.contains("Process requires exactly one type argument"), "{msg}");
+    }
+
+    #[test]
+    fn rejects_range_type_argument() {
+        let err = parse_only("fn f(x >> Range(i64)) { return; }\n", "range.sprs").unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(msg.contains("Range does not take type arguments"), "{msg}");
     }
 }

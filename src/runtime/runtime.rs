@@ -472,6 +472,40 @@ pub extern "C" fn __list_get(list_handle: u64, index: i64) -> SprsValue {
     })
 }
 
+/// Replace the element at `index`. Drops the previous value. OOB / bad handle
+/// is a no-op (the incoming value is dropped so it is not leaked).
+#[unsafe(no_mangle)]
+pub extern "C" fn __list_set(list_handle: u64, index: i64, tag: i32, data: u64) {
+    let incoming = SprsValue { tag, data };
+    let mut prev: Option<SprsValue> = None;
+    let stored = SLOTS.with(|slots_cell| {
+        let mut slots = slots_cell.borrow_mut();
+        let idx = handle_index(list_handle) as usize;
+        if idx >= slots.len() || list_handle == INVALID_HANDLE {
+            return false;
+        }
+        let slot = &mut slots[idx];
+        if slot.generation != handle_gen(list_handle) {
+            return false;
+        }
+        let SlotData::List(vec) = &mut slot.data else {
+            return false;
+        };
+        if index < 0 || (index as usize) >= vec.len() {
+            return false;
+        }
+        prev = Some(std::mem::replace(&mut vec[index as usize], incoming));
+        true
+    });
+    if stored {
+        if let Some(prev) = prev {
+            __drop(prev.tag, prev.data);
+        }
+    } else {
+        __drop(incoming.tag, incoming.data);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // C ABI: Buffer
 // ---------------------------------------------------------------------------
@@ -1510,7 +1544,7 @@ mod tests {
         __atom_eq, __atom_from_bytes, __atom_from_string, __atom_name, __buffer_exist,
         __buffer_get, __buffer_into_raw, __buffer_len, __buffer_new, __buffer_set, __clone, __drop,
         __error_label_from_str, __error_message_from_label, __label_is_error, __label_name,
-        __label_name_eq, __label_new, __label_new_from_string, __label_payload, __list_get,
+        __label_name_eq, __label_new, __label_new_from_string, __label_payload, __list_get, __list_set,
         __list_new, __list_push, __raw_free,
         __string_eq, __string_new, __struct_borrow, __struct_new, __struct_track_value,
         __value_to_string, INVALID_HANDLE, RAW_LAYOUTS, SlotData, SprsValue, Tag, atom_name,
@@ -1997,6 +2031,19 @@ mod tests {
         __drop(Tag::String as i32, string_handle);
         let live_after = slot_with(string_handle, false, |_| true);
         assert!(!live_after);
+    }
+
+    #[test]
+    fn list_set_replaces_element() {
+        let list = __list_new(0);
+        __list_push(list, Tag::Integer as i32, 1);
+        __list_push(list, Tag::Integer as i32, 2);
+        __list_set(list, 0, Tag::Integer as i32, 9);
+        let first = __list_get(list, 0);
+        assert_eq!(first.tag, Tag::Integer as i32);
+        assert_eq!(first.data, 9);
+        __drop(Tag::List as i32, list);
+
     }
 
     #[test]

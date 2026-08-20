@@ -12,7 +12,7 @@
 @println(y[1]);
 ```
 
-* `@list_push(list, value)`: リスト末尾に値を追加する
+* `@list_push(list, value)`: リスト末尾に値を追加する。`List(T)` では値は `T` に代入可能でなければならない。`List(Any)` は任意の要素を許す。結果型は `unit`。`@clone` / `@move` は引数の静的型（`List(T)` など）を保持する。
 
 例:
 

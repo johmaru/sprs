@@ -71,7 +71,7 @@ Internal 報告は `error[CODE]` の代わりに `internal error:` を使いま�
 | TYP-003 | `Type mismatch: Function expects Int type but got {type} from expression {expr}` |
 | TYP-004 | `Type mismatch: Function expects Float type but got {type} from expression {expr}` |
 | TYP-005 | `Type mismatch: Function declares >> {expected} but return expression has {actual}` |
-| TYP-006 | `Type mismatch: cannot assign {rhs} to fixed binding `{name}` of type {ty}` |
+| TYP-006 | `Type mismatch: cannot assign {rhs} to fixed binding `{name}` of type {ty}`；`Type mismatch: list element has {actual}, expected {elem}` |
 | TYP-007 | `Type mismatch: argument {n} of `{fn}` expects {ty}, found {actual}`；`Type mismatch in call to `{fn}`: type parameter `{T}` was already resolved to `{ty}`, but the argument has type `{actual}`；`Type mismatch in call to `{fn}`: multiple `when` rules matched`；未解決の型パラメータ |
 
 ### 意味（`SPRS-SEM-…`）
@@ -89,7 +89,7 @@ Internal 報告は `error[CODE]` の代わりに `internal error:` を使いま�
 | SEM-008 | `@cast second argument must be a type identifier : {expr}` |
 | SEM-009 | `Unsupported target type for @cast: {ty}` |
 | SEM-010 | `Failed to read module file {path}: {error}` |
-| SEM-011 | `Undefined type: {name}`；`` `Self` is only valid in struct field type annotations ``；`unknown type `{legacy}`; use {replacement}`（`int`→`i64`、`list`→`List(T)`、`err`→`Label(:error, Any)`、`atom`/`label`→`Label` など）；`List requires exactly one type argument`；`Label application must be Label or Label(:name, T)` |
+| SEM-011 | `Undefined type: {name}`；`` `Self` is only valid in struct field type annotations ``；`unknown type `{legacy}`; use {replacement}`（`int`→`i64`、`list`→`List(T)`、`err`→`Label(:error, Any)`、`atom`/`label`→`Label` など）；`List requires exactly one type argument`；`Process requires exactly one type argument`；`Label application must be Label or Label(:name, T)`；`unknown type constructor `{name}`; builtin constructors are List(T), Process(T), Label(:name, T)`；`{Name} does not take type arguments` |
 | SEM-013 | マクロ引数個数（`list_push expects 2 arguments`、`buf_len expects 1 argument`、`buf_get expects 2 arguments`、`buf_set expects 3 arguments`、`@clone expects 1 argument`、`@move expects 1 argument`、`@move expects a variable argument`、`@cast expects 2 arguments`、`@fcast expects exactly 1 argument`、`@lshift expects 2 arguments (value, shift_amount)`、`@rshift expects 2 arguments (value, shift_amount)`、`@not expects 1 argument`）；`@raw` / `@free` は unsafe ブロックを要求する；`Undefined variable: {name}`；`Module '{name}' not found`；`Function '{fn}' not found in module '{module}'`；`Undefined struct : {name}`；`Field '{field}' not found in struct '{name}'`；`Field definition for '{field}' not found in struct '{name}'`；`unknown field `{field}` in init {Type}`；`duplicate field `{field}` in init {Type}`；`missing required field `{field}` in init {Type}` |
 | SEM-015 | `Undefined function: {name}`；`` `@raw` requires an unsafe block ``；`` `@free` requires an unsafe block `` |
 | SEM-016 | `Argument count mismatch: function `{fn}` expects {n} argument(s), found {m}` |

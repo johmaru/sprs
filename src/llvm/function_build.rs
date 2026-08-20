@@ -8,7 +8,7 @@
 use crate::front::ast::{FbCondition, FunctionBuild, FunctionBuildDirective, FunctionParam, Item};
 use crate::front::error::{ErrorCategory, ErrorCode, Location, SprsError};
 use crate::front::span::Span;
-use crate::front::type_helper::{self, types_compatible, Type};
+use crate::front::type_helper::{self, types_assignable, types_compatible, Type};
 use crate::llvm::parser::parse_only;
 use crate::naming;
 use std::collections::{HashMap, HashSet};
@@ -222,7 +222,8 @@ pub fn known_structs_from_items(items: &[Item]) -> HashSet<String> {
 }
 
 /// Builtin type constructor names that cannot be shadowed by a type parameter.
-const BUILTIN_TYPE_NAMES: &[&str] = &["Any", "List", "Label", "Range", "Buffer", "RawPtr", "Self"];
+const BUILTIN_TYPE_NAMES: &[&str] =
+    &["Any", "List", "Label", "Process", "Range", "Buffer", "RawPtr", "Self"];
 
 /// Convert a FunctionBuild type annotation in place.
 ///
@@ -458,6 +459,22 @@ fn unify(
     } else if matches!(pattern, Type::Any) {
         Ok(())
     } else if let (Type::App(n1, a1), Type::App(n2, a2)) = (pattern, actual) {
+        if n1 == "List" && n2 == "List" {
+            match (type_helper::list_element(pattern), type_helper::list_element(actual)) {
+                (Some(Type::Any), _) => return Ok(()),
+                (Some(p), Some(Type::Any)) if !matches!(p, Type::Param(_)) => {
+                    return Err(CallContractError::TypeConflict {
+                        message: format!("expected `{pattern}`, found `{actual}`"),
+                    });
+                }
+                (Some(p), Some(a)) => return unify(p, a, bindings),
+                _ => {
+                    return Err(CallContractError::TypeConflict {
+                        message: format!("expected `{pattern}`, found `{actual}`"),
+                    });
+                }
+            }
+        }
         if n1 != n2 || a1.len() != a2.len() {
             return Err(CallContractError::TypeConflict {
                 message: format!("expected `{pattern}`, found `{actual}`"),
@@ -467,7 +484,7 @@ fn unify(
             unify(pat_arg, act_arg, bindings)?;
         }
         Ok(())
-    } else if types_compatible(pattern, actual) {
+    } else if types_assignable(pattern, actual) {
         Ok(())
     } else {
         Err(CallContractError::TypeConflict {
