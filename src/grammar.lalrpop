@@ -28,7 +28,6 @@ use crate::front::span::{Span, Spanned};
 use crate::front::lexer::Token;
 use crate::front::type_helper::{Type, TypeAnnot};
 use crate::front::type_surface;
-use lalrpop_util::ParseError;
 
 extern {
     type Location = usize;
@@ -141,16 +140,16 @@ ItemNode: Item = {
     PubFunctionBuildDef,
     FunctionBuildSourceDef,
     PreprocessorItem,
-    <start:@L> <v:GlobalVarDecl> <end:@R> => Item::VarItem(v),
-    <start:@L> <i:ImportDirective> <end:@R> => Item::Import(i),
-    <start:@L> <p:PackageDirective> <end:@R> => Item::Package(p),
-    <start:@L> <s:StructDef> <end:@R> => Item::StructItem(s),
+    <v:GlobalVarDecl> => Item::VarItem(v),
+    <i:ImportDirective> => Item::Import(i),
+    <p:PackageDirective> => Item::Package(p),
+    <s:StructDef> => Item::StructItem(s),
     LabelAtomDef,
     ClosedLabelSetDef,
 };
 
 PreprocessorItem: Item = {
-    <start:@L> <p:PREPROCESSOR> <end:@R> => Item::Preprocessor(p)
+    <p:PREPROCESSOR> => Item::Preprocessor(p)
 };
 
 FunctionBuildSourceDef: Item =
@@ -239,7 +238,7 @@ FieldDefault: Spanned<Expr> = {
     Assign <e:Expr> => e,
 };
 
-FnKw: () = <tok:Function> => ();
+FnKw: () = Function => ();
 
 PublicKw: bool = {
     Public => true,
@@ -407,7 +406,7 @@ Type: Type = {
     TypeUnit => Type::Unit,
     <start:@L> TypeLabel <end:@R> =>? Err(type_surface::reject_label_keyword(Span::new(start, end))),
 
-    <start:@L> Colon <id:OpenLabelName> <end:@R> => Type::Atom(id),
+    Colon <id:OpenLabelName> => Type::Atom(id),
 
     TypeI8 => Type::TypeI8,
     TypeU8 => Type::TypeU8,
@@ -643,13 +642,17 @@ AssignExpr: Spanned<Expr> = {
 };
 
 GlobalVarDecl: VarDecl = {
- <start:@L> Var <id:GlobalName> Assign <e:Expr> Semi <end:@R> => VarDecl { ident: id, expr: Some(e), span: Span::new(start, end) },
- <start:@L> Var <id:GlobalName> Semi <end:@R> => VarDecl { ident: id, expr: None, span: Span::new(start, end) },
+ <start:@L> Var <id:GlobalName> GtGt <t:TypeAnnot> Assign <e:Expr> Semi <end:@R> => VarDecl { ident: id, expr: Some(e), ty: Some(t), span: Span::new(start, end) },
+ <start:@L> Var <id:GlobalName> GtGt <t:TypeAnnot> Semi <end:@R> => VarDecl { ident: id, expr: None, ty: Some(t), span: Span::new(start, end) },
+ <start:@L> Var <id:GlobalName> Assign <e:Expr> Semi <end:@R> => VarDecl { ident: id, expr: Some(e), ty: None, span: Span::new(start, end) },
+ <start:@L> Var <id:GlobalName> Semi <end:@R> => VarDecl { ident: id, expr: None, ty: None, span: Span::new(start, end) },
 };
 
 LocalVarDecl: VarDecl = {
- <start:@L> Var <id:LocalName> Assign <e:Expr> Semi <end:@R> => VarDecl { ident: id, expr: Some(e), span: Span::new(start, end) },
- <start:@L> Var <id:LocalName> Semi <end:@R> => VarDecl { ident: id, expr: None, span: Span::new(start, end) },
+ <start:@L> Var <id:LocalName> GtGt <t:TypeAnnot> Assign <e:Expr> Semi <end:@R> => VarDecl { ident: id, expr: Some(e), ty: Some(t), span: Span::new(start, end) },
+ <start:@L> Var <id:LocalName> GtGt <t:TypeAnnot> Semi <end:@R> => VarDecl { ident: id, expr: None, ty: Some(t), span: Span::new(start, end) },
+ <start:@L> Var <id:LocalName> Assign <e:Expr> Semi <end:@R> => VarDecl { ident: id, expr: Some(e), ty: None, span: Span::new(start, end) },
+ <start:@L> Var <id:LocalName> Semi <end:@R> => VarDecl { ident: id, expr: None, ty: None, span: Span::new(start, end) },
 };
 
 Ident: ParsedIdentifier = {

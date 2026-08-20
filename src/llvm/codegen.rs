@@ -7,7 +7,8 @@ use crate::front::span::Span;
 use crate::front::span::Spanned;
 use crate::front::type_helper;
 use crate::front::type_helper::{
-    Type, is_error_label_type, reject_payloadless_label_type, types_compatible,
+    Type, is_error_label_type, join_list_element_types, list_element, list_type,
+    reject_payloadless_label_type, types_assignable, types_compatible,
 };
 use crate::llvm::builder_helper;
 use crate::llvm::builder_helper::BuilderExt;
@@ -78,7 +79,20 @@ impl<'ctx> Compiler<'ctx> {
             return Ok(());
         };
 
-        let actuals: Vec<Type> = args.iter().map(|arg| self.infer_type(arg)).collect();
+        let actuals: Vec<Type> = args
+            .iter()
+            .enumerate()
+            .map(|(idx, arg)| {
+                let expected = sig.params.get(idx).and_then(|param| param.as_ref()).map(|a| &a.ty);
+                self.infer_type_in(arg, expected)
+            })
+            .collect();
+        for (idx, arg) in args.iter().enumerate() {
+            if let Some(expected) = sig.params.get(idx).and_then(|param| param.as_ref()).map(|a| &a.ty)
+            {
+                self.check_list_literal_elements(arg, expected)?;
+            }
+        }
         let contract = crate::llvm::function_build::ResolvedFunctionSignature {
             params: sig
                 .params
@@ -177,7 +191,14 @@ impl<'ctx> Compiler<'ctx> {
         if sig.type_params.is_empty() && sig.when_rules.is_empty() {
             return sig.ret_ty.clone().unwrap_or(Type::Any);
         }
-        let actuals: Vec<Type> = args.iter().map(|arg| self.infer_type(arg)).collect();
+        let actuals: Vec<Type> = args
+            .iter()
+            .enumerate()
+            .map(|(idx, arg)| {
+                let expected = sig.params.get(idx).and_then(|param| param.as_ref()).map(|a| &a.ty);
+                self.infer_type_in(arg, expected)
+            })
+            .collect();
         let contract = crate::llvm::function_build::ResolvedFunctionSignature {
             params: sig
                 .params
@@ -317,16 +338,20 @@ impl<'ctx> Compiler<'ctx> {
                 "label_name" => Type::Str,
                 "label_payload" => Type::Any,
                 "init" => Type::Any,
-                "clone" => {
+                "clone" | "move" => {
                     if !args.is_empty() {
                         self.infer_type(&args[0])
                     } else {
                         Type::Any
                     }
                 }
+                "list_push" => Type::Unit,
                 _ => Type::Any,
             },
-            ast::Expr::List(_) => Type::List,
+            ast::Expr::List(elements) => {
+                let elem_tys: Vec<Type> = elements.iter().map(|e| self.infer_type(e)).collect();
+                list_type(join_list_element_types(&elem_tys))
+            },
             ast::Expr::Range(_, _) => Type::Range,
             // On the continuing path after `?`, the value has the inner type;
             // Error propagates by returning from the function.
@@ -377,13 +402,80 @@ impl<'ctx> Compiler<'ctx> {
                 }
                 Type::Any
             }
-            ast::Expr::Index(collection, _) => match self.infer_type(collection) {
-                Type::App(name, args) if name == "List" => match args.as_slice() {
-                    [element] => element.clone(),
-                    _ => Type::Any,
-                },
-                _ => Type::Any,
+            ast::Expr::Index(collection, _) => list_element(&self.infer_type(collection))
+                .cloned()
+                .unwrap_or(Type::Any),
+        }
+    }
+
+    pub(crate) fn infer_type_in(
+        &self,
+        expr: &Spanned<ast::Expr>,
+        expected: Option<&Type>,
+    ) -> Type {
+        if let ast::Expr::List(_) = &expr.node {
+            if let Some(exp_elem) = expected.and_then(list_element) {
+                return list_type(exp_elem.clone());
+            }
+        }
+        self.infer_type(expr)
+    }
+
+    fn resolve_local_type(&self, ty: &mut Type) -> Result<(), String> {
+        let known_structs: std::collections::HashSet<String> =
+            self.struct_defs.keys().cloned().collect();
+        let known_closed: std::collections::HashSet<String> =
+            self.closed_label_sets.keys().cloned().collect();
+        crate::front::type_helper::resolve_type(ty, &known_structs, &known_closed, None)
+    }
+
+    fn check_list_literal_elements(
+        &self,
+        expr: &Spanned<ast::Expr>,
+        expected: &Type,
+    ) -> Result<(), SprsError> {
+        let ast::Expr::List(elements) = &expr.node else {
+            return Ok(());
+        };
+        let Some(elem_ty) = list_element(expected) else {
+            return Ok(());
+        };
+        if matches!(elem_ty, Type::Any) {
+            return Ok(());
+        }
+        for element in elements {
+            let actual = self.infer_type(element);
+            if !types_assignable(elem_ty, &actual) {
+                return Err(self.type_mismatch_assign(
+                    element.span,
+                    format!(
+                        "Type mismatch: list element has {actual}, expected {elem_ty}"
+                    ),
+                    elem_ty,
+                    &actual,
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn type_mismatch_assign(
+        &self,
+        span: crate::front::span::Span,
+        message: String,
+        expected: &Type,
+        actual: &Type,
+    ) -> SprsError {
+        SprsError::Type {
+            code: ErrorCode {
+                category: ErrorCategory::Type,
+                number: 6,
             },
+            location: self.location(span),
+            message,
+            expected_type: Some(format!("{expected}")),
+            actual_type: Some(format!("{actual}")),
+            help: None,
         }
     }
 
@@ -539,9 +631,12 @@ impl<'ctx> Compiler<'ctx> {
 
             let current_fn = self.function_signatures.unwrap();
             let return_type = current_fn.get_type().get_return_type();
-            let expr_type = self.infer_type(expr);
             let expected_ret = self.current_fn_ret_ty.clone();
+            let expr_type = self.infer_type_in(expr, expected_ret.as_ref());
 
+            if let Some(expected) = &expected_ret {
+                self.check_list_literal_elements(expr, expected)?;
+            }
             self.validate_sprs_return_type(&expected_ret, expr_type.clone(), expr)?;
             self.validate_return_type(return_type, expr_type, expr)?;
 
@@ -576,7 +671,7 @@ impl<'ctx> Compiler<'ctx> {
         };
         if actual == Type::Any
             || is_error_label_type(&actual)
-            || types_compatible(expected_ty, &actual)
+            || types_assignable(expected_ty, &actual)
         {
             return Ok(());
         }
@@ -778,10 +873,54 @@ impl<'ctx> Compiler<'ctx> {
                 ast::Stmt::Var(var) => {
                     let unit_expr = Spanned::new(ast::Expr::Unit(), Span::DUMMY);
                     let init_expr = var.expr.as_ref().unwrap_or(&unit_expr);
+                    let mut annot = var.ty.clone();
+                    if let Some(annotation) = &mut annot {
+                        self.resolve_local_type(&mut annotation.ty).map_err(|message| {
+                            SprsError::Semantic {
+                                code: ErrorCode {
+                                    category: ErrorCategory::Semantic,
+                                    number: 11,
+                                },
+                                location: self.location(var.span),
+                                message,
+                                help: None,
+                            }
+                        })?;
+                        reject_payloadless_label_type(&annotation.ty).map_err(|message| {
+                            SprsError::Semantic {
+                                code: ErrorCode {
+                                    category: ErrorCategory::Semantic,
+                                    number: 11,
+                                },
+                                location: self.location(var.span),
+                                message,
+                                help: None,
+                            }
+                        })?;
+                    }
+                    let expected_ty = annot.as_ref().map(|a| &a.ty);
                     let compiled_init_val =
                         self.compile_expr(init_expr, module)?.into_pointer_value();
 
-                    let var_type = self.infer_type(init_expr);
+                    let inferred = self.infer_type_in(init_expr, expected_ty);
+                    if let Some(expected) = expected_ty {
+                        if !types_assignable(expected, &inferred) {
+                            return Err(self.type_mismatch_assign(
+                                var.span,
+                                format!(
+                                    "Type mismatch: cannot assign {inferred} to fixed binding `{}` of type {expected}",
+                                    var.ident
+                                ),
+                                expected,
+                                &inferred,
+                            ));
+                        }
+                        self.check_list_literal_elements(init_expr, expected)?;
+                    }
+                    let var_type = match &annot {
+                        Some(a) => a.ty.clone(),
+                        None => inferred,
+                    };
 
                     let init_val = if let ast::Expr::Var(src_val_name) = &init_expr.node {
                         if let Some(src) = self.get_variables(src_val_name) {
@@ -806,7 +945,17 @@ impl<'ctx> Compiler<'ctx> {
                             &var.ident,
                         )?
                     };
-                    self.add_variable(var.ident.clone(), init_val.into(), var_type, false, false);
+                    let (is_ambi, is_annotated) = match &annot {
+                        Some(a) => (a.ambi, true),
+                        None => (false, false),
+                    };
+                    self.add_variable(
+                        var.ident.clone(),
+                        init_val.into(),
+                        var_type,
+                        is_ambi,
+                        is_annotated,
+                    );
                 }
                 ast::Stmt::Return(expr_opt) => {
                     self.compile_return(expr_opt, module)?;
@@ -857,8 +1006,25 @@ impl<'ctx> Compiler<'ctx> {
                     collection,
                     index,
                     expr,
-                    ..
+                    span,
                 } => {
+                    let coll_ty = self.infer_type(collection);
+                    if let Some(elem_ty) = list_element(&coll_ty) {
+                        if !matches!(elem_ty, Type::Any) {
+                            let rhs_ty = self.infer_type_in(expr, Some(elem_ty));
+                            if !types_assignable(elem_ty, &rhs_ty) {
+                                return Err(self.type_mismatch_assign(
+                                    *span,
+                                    format!(
+                                        "Type mismatch: list element has {rhs_ty}, expected {elem_ty}"
+                                    ),
+                                    elem_ty,
+                                    &rhs_ty,
+                                ));
+                            }
+                        }
+                    }
+                    let is_list = list_element(&coll_ty).is_some();
                     let buf_ptr = self.compile_expr(collection, module)?.into_pointer_value();
                     let buf_data_ptr = self
                         .builder
@@ -882,6 +1048,39 @@ impl<'ctx> Compiler<'ctx> {
                         .into_int_value();
 
                     let v_ptr = self.compile_expr(expr, module)?.into_pointer_value();
+                    if is_list {
+                        let v_tag_ptr = self
+                            .builder
+                            .build_struct_gep(self.runtime_value_type, v_ptr, 0, "ia_v_tag_ptr")
+                            .unwrap();
+                        let v_tag = self
+                            .builder
+                            .build_load(self.context.i32_type(), v_tag_ptr, "ia_v_tag")
+                            .unwrap()
+                            .into_int_value();
+                        let v_data_ptr = self
+                            .builder
+                            .build_struct_gep(self.runtime_value_type, v_ptr, 1, "ia_v_data_ptr")
+                            .unwrap();
+                        let v_val = self
+                            .builder
+                            .build_load(self.context.i64_type(), v_data_ptr, "ia_v")
+                            .unwrap()
+                            .into_int_value();
+                        let set_fn = self.get_runtime_fn(module, "__list_set")?;
+                        self.builder
+                            .build_call(
+                                set_fn,
+                                &[
+                                    buf_handle.into(),
+                                    idx_val.into(),
+                                    v_tag.into(),
+                                    v_val.into(),
+                                ],
+                                "list_set_call",
+                            )
+                            .unwrap();
+                    } else {
                     let v_data_ptr = self
                         .builder
                         .build_struct_gep(self.runtime_value_type, v_ptr, 1, "ia_v_data_ptr")
@@ -900,6 +1099,7 @@ impl<'ctx> Compiler<'ctx> {
                             "buffer_set_call",
                         )
                         .unwrap();
+                    }
                 }
             }
         }
@@ -951,9 +1151,10 @@ impl<'ctx> Compiler<'ctx> {
                 help: None,
             })?;
 
-        let rhs_ty = self.infer_type(rhs);
+        let rhs_ty = self.infer_type_in(rhs, Some(&target.ty));
         if target.is_annotated && !target.is_ambi {
-            if !types_compatible(&target.ty, &rhs_ty) {
+            self.check_list_literal_elements(rhs, &target.ty)?;
+            if !types_assignable(&target.ty, &rhs_ty) {
                 return Err(SprsError::Type {
                     code: ErrorCode {
                         category: ErrorCategory::Type,

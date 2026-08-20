@@ -166,6 +166,7 @@ pub struct Function {
 pub struct VarDecl {
     pub ident: String,
     pub expr: Option<Spanned<Expr>>,
+    pub ty: Option<TypeAnnot>,
     pub span: Span,
 }
 

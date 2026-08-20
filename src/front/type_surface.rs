@@ -106,6 +106,13 @@ pub fn named_type(
             "List requires exactly one type argument",
             Some("use List(T) or List(Any)".to_string()),
         )),
+        ("Process", [_]) => Ok(Type::App("Process".into(), args)),
+        ("Process", _) => Err(sem(
+            11,
+            span,
+            "Process requires exactly one type argument",
+            Some("use Process(T)".to_string()),
+        )),
         ("Self", []) => Ok(Type::SelfType),
         ("Self", _) => Err(sem(
             11,
@@ -125,7 +132,14 @@ pub fn named_type(
             if args.is_empty() {
                 Ok(Type::Named(name))
             } else {
-                Ok(Type::App(name, args))
+                Err(sem(
+                    11,
+                    span,
+                    format!(
+                        "unknown type constructor `{name}`; builtin constructors are List(T), Process(T), Label(:name, T)"
+                    ),
+                    Some("user-defined generic types are not supported".to_string()),
+                ))
             }
         }
     }

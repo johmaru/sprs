@@ -10,7 +10,7 @@ examples:
 @println(y[1]);
 ```
 
-* `@list_push(list, value)`: Push value to the end of the list
+* `@list_push(list, value)`: Push value to the end of the list. On `List(T)` the value must be assignable to `T`; `List(Any)` accepts any element. Result type is `unit`. `@clone` / `@move` keep the static `List(T)` (or other) type of the argument.
 
 examples:
 

@@ -44,6 +44,7 @@ RawPtr の `data` は素のアドレスです。
 | __list_new | 新しいリストを作る |
 | __list_get | リスト要素の destructive take。元スロットは Unit になる |
 | __list_push | リスト末尾へ要素を追加する |
+| __list_set | 指定 index の要素を置き換える。範囲外 / 無効ハンドルは受け取り値を drop する |
 | __range_new | 新しい Range を作る |
 | __println | 値をコンソールへ表示する |
 | __strlen | 文字列長を取る |

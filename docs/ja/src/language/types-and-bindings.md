@@ -13,6 +13,7 @@
 | `unit` | Unit（`()`） |
 | `Any` | 検査しない / 動的 |
 | `List(T)` | リスト。引数は常に 1 つ（要素が不明なら `List(Any)`）。裸の `List` / `List()` は拒否。 |
+| `Process(T)` | コンパイル時のプロセス結果型。引数は 1 つ。実行モデルは別。 |
 | `Range` | Range |
 | `Buffer` | 固定長でゼロ初期化されたバイト配列 |
 | `RawPtr` | `@raw(buf)` から得られる素のアドレス |
@@ -29,7 +30,39 @@
 
 `Self` は構造体フィールド型の内側でのみ有効です（`List(Self)` を含む）。[構造体](structs.md) を参照してください。
 
-型の適用はコンパイル時だけです: `List(i64)`、`Label(:ok, i64)`、`Label(:error, Any)`。
+型の適用はコンパイル時だけです: `List(i64)`、`Process(str)`、`Label(:ok, i64)`、`Label(:error, Any)`。未知のコンストラクタ（`Result(i64, str)`）と誤った引数個数（`List(i64, str)`、`Process()`、`Range(i64)`）は `SPRS-SEM-011` です。ユーザー定義のジェネリック型はありません。
+
+`List(T)` の実行時タグは `Tag::List` だけです。`Process(T)` にはまだ実行時タグがありません。要素型 / 結果型はコンパイル時だけです。
+
+## 型付きリスト
+
+注釈のないリストリテラルは要素型を推論します。
+
+```sprs
+var xs = [1, 2, 3];       # List(i64)
+var names = ["a", "b"];   # List(str)
+var mixed = [1, "a"];     # List(Any)
+var empty = [];           # List(Any)
+```
+
+`>>`、戻り値注釈、呼び出し引数、代入の期待型は、空リストと要素検査に使われます。
+
+```sprs
+var xs >> List(i64) = [];
+var ys >> List(i64) = [1, 2, 3];
+# var bad >> List(i64) = [1, "no"];  # 要素ごとに型エラー
+```
+
+`List(T)` は `List(Any)` へ拡大できます。`List(Any)` から `List(T)` への暗黙の縮小はありません。
+
+添字読み `List(T)[n]` は `T` です。添字代入と `@list_push` は要素型を検査します。`@clone` / `@move` は `List(T)` を保持します。
+
+```sprs
+fn use_ints(xs >> List(i64)) {
+  @list_push(xs, 3);
+  xs[0] = 10;
+}
+```
 
 ## コメントとリテラル
 
@@ -88,6 +121,7 @@ var x = 10;
 var name = "sprs";
 var is_valid = true;
 var numbers = [1, 2, 3];
+var ints >> List(i64) = [1, 2, 3];
 
 
 # Not initialized variable
@@ -131,6 +165,10 @@ fn demo(fixed >> i64, flex >> ambi i64) {
 ```sprs
 fn take(xs >> List(i64)) >> List(i64) {
   return xs;
+}
+
+fn take_job(job >> Process(str)) >> Process(str) {
+  return job;
 }
 
 fn parse() >> Label(:error, Any) {

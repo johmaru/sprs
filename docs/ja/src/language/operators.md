@@ -4,7 +4,7 @@
 - 比較: `==`、`!=`、`<`、`>`、`<=`、`>=`
 - インクリメント / デクリメント: `++`、`--`（後置のみ）
 - Range 生成: `..`（例: `1..10`）
-- 添字: `list[index]` / `buf[index]`（Buffer はバイトの get/set を使う）
+- 添字: `list[index]` / `buf[index]`（Buffer はバイトの get/set を使う）。`List(T)[i] = v` は `v` を `T` に対して検査する。
 - 単項マイナス: `-x`（`Expr::Neg`）。
 - 文字列連結: `str + str` は `__string_concat` を呼び出します。
   整数加算ではありません。

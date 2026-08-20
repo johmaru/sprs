@@ -102,6 +102,8 @@ fn main() {
     @println(data_structures.list_empty());
     @println(data_structures.list_index_read());
     @println(data_structures.list_index_moves_string());
+    @println(data_structures.list_typed_push_and_index());
+    @println(data_structures.list_typed_empty());
 
     @println("=== Cast ===");
     @println(types.cast_i8());
