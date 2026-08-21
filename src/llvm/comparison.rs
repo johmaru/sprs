@@ -2,8 +2,7 @@ use crate::front::error::SprsError;
 use crate::llvm::arithmetic::{is_float_family_tag, is_integer_family_tag, is_unsigned_int_tag};
 use crate::llvm::value::{create_entry_block_alloca, create_error_label_from_str};
 use crate::{
-    front::ast,
-    front::span::Spanned,
+    front::hir,
     llvm::compiler::{Compiler, StoreTag, StoreValue, Tag},
 };
 use inkwell::values::{BasicValueEnum, PointerValue, ValueKind};
@@ -16,7 +15,7 @@ pub enum UpDown {
 
 pub fn create_increment_or_decrement<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    expr: &Spanned<ast::Expr>,
+    expr: &hir::Expr,
     mode: UpDown,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
@@ -138,8 +137,8 @@ pub enum EqNeq {
 
 pub fn create_eq_or_neq<'ctx, ComparisonBuilder>(
     self_compiler: &mut Compiler<'ctx>,
-    lhs: &Spanned<ast::Expr>,
-    rhs: &Spanned<ast::Expr>,
+    lhs: &hir::Expr,
+    rhs: &hir::Expr,
     module: &inkwell::module::Module<'ctx>,
     mode: EqNeq,
     op_fn: ComparisonBuilder,
@@ -502,8 +501,8 @@ pub enum Comparison {
 
 pub fn create_comparison<'ctx, ComparisonBuilder>(
     self_compiler: &mut Compiler<'ctx>,
-    lhs: &Spanned<ast::Expr>,
-    rhs: &Spanned<ast::Expr>,
+    lhs: &hir::Expr,
+    rhs: &hir::Expr,
     module: &inkwell::module::Module<'ctx>,
     mode: Comparison,
     _comp_fn: ComparisonBuilder,

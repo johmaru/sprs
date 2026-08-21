@@ -3,15 +3,13 @@ use crate::front::span::Span;
 use inkwell::{
     AddressSpace,
     module::Linkage,
-    values::{BasicMetadataValueEnum, BasicValueEnum, IntValue, PointerValue, ValueKind},
+    values::{BasicValueEnum, IntValue, PointerValue, ValueKind},
 };
 
-use crate::llvm::variable::{clone_runtime_value, move_variable};
+use crate::llvm::variable::move_variable;
 use crate::{
-    front::ast,
+    front::hir,
     front::label_name::{LabelName, LabelNamePart},
-    front::span::Spanned,
-    front::type_helper::Type,
     llvm::compiler::{Compiler, StoreTag, StoreValue, StrConstantResult, Tag},
     llvm::data_structures::create_unit,
 };
@@ -91,10 +89,11 @@ pub fn create_error_label_from_atom<'ctx>(
     reason: &str,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<PointerValue<'ctx>, SprsError> {
-    let payload = Spanned::new(
-        ast::Expr::Atom(LabelName::Static(reason.into())),
-        Span::DUMMY,
-    );
+    let payload = hir::Expr {
+        kind: hir::ExprKind::Atom(LabelName::Static(reason.into())),
+        ty: crate::front::type_helper::Type::AtomVal,
+        span: Span::DUMMY,
+    };
     let value = create_label(
         self_compiler,
         &LabelName::Static("error".into()),
@@ -182,7 +181,7 @@ pub(crate) fn create_entry_block_alloca<'ctx>(
 
 pub fn create_list_from_expr<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    elements: &[Spanned<ast::Expr>],
+    elements: &[hir::Expr],
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<IntValue<'ctx>, SprsError> {
     let len = elements.len();
@@ -215,7 +214,7 @@ pub fn create_list_from_expr<'ctx>(
         let compiled_val_ptr = self_compiler
             .compile_expr(elem, module)?
             .into_pointer_value();
-        let (val_ptr, source_var) = if let ast::Expr::Var(name) = &elem.node {
+        let (val_ptr, source_var) = if let hir::ExprKind::Var(name) = &elem.kind {
             if self_compiler.get_variables(name).is_some() {
                 (compiled_val_ptr, Some((compiled_val_ptr.into(), name)))
             } else {
@@ -374,7 +373,7 @@ pub fn create_bool<'ctx>(
 pub fn create_label<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
     name: &LabelName,
-    payload: &Spanned<ast::Expr>,
+    payload: &hir::Expr,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
     let initial_payload_ptr = self_compiler
@@ -382,7 +381,7 @@ pub fn create_label<'ctx>(
         .into_pointer_value();
 
     let mut source_to_move: Option<(BasicValueEnum<'ctx>, String)> = None;
-    let final_payload_ptr = if let ast::Expr::Var(source_name) = &payload.node {
+    let final_payload_ptr = if let hir::ExprKind::Var(source_name) = &payload.kind {
         if self_compiler.get_variables(source_name).is_some() {
             source_to_move = Some((initial_payload_ptr.into(), source_name.clone()));
             initial_payload_ptr
@@ -674,23 +673,6 @@ pub(crate) fn build_dynamic_string<'ctx>(
                             message: format!("Undefined variable in dynamic label name: {}", ident),
                             help: None,
                         })?;
-                match &binding.ty {
-                    Type::Int | Type::Bool | Type::Str | Type::Any | Type::TypeI64 => {}
-                    other => {
-                        return Err(SprsError::Semantic {
-                            code: ErrorCode {
-                                category: ErrorCategory::Semantic,
-                                number: 3,
-                            },
-                            location: Location::new(String::new(), Span::DUMMY),
-                            message: format!(
-                                "dynamic label name part `{}` has type {}; only int/bool/str allowed",
-                                ident, other
-                            ),
-                            help: None,
-                        });
-                    }
-                }
                 let var_ptr = binding.value.into_pointer_value();
                 let tag_ptr = self_compiler
                     .builder
@@ -1063,7 +1045,7 @@ pub(crate) fn box_return_value<'ctx>(
 
 pub fn prepare_call_args<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    args: &[Spanned<ast::Expr>],
+    args: &[hir::Expr],
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<Vec<inkwell::values::BasicMetadataValueEnum<'ctx>>, SprsError> {
     let mut compiled_args = Vec::with_capacity(args.len());
@@ -1071,7 +1053,7 @@ pub fn prepare_call_args<'ctx>(
         let compiled_arg_ptr = self_compiler
             .compile_expr(arg, module)?
             .into_pointer_value();
-        let (arg_ptr, source_var) = if let ast::Expr::Var(name) = &arg.node {
+        let (arg_ptr, source_var) = if let hir::ExprKind::Var(name) = &arg.kind {
             if self_compiler.get_variables(name).is_some() {
                 (compiled_arg_ptr, Some((compiled_arg_ptr.into(), name)))
             } else {
@@ -1137,7 +1119,7 @@ pub fn prepare_call_args<'ctx>(
 pub fn create_call_expr<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
     ident: &str,
-    args: &Vec<Spanned<ast::Expr>>,
+    args: &Vec<hir::Expr>,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
     let func = module
@@ -1158,7 +1140,6 @@ pub fn create_call_expr<'ctx>(
             help: None,
         })?;
 
-    self_compiler.check_call_arguments(ident, args)?;
 
     let compiled_args = prepare_call_args(self_compiler, args, module)?;
     let call_site = self_compiler

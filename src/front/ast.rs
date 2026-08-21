@@ -1,7 +1,7 @@
 use crate::front::span::{Span, Spanned};
 use crate::front::type_helper::{Type, TypeAnnot};
 
-pub use crate::front::label_name::{LabelName, LabelNamePart, parse_dynamic_label_template};
+pub use crate::front::label_name::{LabelName, parse_dynamic_label_template};
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum Expr {

@@ -6,19 +6,19 @@ use crate::llvm::value::{
 };
 use crate::llvm::variable::{clone_runtime_value, move_variable, var_load_at_init_variable};
 use crate::{
-    front::ast,
+    front::hir,
     front::error::{ErrorCategory, ErrorCode, Location, SprsError},
-    front::span::{Span, Spanned},
+    front::span::Span,
     llvm::compiler::{Compiler, StoreTag, StoreValue, Tag},
 };
 use inkwell::{
     AddressSpace,
-    values::{BasicValueEnum, PointerValue, ValueKind},
+    values::{BasicValueEnum, ValueKind},
 };
 
 pub fn call_builtin_macro_println<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    args: &Vec<Spanned<ast::Expr>>,
+    args: &Vec<hir::Expr>,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
     let print_fn = self_compiler.get_runtime_fn(module, "__println")?;
@@ -38,7 +38,7 @@ pub fn call_builtin_macro_println<'ctx>(
 
 pub fn call_builtin_macro_list_push<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    args: &Vec<Spanned<ast::Expr>>,
+    args: &Vec<hir::Expr>,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
     if args.len() != 2 {
@@ -52,37 +52,13 @@ pub fn call_builtin_macro_list_push<'ctx>(
             help: None,
         });
     }
-    {
-        use crate::front::type_helper::{list_element, types_assignable, Type};
-        let list_ty = self_compiler.infer_type(&args[0]);
-        if let Some(elem_ty) = list_element(&list_ty) {
-            if !matches!(elem_ty, Type::Any) {
-                let val_ty = self_compiler.infer_type_in(&args[1], Some(elem_ty));
-                if !types_assignable(elem_ty, &val_ty) {
-                    return Err(SprsError::Type {
-                        code: ErrorCode {
-                            category: ErrorCategory::Type,
-                            number: 6,
-                        },
-                        location: self_compiler.location(args[1].span),
-                        message: format!(
-                            "Type mismatch: list element has {val_ty}, expected {elem_ty}"
-                        ),
-                        expected_type: Some(format!("{elem_ty}")),
-                        actual_type: Some(format!("{val_ty}")),
-                        help: None,
-                    });
-                }
-            }
-        }
-    }
     let list_ptr = self_compiler
         .compile_expr(&args[0], module)?
         .into_pointer_value();
     let compiled_val_ptr = self_compiler
         .compile_expr(&args[1], module)?
         .into_pointer_value();
-    let (val_ptr, source_var) = if let ast::Expr::Var(name) = &args[1].node {
+    let (val_ptr, source_var) = if let hir::ExprKind::Var(name) = &args[1].kind {
         if self_compiler.get_variables(name).is_some() {
             (compiled_val_ptr, Some((compiled_val_ptr.into(), name)))
         } else {
@@ -157,7 +133,7 @@ pub fn call_builtin_macro_list_push<'ctx>(
 /// @buf_len(buf) — length of a Buffer as Integer (0 for stale / non-Buffer).
 pub fn call_builtin_macro_buf_len<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    args: &[Spanned<ast::Expr>],
+    args: &[hir::Expr],
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
     if args.len() != 1 {
@@ -230,7 +206,7 @@ pub fn call_builtin_macro_buf_len<'ctx>(
 /// @buf_get(buf, i) — read one byte as Integer; OOB / stale → Unit sentinel.
 pub fn call_builtin_macro_buf_get<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    args: &[Spanned<ast::Expr>],
+    args: &[hir::Expr],
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
     if args.len() != 2 {
@@ -296,7 +272,7 @@ pub fn call_builtin_macro_buf_get<'ctx>(
 /// @buf_set(buf, i, v) — write byte `v` (low 8 bits) at index `i`. OOB → no-op.
 pub fn call_builtin_macro_buf_set<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    args: &[Spanned<ast::Expr>],
+    args: &[hir::Expr],
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
     if args.len() != 3 {
@@ -368,23 +344,9 @@ pub fn call_builtin_macro_buf_set<'ctx>(
 /// Source binding becomes Unit; caller must `@free` the result.
 pub fn call_builtin_macro_raw<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    args: &[Spanned<ast::Expr>],
+    args: &[hir::Expr],
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
-    if self_compiler.unsafe_depth == 0 {
-        return Err(SprsError::Semantic {
-            code: ErrorCode {
-                category: ErrorCategory::Semantic,
-                number: 15,
-            },
-            location: Location::new(
-                String::new(),
-                args.first().map(|a| a.span).unwrap_or(Span::DUMMY),
-            ),
-            message: "`@raw` requires an unsafe block".to_string(),
-            help: Some("wrap the call in `unsafe { ... }`".to_string()),
-        });
-    }
     if args.len() != 1 {
         return Err(SprsError::Semantic {
             code: ErrorCode {
@@ -434,7 +396,7 @@ pub fn call_builtin_macro_raw<'ctx>(
         }
     };
 
-    if let ast::Expr::Var(name) = &args[0].node {
+    if let hir::ExprKind::Var(name) = &args[0].kind {
         if let Some(binding) = self_compiler.get_variables(name) {
             let src_ptr = binding.value.into_pointer_value();
             let tag_ptr = self_compiler
@@ -474,23 +436,9 @@ pub fn call_builtin_macro_raw<'ctx>(
 /// Null/unknown are no-ops; source binding becomes Unit.
 pub fn call_builtin_macro_free<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    args: &[Spanned<ast::Expr>],
+    args: &[hir::Expr],
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
-    if self_compiler.unsafe_depth == 0 {
-        return Err(SprsError::Semantic {
-            code: ErrorCode {
-                category: ErrorCategory::Semantic,
-                number: 15,
-            },
-            location: Location::new(
-                String::new(),
-                args.first().map(|a| a.span).unwrap_or(Span::DUMMY),
-            ),
-            message: "`@free` requires an unsafe block".to_string(),
-            help: Some("wrap the call in `unsafe { ... }`".to_string()),
-        });
-    }
     if args.len() != 1 {
         return Err(SprsError::Semantic {
             code: ErrorCode {
@@ -526,7 +474,7 @@ pub fn call_builtin_macro_free<'ctx>(
         .build_call(free_fn, &[p_val.into()], "raw_free_call")
         .unwrap();
 
-    if let ast::Expr::Var(name) = &args[0].node {
+    if let hir::ExprKind::Var(name) = &args[0].kind {
         if let Some(binding) = self_compiler.get_variables(name) {
             let src_ptr = binding.value.into_pointer_value();
             let tag_ptr = self_compiler
@@ -559,7 +507,7 @@ pub fn call_builtin_macro_free<'ctx>(
 
 pub fn call_builtin_macro_clone<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    args: &Vec<Spanned<ast::Expr>>,
+    args: &Vec<hir::Expr>,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
     if args.len() != 1 {
@@ -583,7 +531,7 @@ pub fn call_builtin_macro_clone<'ctx>(
 
 pub fn call_builtin_macro_move<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    args: &Vec<Spanned<ast::Expr>>,
+    args: &Vec<hir::Expr>,
     _module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
     if args.len() != 1 {
@@ -598,8 +546,8 @@ pub fn call_builtin_macro_move<'ctx>(
         });
     }
 
-    let name = match &args[0].node {
-        ast::Expr::Var(name) => name,
+    let name = match &args[0].kind {
+        hir::ExprKind::Var(name) => name,
         _ => {
             return Err(SprsError::Semantic {
                 code: ErrorCode {
@@ -633,7 +581,7 @@ pub fn call_builtin_macro_move<'ctx>(
 
 pub fn call_builtin_macro_cast<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    args: &Vec<Spanned<ast::Expr>>,
+    args: &Vec<hir::Expr>,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
     if args.len() != 2 {
@@ -653,20 +601,20 @@ pub fn call_builtin_macro_cast<'ctx>(
         .into_pointer_value();
     let target_type_expr = &args[1];
 
-    let target_type = match &target_type_expr.node {
-        ast::Expr::Var(ident) => ident.as_str(),
-        ast::Expr::TypeI8 => "i8",
-        ast::Expr::TypeU8 => "u8",
-        ast::Expr::TypeI16 => "i16",
-        ast::Expr::TypeU16 => "u16",
-        ast::Expr::TypeI32 => "i32",
-        ast::Expr::TypeU32 => "u32",
-        ast::Expr::TypeI64 => "i64",
-        ast::Expr::TypeU64 => "u64",
+    let target_type = match &target_type_expr.kind {
+        hir::ExprKind::Var(ident) => ident.as_str(),
+        hir::ExprKind::TypeI8 => "i8",
+        hir::ExprKind::TypeU8 => "u8",
+        hir::ExprKind::TypeI16 => "i16",
+        hir::ExprKind::TypeU16 => "u16",
+        hir::ExprKind::TypeI32 => "i32",
+        hir::ExprKind::TypeU32 => "u32",
+        hir::ExprKind::TypeI64 => "i64",
+        hir::ExprKind::TypeU64 => "u64",
 
-        ast::Expr::TypeF16 => "f16",
-        ast::Expr::TypeF32 => "f32",
-        ast::Expr::TypeF64 => "f64",
+        hir::ExprKind::TypeF16 => "f16",
+        hir::ExprKind::TypeF32 => "f32",
+        hir::ExprKind::TypeF64 => "f64",
         _ => {
             return Err(SprsError::Semantic {
                 code: ErrorCode {
@@ -1219,7 +1167,7 @@ pub fn call_builtin_macro_cast<'ctx>(
 
 pub fn call_builtin_macro_fcast<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    args: &[Spanned<ast::Expr>],
+    args: &[hir::Expr],
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
     if args.len() != 1 {
@@ -1375,7 +1323,7 @@ pub fn call_builtin_macro_fcast<'ctx>(
 
 pub fn call_builtin_macro_lshift<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    args: &Vec<Spanned<ast::Expr>>,
+    args: &Vec<hir::Expr>,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
     if args.len() != 2 {
@@ -1394,7 +1342,7 @@ pub fn call_builtin_macro_lshift<'ctx>(
 
 pub fn call_builtin_macro_rshift<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    args: &Vec<Spanned<ast::Expr>>,
+    args: &Vec<hir::Expr>,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
     if args.len() != 2 {
@@ -1418,7 +1366,7 @@ enum ShiftDir {
 
 fn shift_impl<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    args: &Vec<Spanned<ast::Expr>>,
+    args: &Vec<hir::Expr>,
     module: &inkwell::module::Module<'ctx>,
     dir: ShiftDir,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
@@ -1654,7 +1602,7 @@ fn shift_impl<'ctx>(
 
 pub fn call_builtin_macro_not<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    args: &Vec<Spanned<ast::Expr>>,
+    args: &Vec<hir::Expr>,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
     if args.len() != 1 {
@@ -1710,7 +1658,7 @@ pub fn call_builtin_macro_not<'ctx>(
 /// @is_error(x) — returns true (1) if x is a Label named "error", false (0) otherwise.
 pub fn call_builtin_macro_is_error<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    args: &[Spanned<ast::Expr>],
+    args: &[hir::Expr],
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
     if args.len() != 1 {
@@ -1783,7 +1731,7 @@ pub fn call_builtin_macro_is_error<'ctx>(
 /// payloads are rendered via `format_sprs_value`; non-errors return "".
 pub fn call_builtin_macro_error_message<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    args: &[Spanned<ast::Expr>],
+    args: &[hir::Expr],
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
     if args.len() != 1 {
@@ -1846,7 +1794,7 @@ pub fn call_builtin_macro_error_message<'ctx>(
 /// @attach(expr, :name) captures a cloned value for later `:name` uses.
 pub fn call_builtin_macro_attach<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    args: &[Spanned<ast::Expr>],
+    args: &[hir::Expr],
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
     if args.len() != 2 {
@@ -1860,8 +1808,8 @@ pub fn call_builtin_macro_attach<'ctx>(
             help: None,
         });
     }
-    let slot_name = match &args[1].node {
-        ast::Expr::AttachSlot(name) => name.clone(),
+    let slot_name = match &args[1].kind {
+        hir::ExprKind::AttachSlot(name) => name.clone(),
         _ => {
             return Err(SprsError::Semantic {
                 code: ErrorCode {
@@ -1898,7 +1846,7 @@ pub fn call_builtin_macro_attach<'ctx>(
 /// `expected` must be an atom (`:name` or `:"{i}-item"`).
 pub fn call_builtin_macro_label_is<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    args: &[Spanned<ast::Expr>],
+    args: &[hir::Expr],
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
     if args.len() != 2 {
@@ -1913,8 +1861,8 @@ pub fn call_builtin_macro_label_is<'ctx>(
         });
     }
 
-    let expected_name = match &args[1].node {
-        ast::Expr::Atom(name) => name,
+    let expected_name = match &args[1].kind {
+        hir::ExprKind::Atom(name) => name,
         _ => {
             return Err(SprsError::Semantic {
                 code: ErrorCode {
@@ -2107,7 +2055,7 @@ pub fn call_builtin_macro_label_is<'ctx>(
 /// @label_payload(value) — clone the label payload. Non-label → Unit.
 pub fn call_builtin_macro_label_payload<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    args: &[Spanned<ast::Expr>],
+    args: &[hir::Expr],
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
     if args.len() != 1 {
@@ -2170,7 +2118,7 @@ pub fn call_builtin_macro_label_payload<'ctx>(
 /// @label_name(value) — return the label name as String. Non-label → "".
 pub fn call_builtin_macro_label_name<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    args: &[Spanned<ast::Expr>],
+    args: &[hir::Expr],
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
     if args.len() != 1 {
@@ -2237,7 +2185,7 @@ pub fn call_builtin_macro_label_name<'ctx>(
 /// reason: any expression; the compiled value becomes the label payload.
 pub fn call_builtin_macro_error<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    args: &[Spanned<ast::Expr>],
+    args: &[hir::Expr],
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
     if args.len() != 1 {

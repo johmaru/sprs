@@ -1,23 +1,17 @@
+use crate::front::hir;
 use crate::front::ast;
 use crate::front::ast::FbCondition;
 use crate::front::error::{ErrorCategory, ErrorCode, Location, SprsError};
 use crate::front::span::Span;
-use crate::front::span::Spanned;
-use crate::front::type_helper;
-use crate::front::type_helper::{Type, TypeAnnot};
+use crate::front::type_helper::Type;
 use crate::llvm::builder_helper;
-use crate::llvm::builder_helper::Comparison;
-use crate::llvm::builder_helper::EqNeq;
-use crate::llvm::builder_helper::UpDown;
-use crate::llvm::parser::parse_only;
-use crate::naming;
 use inkwell::AddressSpace;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::Linkage;
 use inkwell::module::Module;
 use inkwell::types::BasicTypeEnum;
-use inkwell::types::{BasicMetadataTypeEnum, StructType};
+use inkwell::types::StructType;
 use inkwell::values::GlobalValue;
 use inkwell::values::IntValue;
 use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
@@ -40,27 +34,10 @@ pub struct ClosedLabelSetFrame {
     pub is_public: bool,
 }
 
-/// Sprs-level function signature (not the LLVM ABI).
-#[derive(Debug, Clone)]
-pub struct FnTypeInfo {
-    pub ret_ty: Option<Type>,
-    pub params: Vec<Option<TypeAnnot>>,
-    /// Declared FunctionBuild type parameters (empty for normal functions).
-    pub type_params: Vec<String>,
-    /// Conditional `when` return rules, in source order. Empty for normal
-    /// functions and for unconditional FunctionBuild contracts.
-    pub when_rules: Vec<(FbCondition, Type)>,
-}
-
 /// Local binding metadata in a scope.
 #[derive(Clone)]
 pub struct VarBinding<'ctx> {
     pub value: BasicValueEnum<'ctx>,
-    pub ty: Type,
-    /// Annotated with `ambi` — reassignment may change the static type.
-    pub is_ambi: bool,
-    /// Came from a type annotation (`>> T` / `>> ambi T`).
-    pub is_annotated: bool,
 }
 
 pub struct Compiler<'ctx> {
@@ -69,10 +46,6 @@ pub struct Compiler<'ctx> {
     pub builder: Builder<'ctx>,
     pub scopes: Vec<Scope<'ctx>>,
     pub function_signatures: Option<FunctionValue<'ctx>>,
-    /// Current function's Sprs return annotation while compiling its body.
-    pub current_fn_ret_ty: Option<Type>,
-    /// Declared Sprs signatures, keyed by LLVM/function name.
-    pub fn_types: HashMap<String, FnTypeInfo>,
     pub runtime_value_type: StructType<'ctx>,
     pub target_os: OS,
     pub string_counter: usize,
@@ -97,9 +70,8 @@ pub struct Compiler<'ctx> {
     pub sources: HashMap<String, String>, // module name → source text
     /// Values captured by @attach within the current function.
     pub attachments: HashMap<String, PointerValue<'ctx>>,
-    /// Nesting depth of `unsafe { ... }` blocks in the current function.
-    /// `@raw` / `@free` are gated on this being > 0.
-    pub unsafe_depth: u32,
+    pub hir_modules: HashMap<String, crate::front::hir::Module>,
+    pub typecheck_visiting: Vec<String>,
 }
 
 pub enum StoreTag<'ctx> {
@@ -376,7 +348,7 @@ pub struct Scope<'ctx> {
     pub variables: HashMap<String, VarBinding<'ctx>>,
     pub var_name: Vec<String>,
     /// `defer <expr>;` queue; run LIFO at scope exit, before variable `__drop`.
-    pub deferred: Vec<Spanned<ast::Expr>>,
+    pub deferred: Vec<hir::Expr>,
 }
 
 impl<'ctx> Scope<'ctx> {
@@ -410,8 +382,6 @@ impl<'ctx> Compiler<'ctx> {
             builder,
             scopes,
             function_signatures: None,
-            current_fn_ret_ty: None,
-            fn_types: HashMap::new(),
             runtime_value_type,
             target_os: OS::Unknown,
             string_counter: 0,
@@ -426,47 +396,13 @@ impl<'ctx> Compiler<'ctx> {
             private_atom_defs: HashSet::new(),
             sources: HashMap::new(),
             attachments: HashMap::new(),
-            unsafe_depth: 0,
+            hir_modules: HashMap::new(),
+            typecheck_visiting: Vec::new(),
         }
     }
 
     pub(crate) fn location(&self, span: crate::front::span::Span) -> Location {
         Location::new(self.current_file.clone(), span)
-    }
-
-    pub(crate) fn is_visible_atom_def(&self, name: &str) -> bool {
-        self.atom_defs.contains(name) && !self.private_atom_defs.contains(name)
-    }
-
-    /// Resolve a static Atom name as a closed label set member.
-    ///
-    /// `set.member` form: `Some(set)` when declared and visible, otherwise
-    /// `SPRS-SEM-004`. Unqualified names return `None` (open Atom).
-    pub fn resolve_closed_label_member(
-        &self,
-        name: &str,
-        span: Span,
-    ) -> Result<Option<String>, SprsError> {
-        let Some((set, member)) = name.split_once('.') else {
-            return Ok(None);
-        };
-        let undefined = || SprsError::Semantic {
-            code: ErrorCode {
-                category: ErrorCategory::Semantic,
-                number: 4,
-            },
-            location: self.location(span),
-            message: format!("Undefined closed label member: {}", name),
-            help: None,
-        };
-        let Some(frame) = self.closed_label_sets.get(set) else {
-            return Err(undefined());
-        };
-        let member_known = frame.members.iter().any(|known| known == member);
-        if self.private_closed_label_members.contains(name) || !member_known {
-            return Err(undefined());
-        }
-        Ok(Some(set.to_string()))
     }
 
     pub(crate) fn enter_scope(&mut self) {
@@ -520,30 +456,13 @@ impl<'ctx> Compiler<'ctx> {
         &mut self,
         name: String,
         value: BasicValueEnum<'ctx>,
-        ty: Type,
-        is_ambi: bool,
-        is_annotated: bool,
     ) {
         if let Some(current_scope) = self.scopes.last_mut() {
             current_scope.variables.insert(
                 name.clone(),
-                VarBinding {
-                    value,
-                    ty,
-                    is_ambi,
-                    is_annotated,
-                },
+                VarBinding { value },
             );
             current_scope.var_name.push(name);
-        }
-    }
-
-    pub fn set_variable_type(&mut self, name: &str, ty: Type) {
-        for scope in self.scopes.iter_mut().rev() {
-            if let Some(var) = scope.variables.get_mut(name) {
-                var.ty = ty;
-                return;
-            }
         }
     }
 
@@ -556,7 +475,7 @@ impl<'ctx> Compiler<'ctx> {
     pub(crate) fn emit_drop_for_return(&mut self, module: &Module<'ctx>) -> Result<(), SprsError> {
         let drop_fn = self.get_runtime_fn(module, "__drop")?;
 
-        let mut scope_work: Vec<(Vec<Spanned<ast::Expr>>, Vec<(PointerValue<'ctx>, String)>)> =
+        let mut scope_work: Vec<(Vec<hir::Expr>, Vec<(PointerValue<'ctx>, String)>)> =
             Vec::new();
         // skip(1): exclude scopes[0] (global). Remaining scopes, including the
         // function-argument scope, are cleaned up innermost-first. Deferred/vars
@@ -627,15 +546,7 @@ impl<'ctx> Compiler<'ctx> {
                     | Type::App(_, _)
                     | Type::Param(_)
                     | Type::Atom(_) => self.runtime_value_type.into(),
-                    Type::Named(_) | Type::SelfType => {
-                        return Err(SprsError::Internal {
-                            message: format!(
-                                "unresolved type in struct `{}` field `{}`",
-                                name, field.ident
-                            ),
-                            location: None,
-                        });
-                    }
+                    Type::Named(_) | Type::SelfType => self.runtime_value_type.into(),
                     Type::Int
                     | Type::TypeI64
                     | Type::TypeU64
@@ -696,7 +607,7 @@ impl<'ctx> Compiler<'ctx> {
 
     pub fn build_list_from_exprs(
         &mut self,
-        elements: &[Spanned<ast::Expr>],
+        elements: &[hir::Expr],
         module: &Module<'ctx>,
     ) -> Result<IntValue<'ctx>, SprsError> {
         let create = builder_helper::create_list_from_expr(self, elements, module);
@@ -978,27 +889,4 @@ mod tag_type_sync_tests {
         assert_eq!(Type::from_tag_discriminant(10), Some(Type::Label));
     }
 
-    #[test]
-    fn sprs_return_allows_declared_type_or_error_label() {
-        // Mirrors validate_sprs_return_type rules without needing LLVM.
-        use crate::front::type_helper::{is_error_label_type, types_compatible};
-        fn ok(expected: Option<Type>, actual: Type) -> bool {
-            match expected {
-                None => true,
-                Some(exp) => {
-                    actual == Type::Any
-                        || is_error_label_type(&actual)
-                        || types_compatible(&exp, &actual)
-                }
-            }
-        }
-        let err_label = Type::App("Label".into(), vec![Type::Atom("error".into())]);
-        let ok_label = Type::App("Label".into(), vec![Type::Atom("ok".into())]);
-        assert!(ok(Some(Type::List), Type::List));
-        assert!(ok(Some(Type::List), err_label.clone()));
-        assert!(ok(Some(Type::List), Type::Any));
-        assert!(!ok(Some(Type::List), ok_label));
-        assert!(!ok(Some(Type::List), Type::Int));
-        assert!(ok(None, Type::Int));
-    }
 }

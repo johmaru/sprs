@@ -2,18 +2,16 @@ use crate::front::ast;
 use crate::front::error::{ErrorCategory, ErrorCode, Location, SprsError};
 use crate::front::span::Span;
 use crate::front::type_helper;
-use crate::llvm::builder_helper;
 use crate::llvm::compiler::{
-    ClosedLabelSetFrame, Compiler, FnTypeInfo, LINUX_STR, OS, StructDef, WINDOWS_STR,
+    ClosedLabelSetFrame, Compiler, LINUX_STR, OS, WINDOWS_STR,
 };
-use crate::llvm::parser::parse_only;
+use crate::front::parser::parse_only;
 use crate::llvm::value::build_label_is_error;
 use crate::naming;
 use inkwell::AddressSpace;
 use inkwell::module::Linkage;
 use inkwell::module::Module;
-use inkwell::types::{BasicMetadataTypeEnum, BasicTypeEnum};
-use inkwell::values::FunctionValue;
+use inkwell::types::BasicMetadataTypeEnum;
 use std::collections::{HashMap, HashSet};
 
 impl<'ctx> Compiler<'ctx> {
@@ -25,133 +23,58 @@ impl<'ctx> Compiler<'ctx> {
         if self.modules.contains_key(module_name) {
             return Ok(());
         }
-
-        let mut path = format!("{}/{}{}", self.source_path, module_name, naming::SOURCE_EXT);
-
-        if let Some(main_path) = main_path {
-            if module_name == "main" {
-                path = main_path.clone();
-            }
+        self.ensure_typed_module(module_name, main_path)?;
+        let hir_mod = self
+            .hir_modules
+            .get(module_name)
+            .cloned()
+            .ok_or_else(|| SprsError::Internal {
+                message: format!("missing typed module {module_name}"),
+                location: None,
+            })?;
+        for import_name in &hir_mod.imports {
+            self.load_and_compile_module(import_name, None)?;
         }
-
-        let source = std::fs::read_to_string(&path).map_err(|load_error| SprsError::Semantic {
-            code: ErrorCode {
-                category: ErrorCategory::Semantic,
-                number: 10,
-            },
-            location: Location::new(path.clone(), Span::DUMMY),
-            message: format!("Failed to read module file {}: {}", path, load_error),
-            help: None,
-        })?;
-
-        self.sources.insert(module_name.to_string(), source.clone());
-        self.current_file = path.clone();
-
-        let mut items = parse_only(&source, &path)?;
-
-        self.process_preprocessors(&items);
-
-        let llvm_module_name = items
-            .iter()
-            .find_map(|item| match item {
-                ast::Item::Package(name) => Some(name.clone()),
-                _ => None,
-            })
-            .unwrap_or_else(|| module_name.to_string());
+        if self.modules.contains_key(module_name) {
+            return Ok(());
+        }
+        self.current_file = hir_mod.path.clone();
+        let llvm_module_name = if hir_mod.is_main { "main".to_string() } else { hir_mod.name.clone() };
 
         let module = self.context.create_module(&llvm_module_name);
-
         self.inject_runtime_constants(&module);
-
-        // First, load and compile all imports
-        for item in &items {
-            if let ast::Item::Import(import_name) = item {
-                self.load_and_compile_module(import_name, None)?;
-            }
-        }
-
         self.builder.clear_insertion_position();
 
-        let mut known_structs: HashSet<String> = self.struct_defs.keys().cloned().collect();
-        for item in &items {
-            if let ast::Item::StructItem(struct_item) = item {
-                known_structs.insert(struct_item.ident.clone());
-            }
+        for func in &hir_mod.functions {
+            self.declare_fn_prototype(func, &module);
         }
-        let known_closed_sets: HashSet<String> = self.closed_label_sets.keys().cloned().collect();
-        self.apply_function_builds(&mut items, module_name, &path, &mut known_structs)?;
-        resolve_item_types(&mut items, &known_structs, &known_closed_sets, &path)?;
-
-        // Declare all function prototypes
-        for item in &items {
-            match item {
-                ast::Item::FunctionItem(func) => {
-                    self.declare_fn_prototype(func, &module);
-                }
-                _ => {}
-            }
-        }
-
         let mut private_closed_label_members: Vec<String> = Vec::new();
         let mut private_struct_fields: Vec<String> = Vec::new();
         let mut private_atom_defs: Vec<String> = Vec::new();
-
-        // get enums and structs first
-        for item in &items {
-            match item {
-                ast::Item::StructItem(items) => {
-                    for field in &items.fields {
-                        if let Some(field_ty) = &field.ty {
-                            type_helper::reject_payloadless_label_type(field_ty).map_err(
-                                |msg| SprsError::Semantic {
-                                    code: ErrorCode {
-                                        category: ErrorCategory::Semantic,
-                                        number: 11,
-                                    },
-                                    location: Location::new(String::new(), field.span),
-                                    message: msg,
-                                    help: None,
-                                },
-                            )?;
-                        }
-                    }
-                    self.register_struct(items.ident.clone(), items.fields.clone())?;
-
-                    if !items.is_public {
-                        for field in &items.fields {
-                            let full_name = format!("{}.{}", items.ident, field.ident);
-                            private_struct_fields.push(full_name);
-                        }
-                    }
+        for s in &hir_mod.structs {
+            self.register_hir_struct(s)?;
+            if !s.is_public {
+                for field in &s.fields {
+                    private_struct_fields.push(format!("{}.{}", s.name, field.name));
                 }
-                ast::Item::ClosedLabelSetItem(set) => {
-                    self.register_closed_label_set(set)?;
-
-                    if !set.is_public {
-                        for member in &set.members {
-                            let full_name = format!("{}.{}", set.ident, member);
-                            private_closed_label_members.push(full_name);
-                        }
-                    }
-                }
-                ast::Item::AtomItem(def) => {
-                    self.register_atom_def(def)?;
-                    if !def.is_public {
-                        private_atom_defs.push(def.ident.clone());
-                    }
-                }
-                _ => {}
             }
         }
-
-        // Now compile all functions
-        for item in &items {
-            match item {
-                ast::Item::FunctionItem(func) => {
-                    self.compile_fn(func, &module)?;
+        for set in &hir_mod.closed_label_sets {
+            self.register_closed_label_set_hir(set)?;
+            if !set.is_public {
+                for member in &set.members {
+                    private_closed_label_members.push(format!("{}.{}", set.name, member));
                 }
-                _ => {}
             }
+        }
+        for def in &hir_mod.atoms {
+            self.register_atom_def_hir(def)?;
+            if !def.is_public {
+                private_atom_defs.push(def.name.clone());
+            }
+        }
+        for func in &hir_mod.functions {
+            self.compile_fn(func, &module)?;
         }
         if llvm_module_name == "main" {
             if let Some(sprs_main_fn) = module.get_function(naming::INTERNAL_MAIN_FN) {
@@ -283,7 +206,7 @@ impl<'ctx> Compiler<'ctx> {
         path: &str,
         known_structs: &mut HashSet<String>,
     ) -> Result<(), SprsError> {
-        use crate::llvm::function_build::{
+        use crate::front::function_build::{
             FunctionBuildRegistry, collect_local_function_builds, function_build_source_directive,
             import_public_builds_from_source, insert_builds, known_structs_from_items,
             load_function_build_source, lower_functions_with_builds, resolve_function_build_types,
@@ -313,7 +236,6 @@ impl<'ctx> Compiler<'ctx> {
                     ext_closed.insert(set.ident.clone());
                 }
             }
-            resolve_item_types(&mut ext_items, &ext_known, &ext_closed, &ext_path)?;
             for item in &ext_items {
                 if let ast::Item::StructItem(struct_item) = item {
                     if !self.struct_defs.contains_key(&struct_item.ident) {
@@ -418,19 +340,151 @@ impl<'ctx> Compiler<'ctx> {
         global.set_constant(true);
     }
 
-    pub(crate) fn declare_fn_prototype(&mut self, func: &ast::Function, module: &Module<'ctx>) {
+    fn ensure_typed_module(
+        &mut self,
+        module_name: &str,
+        main_path: Option<&String>,
+    ) -> Result<(), SprsError> {
+        if self.hir_modules.contains_key(module_name) {
+            return Ok(());
+        }
+        if self.typecheck_visiting.iter().any(|n| n == module_name) {
+            let mut cycle = self.typecheck_visiting.clone();
+            cycle.push(module_name.to_string());
+            return Err(SprsError::Internal {
+                message: format!("circular module import: {}", cycle.join(" -> ")),
+                location: None,
+            });
+        }
+        self.typecheck_visiting.push(module_name.to_string());
+        let mut path = format!("{}/{}{}", self.source_path, module_name, naming::SOURCE_EXT);
+        if let Some(main_path) = main_path {
+            if module_name == "main" {
+                path = main_path.clone();
+            }
+        }
+        let source = std::fs::read_to_string(&path).map_err(|load_error| SprsError::Semantic {
+            code: ErrorCode {
+                category: ErrorCategory::Semantic,
+                number: 10,
+            },
+            location: Location::new(path.clone(), Span::DUMMY),
+            message: format!("Failed to read module file {}: {}", path, load_error),
+            help: None,
+        })?;
+        self.sources.insert(module_name.to_string(), source.clone());
+        self.current_file = path.clone();
+        let mut items = parse_only(&source, &path)?;
+        self.process_preprocessors(&items);
+        let imports: Vec<String> = items
+            .iter()
+            .filter_map(|item| match item {
+                ast::Item::Import(name) => Some(name.clone()),
+                _ => None,
+            })
+            .collect();
+        for import_name in &imports {
+            self.ensure_typed_module(import_name, None)?;
+        }
+        let mut known_structs: HashSet<String> = self.struct_defs.keys().cloned().collect();
+        for item in &items {
+            if let ast::Item::StructItem(struct_item) = item {
+                known_structs.insert(struct_item.ident.clone());
+            }
+        }
+        self.apply_function_builds(&mut items, module_name, &path, &mut known_structs)?;
+        let mut imported = HashMap::new();
+        for import_name in &imports {
+            if let Some(m) = self.hir_modules.get(import_name) {
+                imported.insert(import_name.clone(), m.interface());
+            }
+        }
+        let mut fb_structs = Vec::new();
+        for (name, def) in &self.struct_defs {
+            fb_structs.push(crate::front::hir::Struct {
+                name: name.clone(),
+                fields: def
+                    .fields
+                    .iter()
+                    .map(|f| crate::front::hir::StructField {
+                        name: f.ident.clone(),
+                        ty: f.ty.clone().unwrap_or(crate::front::type_helper::Type::Any),
+                        default_value: None,
+                        span: f.span,
+                    })
+                    .collect(),
+                is_public: true,
+                span: Span::DUMMY,
+            });
+        }
+        if !fb_structs.is_empty() {
+            imported.insert(
+                String::from("%function_build_structs"),
+                crate::front::hir::ModuleInterface {
+                    name: String::from("%function_build_structs"),
+                    structs: fb_structs,
+                    ..Default::default()
+                },
+            );
+        }
+        let typed = crate::front::type_check::check_module(
+            &items,
+            module_name,
+            &path,
+            &imported,
+            &self.function_build_contracts,
+        )?;
+        self.hir_modules.insert(module_name.to_string(), typed);
+        self.typecheck_visiting.pop();
+        Ok(())
+    }
+
+    fn register_hir_struct(&mut self, s: &crate::front::hir::Struct) -> Result<(), SprsError> {
+        let fields: Vec<ast::StructField> = s
+            .fields
+            .iter()
+            .map(|f| ast::StructField {
+                ident: f.name.clone(),
+                ty: Some(f.ty.clone()),
+                default_value: None,
+                span: f.span,
+            })
+            .collect();
+        self.register_struct(s.name.clone(), fields)
+    }
+
+    fn register_closed_label_set_hir(
+        &mut self,
+        set: &crate::front::hir::ClosedLabelSet,
+    ) -> Result<(), SprsError> {
+        let ast_set = ast::ClosedLabelSet {
+            ident: set.name.clone(),
+            members: set.members.clone(),
+            is_public: set.is_public,
+            span: set.span,
+        };
+        self.register_closed_label_set(&ast_set)
+    }
+
+    fn register_atom_def_hir(&mut self, def: &crate::front::hir::AtomDef) -> Result<(), SprsError> {
+        let ast_def = ast::AtomDef {
+            ident: def.name.clone(),
+            is_public: def.is_public,
+            span: def.span,
+        };
+        self.register_atom_def(&ast_def)
+    }
+
+    pub(crate) fn declare_fn_prototype(&mut self, func: &crate::front::hir::Function, module: &Module<'ctx>) {
         let arg_types: Vec<BasicMetadataTypeEnum> = (0..func.params.len())
             .map(|_| self.context.ptr_type(AddressSpace::default()).into())
             .collect();
 
         let fn_type = self.runtime_value_type.fn_type(&arg_types, false);
-        // Return annotations (`>> T`) describe the success path only.
-        // All functions return runtime_value_type so error labels (`{:error, _}`) can propagate
-        // across any declared return type (catchable error mechanism).
-        let func_name = if func.ident == "main" {
+        let func_name = if func.name == "main" {
             naming::INTERNAL_MAIN_FN
         } else {
-            &func.ident
+            &func.name
         };
 
         let fn_val = if let Some(function_value) = module.get_function(func_name) {
@@ -443,207 +497,6 @@ impl<'ctx> Compiler<'ctx> {
             fn_val.set_linkage(Linkage::Private);
         }
 
-        let (type_params, when_rules) = match &func.build_ref {
-            Some(build_name) => self
-                .function_build_contracts
-                .get(build_name)
-                .cloned()
-                .unwrap_or_default(),
-            None => (Vec::new(), Vec::new()),
-        };
-
-        self.fn_types.insert(
-            func_name.to_string(),
-            FnTypeInfo {
-                ret_ty: func.ret_ty.clone(),
-                params: func
-                    .params
-                    .iter()
-                    .map(|parameter| parameter.ty.clone())
-                    .collect(),
-                type_params,
-                when_rules,
-            },
-        );
-        // Plain source name also resolves for non-main calls / inference.
-        if func.ident == "main" {
-            self.fn_types.insert(
-                "main".to_string(),
-                FnTypeInfo {
-                    ret_ty: func.ret_ty.clone(),
-                    params: func
-                        .params
-                        .iter()
-                        .map(|parameter| parameter.ty.clone())
-                        .collect(),
-                    type_params: Vec::new(),
-                    when_rules: Vec::new(),
-                },
-            );
-        }
     }
 }
 
-fn resolve_item_types(
-    items: &mut [ast::Item],
-    known_structs: &HashSet<String>,
-    known_closed_sets: &HashSet<String>,
-    path: &str,
-) -> Result<(), SprsError> {
-    fn semantic(path: &str, span: Span, message: String) -> SprsError {
-        SprsError::Semantic {
-            code: ErrorCode {
-                category: ErrorCategory::Semantic,
-                number: 11,
-            },
-            location: Location::new(path.to_string(), span),
-            message,
-            help: None,
-        }
-    }
-
-    for item in items.iter_mut() {
-        match item {
-            ast::Item::StructItem(struct_item) => {
-                for field in &mut struct_item.fields {
-                    if let Some(ty) = &mut field.ty {
-                        type_helper::resolve_type(
-                            ty,
-                            known_structs,
-                            known_closed_sets,
-                            Some(struct_item.ident.as_str()),
-                        )
-                        .map_err(|message| semantic(path, field.span, message))?;
-                    }
-                }
-            }
-            ast::Item::FunctionItem(func) => {
-                for param in &mut func.params {
-                    if let Some(annot) = &mut param.ty {
-                        type_helper::resolve_type(&mut annot.ty, known_structs, known_closed_sets, None)
-                            .map_err(|message| semantic(path, param.span, message))?;
-                    }
-                }
-                if let Some(ret_ty) = &mut func.ret_ty {
-                    type_helper::resolve_type(ret_ty, known_structs, known_closed_sets, None)
-                        .map_err(|message| semantic(path, func.span, message))?;
-                }
-            }
-            ast::Item::VarItem(var) => {
-                if let Some(annot) = &mut var.ty {
-                    type_helper::resolve_type(&mut annot.ty, known_structs, known_closed_sets, None)
-                        .map_err(|message| semantic(path, var.span, message))?;
-                }
-            }
-            _ => {}
-        }
-    }
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::front::ast::{Function, Item, Struct};
-    use crate::front::type_helper::Type;
-
-    fn collect_known_structs(items: &[Item]) -> HashSet<String> {
-        items
-            .iter()
-            .filter_map(|item| match item {
-                Item::StructItem(struct_item) => Some(struct_item.ident.clone()),
-                _ => None,
-            })
-            .collect()
-    }
-
-    #[test]
-    fn resolves_forward_struct_annotations_before_registration() {
-        let mut items =
-            parse_only("struct A { b >> B } struct B { a >> A }", "forward.sprs").expect("parse");
-        let known = collect_known_structs(&items);
-        resolve_item_types(&mut items, &known, &HashSet::new(), "forward.sprs").unwrap();
-
-        let Item::StructItem(Struct {
-            fields: fields_a, ..
-        }) = &items[0]
-        else {
-            panic!("expected struct A");
-        };
-        assert_eq!(fields_a[0].ty.as_ref(), Some(&Type::Struct("B".into())));
-
-        let Item::StructItem(Struct {
-            fields: fields_b, ..
-        }) = &items[1]
-        else {
-            panic!("expected struct B");
-        };
-        assert_eq!(fields_b[0].ty.as_ref(), Some(&Type::Struct("A".into())));
-
-        let mut items = parse_only(
-            "struct Node { next >> Self, children >> List(Self) }",
-            "self_nested.sprs",
-        )
-        .expect("parse");
-        let known = collect_known_structs(&items);
-        resolve_item_types(&mut items, &known, &HashSet::new(), "self_nested.sprs").unwrap();
-        let Item::StructItem(Struct { fields, .. }) = &items[0] else {
-            panic!("expected struct Node");
-        };
-        assert_eq!(fields[0].ty.as_ref(), Some(&Type::Struct("Node".into())));
-        assert_eq!(
-            fields[1].ty.as_ref(),
-            Some(&Type::App("List".into(), vec![Type::Struct("Node".into())]))
-        );
-    }
-
-    #[test]
-    fn rejects_undefined_named_type_with_location() {
-        let mut items =
-            parse_only("struct A { value >> DoesNotExist }", "invalid_named.sprs").expect("parse");
-        let known = collect_known_structs(&items);
-        let err = resolve_item_types(&mut items, &known, &HashSet::new(), "invalid_named.sprs").unwrap_err();
-        match err {
-            SprsError::Semantic {
-                code,
-                location,
-                message,
-                ..
-            } => {
-                assert_eq!(code.as_string(), "SPRS-SEM-011");
-                assert_eq!(message, "Undefined type: DoesNotExist");
-                assert_eq!(location.file, "invalid_named.sprs");
-                assert_ne!(location.span, Span::DUMMY);
-            }
-            other => panic!("expected semantic error, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn rejects_self_outside_struct_with_location() {
-        let mut items = parse_only("fn f(x >> Self) {}", "invalid_self.sprs").expect("parse");
-        let known = collect_known_structs(&items);
-        let err = resolve_item_types(&mut items, &known, &HashSet::new(), "invalid_self.sprs").unwrap_err();
-        match err {
-            SprsError::Semantic {
-                code,
-                location,
-                message,
-                ..
-            } => {
-                assert_eq!(code.as_string(), "SPRS-SEM-011");
-                assert_eq!(
-                    message,
-                    "`Self` is only valid in struct field type annotations"
-                );
-                assert_eq!(location.file, "invalid_self.sprs");
-                assert_ne!(location.span, Span::DUMMY);
-            }
-            other => panic!("expected semantic error, got {other:?}"),
-        }
-        let Item::FunctionItem(Function { params, .. }) = &items[0] else {
-            panic!("expected function");
-        };
-        assert!(params[0].ty.is_some());
-    }
-}

@@ -1,25 +1,24 @@
-use crate::front::error::{ErrorCategory, ErrorCode, SprsError};
+use crate::front::error::SprsError;
 use crate::front::type_helper::Type;
 use crate::llvm::builder_helper;
 use crate::llvm::value::create_entry_block_alloca;
 use crate::{
+    front::hir,
     front::ast,
     front::label_name::LabelName,
-    front::span::{Span, Spanned},
-    llvm::compiler::{Compiler, StoreTag, StoreValue, StrConstantResult, Tag},
+    front::span::Span,
+    llvm::compiler::{Compiler, StrConstantResult, Tag},
 };
 use inkwell::{
     AddressSpace,
-    builder::Builder,
     values::{BasicValueEnum, IntValue, PointerValue, ValueKind},
 };
-use std::collections::HashSet;
 
 pub fn create_if_condition<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    cond: &Spanned<ast::Expr>,
-    then_blk: &Vec<Spanned<ast::Stmt>>,
-    else_blk: &Option<Vec<Spanned<ast::Stmt>>>,
+    cond: &hir::Expr,
+    then_blk: &Vec<hir::Stmt>,
+    else_blk: &Option<Vec<hir::Stmt>>,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<(), SprsError> {
     let parent_fn = self_compiler
@@ -101,8 +100,8 @@ pub fn create_if_condition<'ctx>(
 
 pub fn create_while_condition<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    cond: &Spanned<ast::Expr>,
-    body: &Vec<Spanned<ast::Stmt>>,
+    cond: &hir::Expr,
+    body: &Vec<hir::Stmt>,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<(), SprsError> {
     let parent_fn = self_compiler
@@ -180,9 +179,9 @@ pub fn create_while_condition<'ctx>(
 
 pub fn create_if_expr<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    cond: &Spanned<ast::Expr>,
-    then_expr: &Spanned<ast::Expr>,
-    else_expr: &Spanned<ast::Expr>,
+    cond: &hir::Expr,
+    then_expr: &hir::Expr,
+    else_expr: &hir::Expr,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
     let parent_fn = self_compiler
@@ -334,129 +333,6 @@ fn build_label_name_eq<'ctx>(
     }
 }
 
-/// Validate match arm patterns (shared by statement and expression match).
-///
-/// SEM-017 rules, in order: dynamic `:"{i}-item"` names are rejected;
-/// `{:name, binder}` needs a non-Atom scrutinee; `case _` must be the last
-/// arm (it matches anything, so arms after it would be dead).
-fn validate_match_patterns<'a, 'ctx>(
-    self_compiler: &Compiler<'ctx>,
-    arms_pats_spans: impl Iterator<Item = (&'a ast::MatchPat, Span)>,
-    is_atom_static: bool,
-) -> Result<(), SprsError> {
-    let arms: Vec<(&ast::MatchPat, Span)> = arms_pats_spans.collect();
-    let last = arms.len().saturating_sub(1);
-    for (i, (pat, span)) in arms.iter().enumerate() {
-        match pat {
-            ast::MatchPat::Name(LabelName::Dynamic(_))
-            | ast::MatchPat::LabelPayload {
-                name: LabelName::Dynamic(_),
-                ..
-            } => {
-                return Err(SprsError::Semantic {
-                    code: ErrorCode {
-                        category: ErrorCategory::Semantic,
-                        number: 17,
-                    },
-                    location: self_compiler.location(*span),
-                    message: "match patterns must be static :name in v1".to_string(),
-                    help: Some("dynamic :\"{i}-item\" patterns are not supported yet".to_string()),
-                });
-            }
-            ast::MatchPat::LabelPayload { .. } if is_atom_static => {
-                return Err(SprsError::Semantic {
-                    code: ErrorCode {
-                        category: ErrorCategory::Semantic,
-                        number: 17,
-                    },
-                    location: self_compiler.location(*span),
-                    message: "payload pattern requires Label scrutinee".to_string(),
-                    help: Some("use a plain :name pattern for Atom values".to_string()),
-                });
-            }
-            ast::MatchPat::Name(LabelName::Static(name)) => {
-                self_compiler.resolve_closed_label_member(name, *span)?;
-            }
-            ast::MatchPat::Wildcard if i != last => {
-                return Err(SprsError::Semantic {
-                    code: ErrorCode {
-                        category: ErrorCategory::Semantic,
-                        number: 17,
-                    },
-                    location: self_compiler.location(*span),
-                    message: "case _ must be the last match arm".to_string(),
-                    help: Some("move case _ to the end".to_string()),
-                });
-            }
-            _ => {}
-        }
-    }
-    Ok(())
-}
-
-/// Require a `Type::ClosedLabelSet` scrutinee's fully qualified member arms
-/// to cover every member.
-///
-/// Open Atom / Label matches stay runtime-checked (`Match failed` panic);
-/// only closed label sets get a compile-time exhaustiveness check. `case _`
-/// satisfies it. Missing members are listed fully qualified, in declaration order.
-fn check_closed_label_set_match_exhaustiveness<'a>(
-    compiler: &Compiler,
-    scrut_ty: &Type,
-    arms: impl Iterator<Item = (&'a ast::MatchPat, Span)>,
-) -> Result<(), SprsError> {
-    let Type::ClosedLabelSet(set) = scrut_ty else {
-        return Ok(());
-    };
-    let Some(frame_info) = compiler.closed_label_sets.get(set) else {
-        return Ok(());
-    };
-    if frame_info.members.is_empty() {
-        return Ok(());
-    }
-
-    let mut covered: HashSet<&str> = HashSet::new();
-    let mut first_span: Option<Span> = None;
-    for (pat, span) in arms {
-        if first_span.is_none() {
-            first_span = Some(span);
-        }
-        match pat {
-            ast::MatchPat::Wildcard => return Ok(()),
-            ast::MatchPat::Name(LabelName::Static(name)) => {
-                covered.insert(name.as_str());
-            }
-            _ => {}
-        }
-    }
-
-    let missing: Vec<String> = frame_info
-        .members
-        .iter()
-        .map(|member| format!("{}.{}", set, member))
-        .filter(|full_name| !covered.contains(full_name.as_str()))
-        .collect();
-    if missing.is_empty() {
-        return Ok(());
-    }
-    let missing_str = missing.join(", ");
-    Err(SprsError::Semantic {
-        code: ErrorCode {
-            category: ErrorCategory::Semantic,
-            number: 17,
-        },
-        location: compiler.location(first_span.unwrap_or(Span::DUMMY)),
-        message: format!("non-exhaustive match on {}; missing {}", set, missing_str),
-        help: Some("add the missing members or a final case _".to_string()),
-    })
-}
-
-/// Build the i1 condition for one arm pattern from the scrutinee's tag/data.
-///
-/// Static types prune the check: an `Atom`-typed scrutinee emits only the atom
-/// name comparison for `:name` patterns (no Label branch), a `Label`-typed one
-/// emits only the label name comparison, and `Any` scrutinees test the runtime
-/// tag so mixed Atom/Label arms work. `case _` is always true.
 fn match_arm_condition<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
     _scrut_ty: &Type,
@@ -692,9 +568,6 @@ fn bind_label_payload<'ctx>(
             self_compiler.add_variable(
                 binder.clone(),
                 binder_ptr.into(),
-                Type::Any,
-                false,
-                false,
             );
         }
     }
@@ -708,14 +581,12 @@ fn bind_label_payload<'ctx>(
 ///   reset to Unit so a later drop will not double-free)
 /// - other exprs → load from the compiled pointer and store
 ///
-/// When `bind_name` is `Some`, also runs the existing `set_variable_type` update
-/// used by Stmt bind arms (`is_annotated` / `is_ambi` gates unchanged).
 fn store_expr_into_dest<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
     dest_ptr: PointerValue<'ctx>,
     dest_name: &str,
-    expr: &Spanned<ast::Expr>,
-    bind_name: Option<&str>,
+    expr: &hir::Expr,
+    _bind_name: Option<&str>,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<(), SprsError> {
     let val_ptr = self_compiler.compile_owned_expr(expr, module, "match_bind_owned")?;
@@ -729,15 +600,6 @@ fn store_expr_into_dest<'ctx>(
         .builder
         .build_store(dest_ptr, new_val)
         .unwrap();
-    if let Some(bind_name) = bind_name {
-        let target = self_compiler
-            .get_variables(bind_name)
-            .ok_or_else(|| format!("Undefined variable: {}", bind_name))?;
-        let rhs_ty = self_compiler.infer_type(expr);
-        if !target.is_annotated || target.is_ambi {
-            self_compiler.set_variable_type(bind_name, rhs_ty);
-        }
-    }
     Ok(())
 }
 
@@ -755,31 +617,20 @@ fn store_expr_into_dest<'ctx>(
 /// Atom/Label arms work.
 pub fn create_match_stmt<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    scrutinee: &Spanned<ast::Expr>,
+    scrutinee: &hir::Expr,
     bind: &Option<String>,
-    arms: &Vec<ast::MatchArm>,
+    arms: &Vec<hir::MatchArm>,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<(), SprsError> {
-    // --- Semantic validation (SEM-017) ---
-    let scrut_ty = self_compiler.infer_type(scrutinee);
+    let scrut_ty = scrutinee.ty.clone();
     let is_atom_static = matches!(scrut_ty, Type::AtomVal | Type::ClosedLabelSet(_))
         || matches!(&scrut_ty, Type::App(name, _) if name == "Atom");
     let is_label_static = matches!(scrut_ty, Type::Label)
         || matches!(&scrut_ty, Type::App(name, _) if name == "Label");
-    validate_match_patterns(
-        self_compiler,
-        arms.iter().map(|arm| (&arm.pat, arm.span)),
-        is_atom_static,
-    )?;
-    check_closed_label_set_match_exhaustiveness(
-        self_compiler,
-        &scrut_ty,
-        arms.iter().map(|arm| (&arm.pat, arm.span)),
-    )?;
 
     for arm in arms {
         match (&bind, &arm.body) {
-            (Some(_), ast::MatchArmBody::ExprBreak(_)) | (None, ast::MatchArmBody::Block(_)) => {}
+            (Some(_), hir::MatchArmBody::ExprBreak(_)) | (None, hir::MatchArmBody::Block(_)) => {}
             _ => {
                 return Err(SprsError::Internal {
                     message: "match arm body does not match bind form".to_string(),
@@ -832,17 +683,11 @@ pub fn create_match_stmt<'ctx>(
     // Result binding variable, declared in the surrounding scope so the code
     // after the match can read it (`return result`).
     if let Some(bind_name) = bind {
-        let unit_expr = Spanned::new(ast::Expr::Unit(), Span::DUMMY);
+        let unit_expr = hir::Expr { kind: hir::ExprKind::Unit(), ty: Type::Unit, span: Span::DUMMY };
         let init_val = self_compiler
             .compile_expr(&unit_expr, module)?
             .into_pointer_value();
-        self_compiler.add_variable(
-            bind_name.clone(),
-            init_val.into(),
-            Type::Unit,
-            false,
-            false,
-        );
+        self_compiler.add_variable(bind_name.clone(), init_val.into());
     }
 
     let merge_bb = self_compiler
@@ -898,7 +743,7 @@ pub fn create_match_stmt<'ctx>(
         self_compiler.enter_scope();
         bind_label_payload(self_compiler, &arm.pat, data_val, module)?;
         match &arm.body {
-            ast::MatchArmBody::ExprBreak(expr) => {
+            hir::MatchArmBody::ExprBreak(expr) => {
                 let bind_name = bind.as_deref().ok_or_else(|| SprsError::Internal {
                     message: "ExprBreak arm without bind".to_string(),
                     location: None,
@@ -923,7 +768,7 @@ pub fn create_match_stmt<'ctx>(
                     .build_unconditional_branch(merge_bb)
                     .unwrap();
             }
-            ast::MatchArmBody::Block(stmts) => {
+            hir::MatchArmBody::Block(stmts) => {
                 self_compiler.compile_block(stmts, module)?;
                 if self_compiler
                     .builder
@@ -981,26 +826,15 @@ pub fn create_match_stmt<'ctx>(
 /// `create_match_stmt`. No arm matches → `__panic("Match failed")`.
 pub fn create_match_expr<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    scrutinee: &Spanned<ast::Expr>,
-    arms: &Vec<ast::ExprMatchArm>,
+    scrutinee: &hir::Expr,
+    arms: &Vec<hir::ExprMatchArm>,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
-    // --- Semantic validation (SEM-017) ---
-    let scrut_ty = self_compiler.infer_type(scrutinee);
+    let scrut_ty = scrutinee.ty.clone();
     let is_atom_static = matches!(scrut_ty, Type::AtomVal | Type::ClosedLabelSet(_))
         || matches!(&scrut_ty, Type::App(name, _) if name == "Atom");
     let is_label_static = matches!(scrut_ty, Type::Label)
         || matches!(&scrut_ty, Type::App(name, _) if name == "Label");
-    validate_match_patterns(
-        self_compiler,
-        arms.iter().map(|arm| (&arm.pat, arm.span)),
-        is_atom_static,
-    )?;
-    check_closed_label_set_match_exhaustiveness(
-        self_compiler,
-        &scrut_ty,
-        arms.iter().map(|arm| (&arm.pat, arm.span)),
-    )?;
 
     let parent_fn = self_compiler
         .builder
@@ -1049,7 +883,7 @@ pub fn create_match_expr<'ctx>(
     // Result alloca, initialized to Unit like the statement bind variable;
     // every arm stores into it and the caller receives the pointer.
     let result_ptr = create_entry_block_alloca(self_compiler, "match_expr_result")?;
-    let unit_expr = Spanned::new(ast::Expr::Unit(), Span::DUMMY);
+    let unit_expr = hir::Expr { kind: hir::ExprKind::Unit(), ty: Type::Unit, span: Span::DUMMY };
     let init_val = self_compiler
         .compile_expr(&unit_expr, module)?
         .into_pointer_value();

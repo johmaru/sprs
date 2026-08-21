@@ -9,7 +9,7 @@ use crate::front::ast::{FbCondition, FunctionBuild, FunctionBuildDirective, Func
 use crate::front::error::{ErrorCategory, ErrorCode, Location, SprsError};
 use crate::front::span::Span;
 use crate::front::type_helper::{self, types_assignable, types_compatible, Type};
-use crate::llvm::parser::parse_only;
+use crate::front::parser::parse_only;
 use crate::naming;
 use std::collections::{HashMap, HashSet};
 
@@ -691,7 +691,7 @@ pub fn import_public_builds_from_source(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::llvm::parser::parse_only;
+    use crate::front::parser::parse_only;
 
     fn parse(src: &str) -> Vec<Item> {
         parse_only(src, "test.sprs").expect("parse")

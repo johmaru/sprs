@@ -3,10 +3,8 @@ use crate::llvm::value::{
     build_label_is_error, create_entry_block_alloca, create_error_label_from_atom,
     create_error_label_from_str,
 };
-use crate::llvm::variable::move_variable;
 use crate::{
-    front::ast,
-    front::span::Spanned,
+    front::hir,
     llvm::compiler::{Compiler, StoreTag, StoreValue, Tag},
 };
 use inkwell::{
@@ -38,8 +36,8 @@ impl BinOpKind {
 
 pub fn create_add_expr<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    lhs: &Spanned<ast::Expr>,
-    rhs: &Spanned<ast::Expr>,
+    lhs: &hir::Expr,
+    rhs: &hir::Expr,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
     create_binary_dispatch(self_compiler, lhs, rhs, module, BinOpKind::Add)
@@ -47,8 +45,8 @@ pub fn create_add_expr<'ctx>(
 
 fn create_binary_dispatch<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    lhs: &Spanned<ast::Expr>,
-    rhs: &Spanned<ast::Expr>,
+    lhs: &hir::Expr,
+    rhs: &hir::Expr,
     module: &inkwell::module::Module<'ctx>,
     op: BinOpKind,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
@@ -198,8 +196,8 @@ fn create_binary_dispatch<'ctx>(
 
     let error_message = format!(
         "TypeError: type miss match : '{}' and '{}'",
-        self_compiler.infer_type(lhs),
-        self_compiler.infer_type(rhs)
+        lhs.ty.clone(),
+        rhs.ty.clone()
     );
 
     let error_ptr = create_error_label_from_str(self_compiler, &error_message, module)?;
@@ -1325,8 +1323,8 @@ fn create_add_expr_build_string_branch<'ctx>(
 
 fn create_float16_add_logic<'ctx>(
     _self_compiler: &mut Compiler<'ctx>,
-    _lhs: &Spanned<ast::Expr>,
-    _rhs: &Spanned<ast::Expr>,
+    _lhs: &hir::Expr,
+    _rhs: &hir::Expr,
     _module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
     let l_ptr = _self_compiler
@@ -1402,8 +1400,8 @@ fn create_float16_add_logic<'ctx>(
 
 fn create_float32_add_logic<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    lhs: &Spanned<ast::Expr>,
-    rhs: &Spanned<ast::Expr>,
+    lhs: &hir::Expr,
+    rhs: &hir::Expr,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
     let l_ptr = self_compiler
@@ -1482,8 +1480,8 @@ fn create_float32_add_logic<'ctx>(
 
 fn create_float64_add_logic<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    lhs: &Spanned<ast::Expr>,
-    rhs: &Spanned<ast::Expr>,
+    lhs: &hir::Expr,
+    rhs: &hir::Expr,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
     let l_ptr = self_compiler
@@ -1547,8 +1545,8 @@ fn create_float64_add_logic<'ctx>(
 
 pub fn create_mul_expr<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    lhs: &Spanned<ast::Expr>,
-    rhs: &Spanned<ast::Expr>,
+    lhs: &hir::Expr,
+    rhs: &hir::Expr,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
     create_binary_dispatch(self_compiler, lhs, rhs, module, BinOpKind::Mul)
@@ -1556,8 +1554,8 @@ pub fn create_mul_expr<'ctx>(
 
 pub fn create_minus_expr<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    lhs: &Spanned<ast::Expr>,
-    rhs: &Spanned<ast::Expr>,
+    lhs: &hir::Expr,
+    rhs: &hir::Expr,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
     create_binary_dispatch(self_compiler, lhs, rhs, module, BinOpKind::Sub)
@@ -1565,8 +1563,8 @@ pub fn create_minus_expr<'ctx>(
 
 pub fn create_div_expr<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    lhs: &Spanned<ast::Expr>,
-    rhs: &Spanned<ast::Expr>,
+    lhs: &hir::Expr,
+    rhs: &hir::Expr,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
     create_binary_dispatch(self_compiler, lhs, rhs, module, BinOpKind::Div)
@@ -1574,8 +1572,8 @@ pub fn create_div_expr<'ctx>(
 
 pub fn create_mod_expr<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    lhs: &Spanned<ast::Expr>,
-    rhs: &Spanned<ast::Expr>,
+    lhs: &hir::Expr,
+    rhs: &hir::Expr,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
     create_binary_dispatch(self_compiler, lhs, rhs, module, BinOpKind::Mod)
