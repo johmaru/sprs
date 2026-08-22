@@ -27,7 +27,6 @@ pub enum ExprKind {
     Gt(Box<Expr>, Box<Expr>),
     Le(Box<Expr>, Box<Expr>),
     Ge(Box<Expr>, Box<Expr>),
-    If(Box<Expr>, Box<Expr>, Box<Expr>),
     Call(String, Vec<Expr>),
     Var(String),
     AtomRef(String),

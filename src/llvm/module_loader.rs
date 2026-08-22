@@ -1,9 +1,8 @@
 use crate::front::ast;
 use crate::front::error::{ErrorCategory, ErrorCode, Location, SprsError};
 use crate::front::span::Span;
-use crate::front::type_helper;
 use crate::llvm::compiler::{
-    ClosedLabelSetFrame, Compiler, LINUX_STR, OS, WINDOWS_STR,
+    Compiler, LINUX_STR, OS, WINDOWS_STR,
 };
 use crate::front::parser::parse_only;
 use crate::llvm::value::build_label_is_error;
@@ -145,26 +144,14 @@ impl<'ctx> Compiler<'ctx> {
                                 .build_conditional_branch(is_error, panic_bb, ok_bb);
 
                             self.builder.position_at_end(panic_bb);
-                            let panic_msg = self.set_global_constant_str(
-                                &module,
-                                "Uncaught error in main",
-                                true,
-                                true,
-                            );
-                            let panic_ptr = match panic_msg {
-                                Some(crate::llvm::compiler::StrConstantResult::Global(
-                                    global_value,
-                                )) => global_value.as_pointer_value(),
-                                Some(crate::llvm::compiler::StrConstantResult::Pointer(
-                                    parameter,
-                                )) => parameter,
-                                None => {
-                                    return Err(SprsError::Internal {
-                                        message: "Failed to create panic message".to_string(),
-                                        location: None,
-                                    });
-                                }
-                            };
+                            let panic_ptr = self
+                                .set_global_constant_str(
+                                    &module,
+                                    "Uncaught error in main",
+                                    true,
+                                    true,
+                                )
+                                .as_pointer_value();
                             let panic_fn = self.get_runtime_fn(&module, "__panic")?;
                             self.builder
                                 .build_call(panic_fn, &[panic_ptr.into()], "main_panic_call")
@@ -214,14 +201,14 @@ impl<'ctx> Compiler<'ctx> {
 
         let mut registry = FunctionBuildRegistry::default();
         let mut stack = vec![module_name.to_string()];
-        let mut known_closed_sets: HashSet<String> = self.closed_label_sets.keys().cloned().collect();
+        let mut known_closed_sets: HashSet<String> = self.closed_label_sets.iter().cloned().collect();
         for item in items.iter() {
             if let ast::Item::ClosedLabelSetItem(set) = item {
                 known_closed_sets.insert(set.ident.clone());
             }
         }
         if let Some((source_name, span)) = function_build_source_directive(items, path)? {
-            let (mut ext_items, ext_path) = load_function_build_source(
+            let (ext_items, ext_path) = load_function_build_source(
                 &source_name,
                 span,
                 path,
@@ -230,7 +217,7 @@ impl<'ctx> Compiler<'ctx> {
             )?;
             let mut ext_known: HashSet<String> = self.struct_defs.keys().cloned().collect();
             ext_known.extend(known_structs_from_items(&ext_items));
-            let mut ext_closed: HashSet<String> = self.closed_label_sets.keys().cloned().collect();
+            let mut ext_closed: HashSet<String> = self.closed_label_sets.iter().cloned().collect();
             for item in &ext_items {
                 if let ast::Item::ClosedLabelSetItem(set) = item {
                     ext_closed.insert(set.ident.clone());
@@ -300,7 +287,7 @@ impl<'ctx> Compiler<'ctx> {
         &mut self,
         set: &ast::ClosedLabelSet,
     ) -> Result<(), SprsError> {
-        if self.closed_label_sets.contains_key(&set.ident) {
+        if self.closed_label_sets.contains(&set.ident) {
             return Err(SprsError::Semantic {
                 code: ErrorCode {
                     category: ErrorCategory::Semantic,
@@ -312,13 +299,7 @@ impl<'ctx> Compiler<'ctx> {
             });
         }
 
-        self.closed_label_sets.insert(
-            set.ident.clone(),
-            ClosedLabelSetFrame {
-                members: set.members.clone(),
-                is_public: set.is_public,
-            },
-        );
+        self.closed_label_sets.insert(set.ident.clone());
         Ok(())
     }
 

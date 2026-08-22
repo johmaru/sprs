@@ -22,18 +22,15 @@ struct FnSig {
     ret_ty: Option<Type>,
     type_params: Vec<String>,
     when_rules: Vec<(FbCondition, Type)>,
-    is_public: bool,
 }
 
 struct StructInfo {
     fields: Vec<hir::StructField>,
     field_indices: HashMap<String, u32>,
-    is_public: bool,
 }
 
 struct Checker<'a> {
     file: String,
-    module_name: String,
     scopes: Vec<HashMap<String, Binding>>,
     fns: HashMap<String, FnSig>,
     structs: HashMap<String, StructInfo>,
@@ -122,7 +119,6 @@ pub fn check_module(
 ) -> Result<hir::Module, SprsError> {
     let mut checker = Checker {
         file: path.to_string(),
-        module_name: module_name.to_string(),
         scopes: vec![HashMap::new()],
         fns: HashMap::new(),
         structs: HashMap::new(),
@@ -170,7 +166,6 @@ pub fn check_module(
                     ret_ty: f.ret_ty.clone(),
                     type_params: f.type_params.clone(),
                     when_rules: f.when_rules.clone(),
-                    is_public: f.is_public,
                 },
             );
         }
@@ -295,7 +290,6 @@ pub fn check_module(
                     StructInfo {
                         fields,
                         field_indices,
-                        is_public: s.is_public,
                     },
                 );
                 hir_structs.push(hs);
@@ -347,7 +341,6 @@ pub fn check_module(
                     ret_ty: ret_ty.clone(),
                     type_params,
                     when_rules,
-                    is_public: func.is_public,
                 },
             );
             if func.ident != llvm_name {
@@ -364,7 +357,6 @@ pub fn check_module(
                             .get(func.build_ref.as_deref().unwrap_or(""))
                             .map(|c| c.1.clone())
                             .unwrap_or_default(),
-                        is_public: func.is_public,
                     },
                 );
             }
@@ -457,7 +449,6 @@ impl Checker<'_> {
             StructInfo {
                 fields: s.fields.clone(),
                 field_indices,
-                is_public: s.is_public,
             },
         );
     }
@@ -605,15 +596,6 @@ impl Checker<'_> {
             ast::Expr::Assign(_, rhs) => self.infer_type(rhs),
             ast::Expr::Increment(value) | ast::Expr::Decrement(value) | ast::Expr::Neg(value) => {
                 self.infer_type(value)
-            }
-            ast::Expr::If(_, then, if_else) => {
-                let then_ty = self.infer_type(then);
-                let else_ty = self.infer_type(if_else);
-                if types_compatible(&then_ty, &else_ty) {
-                    if then_ty != Type::Any { then_ty } else { else_ty }
-                } else {
-                    Type::Any
-                }
             }
             ast::Expr::Match { arms, .. } => {
                 let mut result: Option<Type> = None;
@@ -955,13 +937,6 @@ impl Checker<'_> {
                 let h = self.check_expr(inner, None)?;
                 let ty = h.ty.clone();
                 (hir::ExprKind::Neg(Box::new(h)), ty)
-            }
-            ast::Expr::If(c, t, e) => {
-                let c = self.check_expr(c, None)?;
-                let t = self.check_expr(t, None)?;
-                let e = self.check_expr(e, None)?;
-                let ty = self.infer_type(expr);
-                (hir::ExprKind::If(Box::new(c), Box::new(t), Box::new(e)), ty)
             }
             ast::Expr::Call(name, args) => {
                 self.check_call_arguments(name, args)?;

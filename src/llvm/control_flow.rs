@@ -7,10 +7,9 @@ use crate::{
     front::ast,
     front::label_name::LabelName,
     front::span::Span,
-    llvm::compiler::{Compiler, StrConstantResult, Tag},
+    llvm::compiler::{Compiler, Tag},
 };
 use inkwell::{
-    AddressSpace,
     values::{BasicValueEnum, IntValue, PointerValue, ValueKind},
 };
 
@@ -175,118 +174,6 @@ pub fn create_while_condition<'ctx>(
 
     self_compiler.builder.position_at_end(after_bb);
     Ok(())
-}
-
-pub fn create_if_expr<'ctx>(
-    self_compiler: &mut Compiler<'ctx>,
-    cond: &hir::Expr,
-    then_expr: &hir::Expr,
-    else_expr: &hir::Expr,
-    module: &inkwell::module::Module<'ctx>,
-) -> Result<BasicValueEnum<'ctx>, SprsError> {
-    let parent_fn = self_compiler
-        .builder
-        .get_insert_block()
-        .unwrap()
-        .get_parent()
-        .unwrap();
-
-    let then_bb = self_compiler
-        .context
-        .append_basic_block(parent_fn, "then_bb");
-    let else_bb = self_compiler
-        .context
-        .append_basic_block(parent_fn, "else_bb");
-    let merge_bb = self_compiler
-        .context
-        .append_basic_block(parent_fn, "if_merge");
-
-    let cond_val = self_compiler.compile_expr(cond, module)?;
-    let cond_ptr = cond_val.into_pointer_value();
-    let cond_data_ptr = self_compiler
-        .builder
-        .build_struct_gep(
-            self_compiler.runtime_value_type,
-            cond_ptr,
-            1,
-            "cond_data_ptr",
-        )
-        .unwrap();
-    let cond_loaded = self_compiler
-        .builder
-        .build_load(
-            self_compiler.context.i64_type(),
-            cond_data_ptr,
-            "cond_loaded",
-        )
-        .unwrap()
-        .into_int_value();
-    let zero = self_compiler.context.i64_type().const_int(0, false);
-    let cond_bool = self_compiler
-        .builder
-        .build_int_compare(inkwell::IntPredicate::NE, cond_loaded, zero, "if_cond_bool")
-        .unwrap();
-
-    let _ = self_compiler
-        .builder
-        .build_conditional_branch(cond_bool, then_bb, else_bb);
-
-    self_compiler.builder.position_at_end(then_bb);
-    let then_val = self_compiler.compile_expr(then_expr, module)?;
-    if self_compiler
-        .builder
-        .get_insert_block()
-        .unwrap()
-        .get_terminator()
-        .is_none()
-    {
-        let _ = self_compiler.builder.build_unconditional_branch(merge_bb);
-    }
-    let then_bb_end = self_compiler.builder.get_insert_block().unwrap();
-
-    // TODO: Handle case where else_expr, such as if (test) : ok() ? no();
-    // TODO: Also  such as if (test) ok() orelse no();
-
-    self_compiler.builder.position_at_end(else_bb);
-    let else_val = self_compiler.compile_expr(else_expr, module)?;
-    if self_compiler
-        .builder
-        .get_insert_block()
-        .unwrap()
-        .get_terminator()
-        .is_none()
-    {
-        let _ = self_compiler.builder.build_unconditional_branch(merge_bb);
-    }
-    let else_bb_end = self_compiler.builder.get_insert_block().unwrap();
-
-    self_compiler.builder.position_at_end(merge_bb);
-    let phi = self_compiler
-        .builder
-        .build_phi(
-            self_compiler.context.ptr_type(AddressSpace::default()),
-            "if_phi",
-        )
-        .unwrap();
-
-    // Add PHI incoming only if the block branches to merge_bb
-    // (i.e. it does NOT end with a return/unreachable).
-    if then_bb_end != merge_bb {
-        if let Some(term) = then_bb_end.get_terminator() {
-            if term.get_opcode() == inkwell::values::InstructionOpcode::Br {
-                phi.add_incoming(&[(&then_val, then_bb_end)]);
-            }
-        }
-    }
-    if else_bb_end != merge_bb {
-        if let Some(term) = else_bb_end.get_terminator() {
-            if term.get_opcode() == inkwell::values::InstructionOpcode::Br {
-                phi.add_incoming(&[(&else_val, else_bb_end)]);
-            }
-        }
-    }
-
-    Ok(phi.as_basic_value())
 }
 
 /// Compare a label handle's name to a static byte string.
@@ -795,17 +682,9 @@ pub fn create_match_stmt<'ctx>(
     // No arm matched: panic + unreachable.
     if let Some(final_next) = next_bb {
         self_compiler.builder.position_at_end(final_next);
-        let panic_msg = self_compiler.set_global_constant_str(module, "Match failed", false, true);
-        let panic_ptr = match panic_msg {
-            Some(StrConstantResult::Global(global_value)) => global_value.as_pointer_value(),
-            Some(StrConstantResult::Pointer(parameter)) => parameter,
-            None => {
-                return Err(SprsError::Internal {
-                    message: "Failed to create panic message".to_string(),
-                    location: None,
-                });
-            }
-        };
+        let panic_ptr = self_compiler
+            .set_global_constant_str(module, "Match failed", false, true)
+            .as_pointer_value();
         let panic_fn = self_compiler.get_runtime_fn(module, "__panic")?;
         self_compiler
             .builder
@@ -980,17 +859,9 @@ pub fn create_match_expr<'ctx>(
     // No arm matched: panic + unreachable.
     if let Some(final_next) = next_bb {
         self_compiler.builder.position_at_end(final_next);
-        let panic_msg = self_compiler.set_global_constant_str(module, "Match failed", false, true);
-        let panic_ptr = match panic_msg {
-            Some(StrConstantResult::Global(global_value)) => global_value.as_pointer_value(),
-            Some(StrConstantResult::Pointer(parameter)) => parameter,
-            None => {
-                return Err(SprsError::Internal {
-                    message: "Failed to create panic message".to_string(),
-                    location: None,
-                });
-            }
-        };
+        let panic_ptr = self_compiler
+            .set_global_constant_str(module, "Match failed", false, true)
+            .as_pointer_value();
         let panic_fn = self_compiler.get_runtime_fn(module, "__panic")?;
         self_compiler
             .builder

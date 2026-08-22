@@ -21,7 +21,6 @@ pub enum Expr {
     Gt(Box<Spanned<Expr>>, Box<Spanned<Expr>>),                     // Lhs, Rhs
     Le(Box<Spanned<Expr>>, Box<Spanned<Expr>>),                     // Lhs, Rhs
     Ge(Box<Spanned<Expr>>, Box<Spanned<Expr>>),                     // Lhs, Rhs
-    If(Box<Spanned<Expr>>, Box<Spanned<Expr>>, Box<Spanned<Expr>>), // Cond, Then, Else
     Call(String, Vec<Spanned<Expr>>),                               // Ident, Args
     Var(String),                                                    // Ident
     Increment(Box<Spanned<Expr>>),                                  // Ident
@@ -81,7 +80,6 @@ pub enum Item {
     ClosedLabelSetItem(ClosedLabelSet),
     AtomItem(AtomDef),
     StructItem(Struct),
-    HeapAllocItem(HeapAlloc),
 }
 
 /// Dedicated FunctionBuild contract directives. These are not runtime macros
@@ -171,12 +169,6 @@ pub struct VarDecl {
 }
 
 #[derive(Debug, PartialEq)]
-pub struct HeapAlloc {
-    pub size: Box<Spanned<Expr>>,
-    pub span: Span,
-}
-
-#[derive(Debug, PartialEq)]
 pub struct AssignStmt {
     pub name: String,
     pub expr: Spanned<Expr>,
@@ -212,12 +204,6 @@ pub struct StructField {
     pub ty: Option<Type>,
     pub default_value: Option<Spanned<Expr>>,
     pub span: Span,
-}
-
-#[derive(Debug, PartialEq, Clone)]
-pub enum Suffix {
-    Call(Vec<Spanned<Expr>>),
-    Struct(Vec<(String, Spanned<Expr>)>),
 }
 
 /// A `case` pattern in a `match` statement.

@@ -10,7 +10,6 @@ use crate::llvm::compiler::{Compiler, Tag};
 /// Builder extensions for GEP, tag load/store, and bitwise or.
 pub(crate) trait BuilderExt<'ctx> {
     fn build_tag_gep(&self, ptr: PointerValue<'ctx>, name: &str) -> PointerValue<'ctx>;
-    fn build_data_gep(&self, ptr: PointerValue<'ctx>, name: &str) -> PointerValue<'ctx>;
     fn get_current_function(&self) -> FunctionValue<'ctx>;
     fn build_load_tag(&self, ptr: PointerValue<'ctx>, name: &str) -> IntValue<'ctx>;
     fn build_tag_store(&self, tag: Tag, ptr: PointerValue<'ctx>) -> InstructionValue<'ctx>;
@@ -31,17 +30,6 @@ impl<'ctx> BuilderExt<'ctx> for Compiler<'ctx> {
                 ptr,
                 0,
                 &format!("{}_tag_ptr", name),
-            )
-            .unwrap()
-    }
-
-    fn build_data_gep(&self, ptr: PointerValue<'ctx>, name: &str) -> PointerValue<'ctx> {
-        self.builder
-            .build_struct_gep(
-                self.runtime_value_type,
-                ptr,
-                1,
-                &format!("{}_data_ptr", name),
             )
             .unwrap()
     }

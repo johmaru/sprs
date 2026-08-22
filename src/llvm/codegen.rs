@@ -20,46 +20,7 @@ use inkwell::module::Module;
 use inkwell::types::{BasicMetadataTypeEnum, BasicTypeEnum};
 use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue, ValueKind};
 
-fn is_int_family(ty: &Type) -> bool {
-    matches!(
-        ty,
-        Type::Int
-            | Type::TypeI8
-            | Type::TypeU8
-            | Type::TypeI16
-            | Type::TypeU16
-            | Type::TypeI32
-            | Type::TypeU32
-            | Type::TypeI64
-            | Type::TypeU64
-    )
-}
-
-fn is_float_family(ty: &Type) -> bool {
-    matches!(
-        ty,
-        Type::Float | Type::TypeF16 | Type::TypeF32 | Type::TypeF64
-    )
-}
-
-fn infer_binary_arith_type(lhs: &Type, rhs: &Type) -> Type {
-    if is_int_family(lhs) && is_int_family(rhs) {
-        if lhs == rhs { lhs.clone() } else { Type::Int }
-    } else if is_float_family(lhs) && is_float_family(rhs) {
-        if lhs == rhs { lhs.clone() } else { Type::Float }
-    } else {
-        lhs.clone()
-    }
-}
-
 impl<'ctx> Compiler<'ctx> {
-    pub fn get_expr_name(&self, expr: &hir::Expr) -> Option<String> {
-        match &expr.kind {
-            hir::ExprKind::Var(name) => Some(name.clone()),
-            _ => None,
-        }
-    }
-
     pub fn compile_fn(
         &mut self,
         func: &hir::Function,
@@ -670,9 +631,6 @@ impl<'ctx> Compiler<'ctx> {
                             .unwrap())
                     },
                 )?)
-            }
-            hir::ExprKind::If(cond, then_expr, else_expr) => {
-                Ok(builder_helper::create_if_expr(self, cond, then_expr, else_expr, module)?)
             }
             hir::ExprKind::Match { scrutinee, arms } => {
                 Ok(builder_helper::create_match_expr(self, scrutinee, arms, module)?)

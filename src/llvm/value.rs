@@ -10,7 +10,7 @@ use crate::llvm::variable::move_variable;
 use crate::{
     front::hir,
     front::label_name::{LabelName, LabelNamePart},
-    llvm::compiler::{Compiler, StoreTag, StoreValue, StrConstantResult, Tag},
+    llvm::compiler::{Compiler, StoreTag, StoreValue, Tag},
     llvm::data_structures::create_unit,
 };
 
@@ -26,27 +26,13 @@ pub fn create_error_label_from_str<'ctx>(
 ) -> Result<PointerValue<'ctx>, SprsError> {
     // Store the message string as a global constant.
     let global = self_compiler.set_global_constant_str(module, message, true, true);
-
-    let (msg_ptr, msg_len) = match global {
-        Some(StrConstantResult::Global(global_value)) => {
-            let ptr = global_value.as_pointer_value();
-            let ptr_i8 = self_compiler.builder.build_bit_cast(
-                ptr,
-                self_compiler.context.ptr_type(AddressSpace::default()),
-                "error_msg_ptr_i8",
-            );
-            (ptr_i8.unwrap().into_pointer_value(), message.len() as u64)
-        }
-        Some(StrConstantResult::Pointer(pointer_value)) => (pointer_value, message.len() as u64),
-        None => {
-            // Empty message — pass null pointer.
-            let null_ptr = self_compiler
-                .context
-                .ptr_type(AddressSpace::default())
-                .const_null();
-            (null_ptr, 0u64)
-        }
-    };
+    let ptr = global.as_pointer_value();
+    let ptr_i8 = self_compiler.builder.build_bit_cast(
+        ptr,
+        self_compiler.context.ptr_type(AddressSpace::default()),
+        "error_msg_ptr_i8",
+    );
+    let (msg_ptr, msg_len) = (ptr_i8.unwrap().into_pointer_value(), message.len() as u64);
 
     let msg_len_val = self_compiler.context.i64_type().const_int(msg_len, false);
 

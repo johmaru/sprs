@@ -20,18 +20,7 @@ use std::collections::HashSet;
 
 pub struct StructDef<'ctx> {
     pub fields: Vec<ast::StructField>,
-    pub field_indices: HashMap<String, u32>,
     pub llvm_type: StructType<'ctx>,
-}
-
-/// Compiler-local frame for a source closed label set (`label State { idle, running }`).
-///
-/// Members are kept in source order; the frame only exists at compile time.
-/// Runtime values of `:State.running` are `Tag::Atom` with intern key `"State.running"`
-/// (immediate, not a slab handle), so no runtime table is emitted.
-pub struct ClosedLabelSetFrame {
-    pub members: Vec<String>,
-    pub is_public: bool,
 }
 
 /// Local binding metadata in a scope.
@@ -49,13 +38,12 @@ pub struct Compiler<'ctx> {
     pub runtime_value_type: StructType<'ctx>,
     pub target_os: OS,
     pub string_counter: usize,
-    pub malloc_type: inkwell::types::FunctionType<'ctx>,
     pub source_path: String,
     /// Absolute/relative path of the module currently being compiled.
     /// Used for type/semantic error locations (was previously left empty).
     pub current_file: String,
     pub struct_defs: HashMap<String, StructDef<'ctx>>, // struct name -> struct definition
-    pub closed_label_sets: HashMap<String, ClosedLabelSetFrame>,
+    pub closed_label_sets: HashSet<String>,
     /// FunctionBuild type parameters and `when` rules, keyed by build name.
     /// Filled from the registry during module loading so prototype declaration
     /// and call-site resolution can reuse the resolved contract.
@@ -82,13 +70,7 @@ pub enum StoreTag<'ctx> {
 pub enum StoreValue<'ctx> {
     Int(IntValue<'ctx>),
     Float(f64),
-    Ptr(PointerValue<'ctx>),
     Bool(IntValue<'ctx>),
-}
-
-pub enum StrConstantResult<'ctx> {
-    Global(GlobalValue<'ctx>),
-    Pointer(PointerValue<'ctx>),
 }
 
 // Support builder_helper.rs for LLVM instuctions of execution.
@@ -133,10 +115,6 @@ impl<'ctx> Compiler<'ctx> {
                 .context
                 .i64_type()
                 .const_int(float_value.to_bits(), false),
-            StoreValue::Ptr(pointer_value) => self
-                .builder
-                .build_ptr_to_int(pointer_value, self.context.i64_type(), "ptr_to_int")
-                .unwrap(),
             StoreValue::Bool(boolean_value) => self
                 .builder
                 .build_int_z_extend(boolean_value, self.context.i64_type(), name)
@@ -232,7 +210,7 @@ impl<'ctx> Compiler<'ctx> {
         source_text: &str,
         is_global: bool,
         is_const: bool,
-    ) -> Option<StrConstantResult<'ctx>> {
+    ) -> GlobalValue<'ctx> {
         let idx = self.string_counter;
         self.string_counter += 1;
         let global_name = if is_global {
@@ -255,7 +233,7 @@ impl<'ctx> Compiler<'ctx> {
         } else {
             Linkage::Internal
         });
-        Some(StrConstantResult::Global(global_str))
+        global_str
     }
 }
 
@@ -268,8 +246,6 @@ pub enum OS {
 
 /// Runtime value tag stored in `{ i32 tag, i64 data }`.
 ///
-/// Discriminants must stay in sync with [`Type::tag_discriminant`]
-/// (`front/type_helper.rs`).
 #[derive(PartialEq, Eq, Hash, Clone, Copy, Debug)]
 pub enum Tag {
     // Dynamic value tags
@@ -301,46 +277,6 @@ pub enum Tag {
     Float64 = 110,
 }
 
-impl Tag {
-    pub fn from_type(ty: &Type) -> Option<Tag> {
-        ty.tag_discriminant().and_then(Self::from_discriminant)
-    }
-
-    pub fn to_type(self) -> Type {
-        Type::from_tag_discriminant(self as u32).unwrap_or(Type::Any)
-    }
-
-    pub fn from_discriminant(disc: u32) -> Option<Tag> {
-        match disc {
-            0 => Some(Tag::Integer),
-            1 => Some(Tag::Float),
-            2 => Some(Tag::String),
-            3 => Some(Tag::Boolean),
-            4 => Some(Tag::List),
-            5 => Some(Tag::Range),
-            6 => Some(Tag::Unit),
-            7 => None,
-            8 => Some(Tag::Struct),
-            9 => Some(Tag::Atom),
-            10 => Some(Tag::Label),
-            11 => Some(Tag::Buffer),
-            12 => Some(Tag::RawPtr),
-            100 => Some(Tag::Int8),
-            101 => Some(Tag::Uint8),
-            102 => Some(Tag::Int16),
-            103 => Some(Tag::Uint16),
-            104 => Some(Tag::Int32),
-            105 => Some(Tag::Uint32),
-            106 => Some(Tag::Int64),
-            107 => Some(Tag::Uint64),
-            108 => Some(Tag::Float16),
-            109 => Some(Tag::Float32),
-            110 => Some(Tag::Float64),
-            _ => None,
-        }
-    }
-}
-
 pub(crate) const WINDOWS_STR: &str = "Windows";
 pub(crate) const LINUX_STR: &str = "Linux";
 
@@ -368,10 +304,6 @@ impl<'ctx> Compiler<'ctx> {
             false,
         );
 
-        let i64_type = context.i64_type();
-        let i8_ptr_type = context.ptr_type(AddressSpace::default());
-        let malloc_type = i8_ptr_type.fn_type(&[i64_type.into()], false);
-
         // scope index 0 equals global scope
         let mut scopes = Vec::new();
         scopes.push(Scope::new());
@@ -385,11 +317,10 @@ impl<'ctx> Compiler<'ctx> {
             runtime_value_type,
             target_os: OS::Unknown,
             string_counter: 0,
-            malloc_type,
             source_path,
             current_file: String::new(),
             struct_defs: HashMap::new(),
-            closed_label_sets: HashMap::new(),
+            closed_label_sets: HashSet::new(),
             function_build_contracts: HashMap::new(),
             private_closed_label_members: HashSet::new(),
             atom_defs: HashSet::new(),
@@ -526,16 +457,12 @@ impl<'ctx> Compiler<'ctx> {
         name: String,
         fields: Vec<ast::StructField>,
     ) -> Result<(), SprsError> {
-        let mut field_indices = HashMap::new();
         let mut llvm_field_types: Vec<BasicTypeEnum> = Vec::new();
-        for (field_index, field) in fields.iter().enumerate() {
-            field_indices.insert(field.ident.clone(), field_index as u32);
-
+        for field in fields.iter() {
             let llvm_ty = if let Some(ty) = &field.ty {
                 match ty {
                     Type::Any
                     | Type::Unit
-                    | Type::List
                     | Type::Range
                     | Type::Struct(_)
                     | Type::Label
@@ -575,34 +502,10 @@ impl<'ctx> Compiler<'ctx> {
             name,
             StructDef {
                 fields,
-                field_indices,
                 llvm_type,
             },
         );
         Ok(())
-    }
-
-    /// Returns the index of a field in a struct definition.
-    ///
-    /// rust-analyzer may report `Result<u32, ()>` (E0308) on this function due to
-    /// incomplete type resolution of `inkwell`'s FFI types (see `analysis-stats`:
-    /// `??ty` unresolved types). `cargo check` passes, so this is a false positive.
-    pub fn get_field_index(&self, struct_name: &str, field_name: &str) -> Result<u32, SprsError> {
-        self.struct_defs
-            .get(struct_name)
-            .and_then(|def| def.field_indices.get(field_name).cloned())
-            .ok_or_else(|| SprsError::Semantic {
-                code: ErrorCode {
-                    category: ErrorCategory::Semantic,
-                    number: 7,
-                },
-                location: Location::new(String::new(), Span::DUMMY),
-                message: format!(
-                    "Field '{}' not found in struct '{}'",
-                    field_name, struct_name
-                ),
-                help: None,
-            })
     }
 
     pub fn build_list_from_exprs(
@@ -838,55 +741,4 @@ impl<'ctx> Compiler<'ctx> {
 
         Ok(module.add_function(name, fn_type, None))
     }
-}
-
-#[cfg(test)]
-mod tag_type_sync_tests {
-    use super::Tag;
-    use crate::front::type_helper::Type;
-
-    #[test]
-    fn type_and_tag_discriminants_stay_aligned() {
-        let cases: &[(Type, Tag)] = &[
-            (Type::Int, Tag::Integer),
-            (Type::Float, Tag::Float),
-            (Type::Str, Tag::String),
-            (Type::Bool, Tag::Boolean),
-            (Type::List, Tag::List),
-            (Type::Range, Tag::Range),
-            (Type::Unit, Tag::Unit),
-            (Type::ClosedLabelSet("Point".into()), Tag::Atom),
-            (Type::Struct("Point".into()), Tag::Struct),
-            (Type::Buffer, Tag::Buffer),
-            (Type::RawPtr, Tag::RawPtr),
-            (Type::TypeI8, Tag::Int8),
-            (Type::TypeU8, Tag::Uint8),
-            (Type::TypeI16, Tag::Int16),
-            (Type::TypeU16, Tag::Uint16),
-            (Type::TypeI32, Tag::Int32),
-            (Type::TypeU32, Tag::Uint32),
-            (Type::TypeI64, Tag::Int64),
-            (Type::TypeU64, Tag::Uint64),
-            (Type::TypeF16, Tag::Float16),
-            (Type::TypeF32, Tag::Float32),
-            (Type::TypeF64, Tag::Float64),
-        ];
-
-        for (ty, tag) in cases {
-            assert_eq!(
-                ty.tag_discriminant(),
-                Some(*tag as u32),
-                "Type::{ty:?} discriminant mismatch"
-            );
-            assert_eq!(Tag::from_type(ty), Some(*tag));
-            assert_eq!(tag.to_type().tag_discriminant(), Some(*tag as u32));
-        }
-
-        assert_eq!(Type::Any.tag_discriminant(), None);
-        assert_eq!(Tag::from_type(&Type::Any), None);
-        // Broad Label is a surface union of tags 9/10, not a single discriminant.
-        assert_eq!(Type::Label.tag_discriminant(), None);
-        assert_eq!(Type::from_tag_discriminant(10), Some(Type::Label));
-    }
-
 }
