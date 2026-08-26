@@ -124,6 +124,7 @@ extern {
         TypeU32 => Token::TypeU32,
         TypeI64 => Token::TypeI64,
         TypeU64 => Token::TypeU64,
+        TypeUsize => Token::TypeUsize,
 
         TypeF16 => Token::TypeF16,
         TypeF32 => Token::TypeF32,
@@ -502,6 +503,7 @@ Type: Type = {
     TypeU32 => Type::TypeU32,
     TypeI64 => Type::TypeI64,
     TypeU64 => Type::TypeU64,
+    TypeUsize => Type::TypeUsize,
 
     TypeF16 => Type::TypeF16,
     TypeF32 => Type::TypeF32,
@@ -915,6 +917,7 @@ Atom: Spanned<Expr> = {
     <start:@L> TypeU32 <end:@R> => Spanned::new(Expr::TypeU32, Span::new(start, end)),
     <start:@L> TypeI64 <end:@R> => Spanned::new(Expr::TypeI64, Span::new(start, end)),
     <start:@L> TypeU64 <end:@R> => Spanned::new(Expr::TypeU64, Span::new(start, end)),
+    <start:@L> TypeUsize <end:@R> => Spanned::new(Expr::TypeUsize, Span::new(start, end)),
     <start:@L> TypeF16 <end:@R> => Spanned::new(Expr::TypeF16, Span::new(start, end)),
     <start:@L> TypeF32 <end:@R> => Spanned::new(Expr::TypeF32, Span::new(start, end)),
     <start:@L> TypeF64 <end:@R> => Spanned::new(Expr::TypeF64, Span::new(start, end)),

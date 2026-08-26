@@ -66,16 +66,23 @@ var a = "hello";
 
 ```
 
-* `@move(value)`: 変数からムーブする（束縛を無効化する）
+* `@move(value)`: 変数またはポインタ place からムーブする。変数束縛または `*p` のスロットは `Unit` になる。
 
 例:
 
 ```sprs
 var a = "hello";
 @println(@move(a)); # a becomes Unit
+var x = @move(*p);  # *p becomes Unit
 ```
 
-ムーブセマンティクス、`@clone`、`@move`、自動 drop は [メモリ管理](memory-management.md) を参照してください。
+* `@init(*p, value)`: `Unit` のポインタ place を初期化する。第一引数は間接参照でなければならない。結果型は `unit`。`Unit` 以外の先は panic する。構造体初期化（`init Type { ... }`）ではない。
+
+```sprs
+@init(*p, x);
+```
+
+ムーブセマンティクス、`@clone`、`@move`、`@init`、自動 drop は [メモリ管理](memory-management.md) を参照してください。
 
 * `@cast(value, type)`: 値を指定型へキャストする
 

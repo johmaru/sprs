@@ -40,6 +40,7 @@ pub enum Type {
     TypeU32,
     TypeI64,
     TypeU64,
+    TypeUsize,
 
     TypeF16,
     TypeF32,
@@ -93,6 +94,7 @@ impl std::fmt::Display for Type {
             Type::TypeU32 => write!(formatter, "u32"),
             Type::TypeI64 => write!(formatter, "i64"),
             Type::TypeU64 => write!(formatter, "u64"),
+            Type::TypeUsize => write!(formatter, "usize"),
             Type::TypeF16 => write!(formatter, "f16"),
             Type::TypeF32 => write!(formatter, "f32"),
             Type::TypeF64 => write!(formatter, "f64"),
@@ -732,6 +734,7 @@ mod tests {
         assert_eq!(Type::Float.to_string(), "f64");
         assert_eq!(Type::TypeI8.to_string(), "i8");
         assert_eq!(Type::TypeU64.to_string(), "u64");
+        assert_eq!(Type::TypeUsize.to_string(), "usize");
         assert_eq!(Type::TypeF16.to_string(), "f16");
         assert_eq!(Type::TypeF64.to_string(), "f64");
         assert_eq!(Type::Bool.to_string(), "bool");

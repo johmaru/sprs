@@ -29,8 +29,7 @@ field uses `StructField.default_value`, evaluated at each `init` in the caller
 expression context. There is no `self` / earlier-field binding in a default
 expression. A field with no default and no initializer is
 `missing required field \`name\` in init Type`. Unknown and duplicate fields are
-compile errors on the initializer span. Old `@init(...)` is not struct
-initialization; `@init` is an unknown macro.
+compile errors on the initializer span. Old `@init(...)` is not struct initialization. `init Type { ... }` creates a struct. `@init(*p, value)` is the pointer-place initialization macro.
 
 ```sprs
 pub struct Point {

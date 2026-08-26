@@ -43,6 +43,108 @@ pub fn create_add_expr<'ctx>(
     create_binary_dispatch(self_compiler, lhs, rhs, module, BinOpKind::Add)
 }
 
+pub fn create_ptr_add_expr<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+    lhs: &hir::Expr,
+    rhs: &hir::Expr,
+    module: &inkwell::module::Module<'ctx>,
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
+    let l_ptr = self_compiler
+        .compile_expr(lhs, module)?
+        .into_pointer_value();
+    let r_ptr = self_compiler
+        .compile_expr(rhs, module)?
+        .into_pointer_value();
+
+    let l_data_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, l_ptr, 1, "ptr_add_base_ptr")
+        .unwrap();
+    let base = self_compiler
+        .builder
+        .build_load(self_compiler.context.i64_type(), l_data_ptr, "ptr_add_base")
+        .unwrap()
+        .into_int_value();
+
+    let r_data_ptr = self_compiler
+        .builder
+        .build_struct_gep(self_compiler.runtime_value_type, r_ptr, 1, "ptr_add_off_ptr")
+        .unwrap();
+    let offset = self_compiler
+        .builder
+        .build_load(self_compiler.context.i64_type(), r_data_ptr, "ptr_add_offset")
+        .unwrap()
+        .into_int_value();
+
+    let stride = self_compiler.runtime_value_type.size_of().ok_or_else(|| {
+        SprsError::Internal {
+            message: "runtime value type has no LLVM size".to_string(),
+            location: None,
+        }
+    })?;
+
+    let (byte_offset, mul_overflow) = build_checked_int_op(
+        self_compiler,
+        module,
+        stride,
+        offset,
+        BinOpKind::Mul,
+        false,
+    )?;
+    let (addr, add_overflow) = build_checked_int_op(
+        self_compiler,
+        module,
+        base,
+        byte_offset,
+        BinOpKind::Add,
+        false,
+    )?;
+    let overflow = self_compiler
+        .builder
+        .build_or(mul_overflow, add_overflow, "ptr_add_overflow")
+        .unwrap();
+
+    let parent_fn = self_compiler
+        .builder
+        .get_insert_block()
+        .unwrap()
+        .get_parent()
+        .unwrap();
+    let overflow_bb = self_compiler
+        .context
+        .append_basic_block(parent_fn, "ptr_add_overflow_bb");
+    let ok_bb = self_compiler
+        .context
+        .append_basic_block(parent_fn, "ptr_add_ok_bb");
+    self_compiler
+        .builder
+        .build_conditional_branch(overflow, overflow_bb, ok_bb)
+        .unwrap();
+
+    self_compiler.builder.position_at_end(overflow_bb);
+    let panic_fn = self_compiler.get_runtime_fn(module, "__panic")?;
+    let msg = self_compiler
+        .builder
+        .build_global_string_ptr("Pointer arithmetic overflow", "ptr_add_overflow_msg")
+        .unwrap()
+        .as_pointer_value();
+    self_compiler
+        .builder
+        .build_call(panic_fn, &[msg.into()], "ptr_add_overflow_panic")
+        .unwrap();
+    self_compiler.builder.build_unreachable().unwrap();
+
+    self_compiler.builder.position_at_end(ok_bb);
+    let result_ptr = create_entry_block_alloca(self_compiler, "ptr_add_res")?;
+    self_compiler.build_runtime_value_store(
+        result_ptr,
+        StoreTag::Int(Tag::RawPtr as u64),
+        StoreValue::Int(addr),
+        "ptr_add_res",
+    );
+    Ok(result_ptr.into())
+}
+
 fn create_binary_dispatch<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
     lhs: &hir::Expr,

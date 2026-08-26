@@ -618,7 +618,8 @@ pub fn create_field_access<'ctx>(
         match ty {
             crate::front::type_helper::Type::Int
             | crate::front::type_helper::Type::TypeI64
-            | crate::front::type_helper::Type::TypeU64 => {
+            | crate::front::type_helper::Type::TypeU64
+            | crate::front::type_helper::Type::TypeUsize => {
                 let val = self_compiler
                     .builder
                     .build_load(self_compiler.context.i64_type(), field_ptr, "field_val")
@@ -835,6 +836,7 @@ pub fn create_struct_init<'ctx>(
                 crate::front::type_helper::Type::Int
                 | crate::front::type_helper::Type::TypeI64
                 | crate::front::type_helper::Type::TypeU64
+                | crate::front::type_helper::Type::TypeUsize
                 | crate::front::type_helper::Type::Bool
                 | crate::front::type_helper::Type::Float
                 | crate::front::type_helper::Type::TypeF64 => {

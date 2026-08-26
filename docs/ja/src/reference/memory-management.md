@@ -67,7 +67,11 @@ fn main() {
 
 置換代入 `*p = value` は右辺の所有値を先に用意し、古い pointee を drop してから格納します。そのため `*p = *p` は drop の前に clone します。ポインタ値そのものは所有しないアドレスであり、追加の drop 対象にはしません。
 
-`@move(*p)` は未実装です（`@move` は引き続き変数だけを受けます）。未初期化領域への初期化も未実装です。
+ポインタ place の所有権は次の 3 契約です。
+
+- `@move(*p)` は `{tag,data}` を取り出し、先のスロットをヒープ／プリミティブ問わず `Unit` にする。
+- `@init(*p, value)` は `Unit` のスロットにだけ格納する。古い値の `__drop` は呼ばない。`Unit` 以外なら `@init destination is already initialized` で panic する。
+- `*p = value` は置換。右辺を所有値化してから古い pointee を `__drop` し、格納する。
 
 Buffer は他のヒープ値と同じ自動 drop 経路に参加します。
 明示的な寿命切断が必要なときは `destroy` / `defer destroy(...)` を使ってください。

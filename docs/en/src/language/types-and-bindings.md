@@ -6,7 +6,7 @@ Surface types have one spelling. Old aliases (`int`, `fp`, `fp16`/`fp32`/`fp64`,
 
 | Surface | Meaning |
 |---------|---------|
-| `i8` `u8` `i16` `u16` `i32` `u32` `i64` `u64` | Integer widths. Unannotated integer literals are `i64`. |
+| `i8` `u8` `i16` `u16` `i32` `u32` `i64` `u64` `usize` | Integer widths. Unannotated integer literals are `i64`. `usize` is a distinct static type; on the current x86_64 targets it uses the same runtime tag and LLVM storage as `u64`. There is no implicit alias with `u64`. |
 | `f16` `f32` `f64` | Float widths. Unannotated float literals are `f64`. `@cast` uses these names. |
 | `bool` | Boolean |
 | `str` | String |
@@ -17,7 +17,7 @@ Surface types have one spelling. Old aliases (`int`, `fp`, `fp16`/`fp32`/`fp64`,
 | `Range` | Range |
 | `Buffer` | Fixed-size zero-initialized byte array |
 | `RawPtr` | Bare address from `@raw(buf)` |
-| `Ptr(T)` | Typed pointer. Always one argument. The pointee type is compile-time only; runtime still uses `{ tag, data }` with `Tag::RawPtr` as a bare address. There is no implicit conversion with `RawPtr`. |
+| `Ptr(T)` | Typed pointer. Always one argument. The pointee type is compile-time only; runtime still uses `{ tag, data }` with `Tag::RawPtr` as a bare address. There is no implicit conversion with `RawPtr`. `Ptr(T) + offset` stays `Ptr(T)` when `offset` is `usize` or a non-negative integer literal. |
 | `Label` | Broad label: payloadless atoms and payload labels |
 | `:name` | Exact payloadless atom (`:ready`) |
 | `Label(:name, T)` | Exact payload label. First argument must be `:name`. |
@@ -109,7 +109,7 @@ Escape with `^` to use a keyword as a name. `^` is not part of the name. `new(ex
 
 Escaping a non-keyword that already passes its category rule is `SPRS-SYN-008` (`unnecessary identifier escape \`^foo\``) with `help: use foo instead of ^foo`. A bad name such as `^BadName` as a local reports `SPRS-SEM-025` first, not the unnecessary escape.
 
-Keywords include: `if` `else` `while` `fn` `use` `function_build` `private` `return` `pkg` `import` `var` `pub` `struct` `ambi` `new` `destroy` `exist` `unsafe` `defer` `match` `case` `break` `true` `false` `bool` `str` `unit` `i8`…`u64` `f16` `f32` `f64` `label` `init` `source` `params` `return_type` `visibility` `type_param` `when` `is` `neq` `and` `or` `not`. `label` is for declarations (`label Color { ... }`, `label :ready;`); type position uses `Label`. `ambi` is the only remaining type-position keyword besides the primitive type names above.
+Keywords include: `if` `else` `while` `fn` `use` `function_build` `private` `return` `pkg` `import` `var` `pub` `struct` `ambi` `new` `destroy` `exist` `unsafe` `defer` `match` `case` `break` `true` `false` `bool` `str` `unit` `i8`…`u64` `usize` `f16` `f32` `f64` `label` `init` `source` `params` `return_type` `visibility` `type_param` `when` `is` `neq` `and` `or` `not`. `label` is for declarations (`label Color { ... }`, `label :ready;`); type position uses `Label`. `ambi` is the only remaining type-position keyword besides the primitive type names above.
 
 A lone `^`, `^1`, or `^^name` is a lexer error.
 

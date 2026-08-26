@@ -92,6 +92,7 @@ pub enum Token {
     TypeU32,
     TypeI64,
     TypeU64,
+    TypeUsize,
 
     TypeF16,
     TypeF32,
@@ -149,6 +150,7 @@ impl Token {
             Token::TypeU32 => Some("u32"),
             Token::TypeI64 => Some("i64"),
             Token::TypeU64 => Some("u64"),
+            Token::TypeUsize => Some("usize"),
             Token::TypeF16 => Some("f16"),
             Token::TypeF32 => Some("f32"),
             Token::TypeF64 => Some("f64"),
@@ -343,6 +345,8 @@ enum RawTok {
     TypeI64,
     #[token("u64")]
     TypeU64,
+    #[token("usize")]
+    TypeUsize,
 
     #[token("f16")]
     TypeF16,
@@ -510,6 +514,7 @@ impl<'input> Iterator for Lexer<'input> {
             RawTok::TypeU32 => Token::TypeU32,
             RawTok::TypeI64 => Token::TypeI64,
             RawTok::TypeU64 => Token::TypeU64,
+            RawTok::TypeUsize => Token::TypeUsize,
             RawTok::TypeF16 => Token::TypeF16,
             RawTok::TypeF32 => Token::TypeF32,
             RawTok::TypeF64 => Token::TypeF64,
@@ -569,6 +574,7 @@ fn consume_type(tokens: &[Token], index: &mut usize) -> bool {
         | Token::TypeU32
         | Token::TypeI64
         | Token::TypeU64
+        | Token::TypeUsize
         | Token::TypeF16
         | Token::TypeF32
         | Token::TypeF64 => {

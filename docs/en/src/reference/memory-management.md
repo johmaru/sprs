@@ -68,6 +68,10 @@ A non-owning read of `*p` keeps the pointee in place. Contexts that take ownersh
 
 Replacement assignment `*p = value` prepares the owned right-hand side first, drops the old pointee, then stores the new value. `*p = *p` therefore clones before drop. The pointer value itself is a non-owning address and is not an extra drop target.
 
-`@move(*p)` is not implemented (`@move` still requires a variable). Initialization of uninitialized pointee storage is not implemented.
+Pointer places have three ownership contracts:
+
+- `@move(*p)` copies `{tag,data}` out and sets the destination slot to `Unit` (heap and primitive alike).
+- `@init(*p, value)` stores into a `Unit` slot only. It does not `__drop` the old value. A non-`Unit` destination panics with `@init destination is already initialized`.
+- `*p = value` is replace: owned rhs, then `__drop` of the old pointee, then store.
 
 Buffers participate in the same auto-drop path as other heap values. Prefer `destroy` / `defer destroy(...)` when you need an explicit lifetime cut. Details of Buffer liveness, `unsafe`, RawPtr, and `defer` order are in [Buffers and Unsafe](../language/buffers-and-unsafe.md).

@@ -4,7 +4,8 @@ use crate::llvm::value::{
     build_dynamic_string, build_label_is_error, create_entry_block_alloca,
     create_error_label_from_str, create_label,
 };
-use crate::llvm::variable::{clone_runtime_value, move_variable, var_load_at_init_variable};
+use crate::llvm::builder_helper::{BuilderExt, ContextExt};
+use crate::llvm::variable::{clone_runtime_value, move_out_pointer_place, move_variable, var_load_at_init_variable};
 use crate::{
     front::hir,
     front::error::{ErrorCategory, ErrorCode, Location, SprsError},
@@ -517,7 +518,7 @@ pub fn call_builtin_macro_clone<'ctx>(
 pub fn call_builtin_macro_move<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
     args: &Vec<hir::Expr>,
-    _module: &inkwell::module::Module<'ctx>,
+    module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
     if args.len() != 1 {
         return Err(SprsError::Semantic {
@@ -531,8 +532,60 @@ pub fn call_builtin_macro_move<'ctx>(
         });
     }
 
-    let name = match &args[0].kind {
-        hir::ExprKind::Var(name) => name,
+    match &args[0].kind {
+        hir::ExprKind::Var(name) => {
+            let source = self_compiler
+                .get_variables(name)
+                .ok_or_else(|| SprsError::Semantic {
+                    code: ErrorCode {
+                        category: ErrorCategory::Semantic,
+                        number: 2,
+                    },
+                    location: Location::new(String::new(), args[0].span),
+                    message: format!("Undefined variable: {}", name),
+                    help: None,
+                })?;
+            let source_ptr = source.value.into_pointer_value();
+            let moved_ptr = var_load_at_init_variable(self_compiler, source_ptr, "move_arg")?;
+            move_variable(self_compiler, &source_ptr.into(), name);
+            Ok(moved_ptr.into())
+        }
+        hir::ExprKind::Deref(pointer) => {
+            let dest = self_compiler.compile_deref_place(pointer, module)?;
+            let moved_ptr = move_out_pointer_place(self_compiler, dest, "move_deref")?;
+            Ok(moved_ptr.into())
+        }
+        _ => Err(SprsError::Semantic {
+            code: ErrorCode {
+                category: ErrorCategory::Semantic,
+                number: 13,
+            },
+            location: Location::new(String::new(), args[0].span),
+            message: "@move expects a variable or dereference place argument".to_string(),
+            help: None,
+        }),
+    }
+}
+
+pub fn call_builtin_macro_init<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+    args: &Vec<hir::Expr>,
+    module: &inkwell::module::Module<'ctx>,
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
+    if args.len() != 2 {
+        return Err(SprsError::Semantic {
+            code: ErrorCode {
+                category: ErrorCategory::Semantic,
+                number: 13,
+            },
+            location: Location::new(String::new(), Span::DUMMY),
+            message: "@init expects 2 arguments".to_string(),
+            help: None,
+        });
+    }
+
+    let pointer = match &args[0].kind {
+        hir::ExprKind::Deref(pointer) => pointer.as_ref(),
         _ => {
             return Err(SprsError::Semantic {
                 code: ErrorCode {
@@ -540,28 +593,60 @@ pub fn call_builtin_macro_move<'ctx>(
                     number: 13,
                 },
                 location: Location::new(String::new(), args[0].span),
-                message: "@move expects a variable argument".to_string(),
+                message: "@init first argument must be a dereference place".to_string(),
                 help: None,
             });
         }
     };
 
-    let source = self_compiler
-        .get_variables(name)
-        .ok_or_else(|| SprsError::Semantic {
-            code: ErrorCode {
-                category: ErrorCategory::Semantic,
-                number: 2,
-            },
-            location: Location::new(String::new(), args[0].span),
-            message: format!("Undefined variable: {}", name),
-            help: None,
-        })?;
+    let dest = self_compiler.compile_deref_place(pointer, module)?;
+    let tag_ptr = self_compiler.build_tag_gep(dest, "init_dest");
+    let tag = self_compiler.build_load_tag(tag_ptr, "init_dest");
+    let unit_tag = self_compiler.get_tag_from_tag_enum(Tag::Unit);
+    let is_unit = self_compiler.tag_cmp(inkwell::IntPredicate::EQ, tag, unit_tag, "init_dest");
 
-    let source_ptr = source.value.into_pointer_value();
-    let moved_ptr = var_load_at_init_variable(self_compiler, source_ptr, "move_arg")?;
-    move_variable(self_compiler, &source_ptr.into(), name);
-    Ok(moved_ptr.into())
+    let parent_fn = self_compiler
+        .builder
+        .get_insert_block()
+        .unwrap()
+        .get_parent()
+        .unwrap();
+    let already_bb = self_compiler
+        .context
+        .append_basic_block(parent_fn, "init_already_bb");
+    let ok_bb = self_compiler.context.append_basic_block(parent_fn, "init_ok_bb");
+    self_compiler
+        .builder
+        .build_conditional_branch(is_unit, ok_bb, already_bb)
+        .unwrap();
+
+    self_compiler.builder.position_at_end(already_bb);
+    let panic_fn = self_compiler.get_runtime_fn(module, "__panic")?;
+    let msg = self_compiler
+        .builder
+        .build_global_string_ptr(
+            "@init destination is already initialized",
+            "init_already_msg",
+        )
+        .unwrap()
+        .as_pointer_value();
+    self_compiler
+        .builder
+        .build_call(panic_fn, &[msg.into()], "init_already_panic")
+        .unwrap();
+    self_compiler.builder.build_unreachable().unwrap();
+
+    self_compiler.builder.position_at_end(ok_bb);
+    let val_ptr = self_compiler.compile_owned_expr(&args[1], module, "init_owned")?;
+    let new_val = self_compiler
+        .builder
+        .build_load(self_compiler.runtime_value_type, val_ptr, "init_load")
+        .unwrap();
+    self_compiler.builder.build_store(dest, new_val).unwrap();
+
+    let res_ptr = create_entry_block_alloca(self_compiler, "init_res")?;
+    self_compiler.tag_only_runtime_value_store(res_ptr, Tag::Unit as u64, "unit_res");
+    Ok(res_ptr.into())
 }
 
 pub fn call_builtin_macro_cast<'ctx>(
@@ -596,6 +681,7 @@ pub fn call_builtin_macro_cast<'ctx>(
         hir::ExprKind::TypeU32 => "u32",
         hir::ExprKind::TypeI64 => "i64",
         hir::ExprKind::TypeU64 => "u64",
+        hir::ExprKind::TypeUsize => "u64",
 
         hir::ExprKind::TypeF16 => "f16",
         hir::ExprKind::TypeF32 => "f32",

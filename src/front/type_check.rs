@@ -111,6 +111,7 @@ fn is_int_family(ty: &Type) -> bool {
             | Type::TypeU32
             | Type::TypeI64
             | Type::TypeU64
+            | Type::TypeUsize
     )
 }
 
@@ -2120,6 +2121,7 @@ impl Checker<'_> {
             ast::Expr::TypeU32 => Type::TypeU32,
             ast::Expr::TypeI64 => Type::TypeI64,
             ast::Expr::TypeU64 => Type::TypeU64,
+            ast::Expr::TypeUsize => Type::TypeUsize,
             ast::Expr::TypeF16 => Type::TypeF16,
             ast::Expr::TypeF32 => Type::TypeF32,
             ast::Expr::TypeF64 => Type::TypeF64,
@@ -2129,8 +2131,15 @@ impl Checker<'_> {
             | ast::Expr::Gt(_, _)
             | ast::Expr::Le(_, _)
             | ast::Expr::Ge(_, _) => Type::Bool,
-            ast::Expr::Add(lhs, rhs)
-            | ast::Expr::Mul(lhs, rhs)
+            ast::Expr::Add(lhs, rhs) => {
+                let left_ty = self.infer_type(lhs);
+                if ptr_element(&left_ty).is_some() {
+                    left_ty
+                } else {
+                    infer_binary_arith_type(&left_ty, &self.infer_type(rhs))
+                }
+            }
+            ast::Expr::Mul(lhs, rhs)
             | ast::Expr::Minus(lhs, rhs)
             | ast::Expr::Div(lhs, rhs)
             | ast::Expr::Mod(lhs, rhs) => {
@@ -2315,7 +2324,7 @@ impl Checker<'_> {
             "label_is" => Type::Bool,
             "label_name" => Type::Str,
             "label_payload" => Type::Any,
-            "init" => Type::Any,
+            "init" => Type::Unit,
             "clone" | "move" => {
                 if !args.is_empty() {
                     self.infer_type(&args[0])
@@ -2396,6 +2405,7 @@ impl Checker<'_> {
             ast::Expr::TypeU32 => (hir::ExprKind::TypeU32, Type::TypeU32),
             ast::Expr::TypeI64 => (hir::ExprKind::TypeI64, Type::TypeI64),
             ast::Expr::TypeU64 => (hir::ExprKind::TypeU64, Type::TypeU64),
+            ast::Expr::TypeUsize => (hir::ExprKind::TypeUsize, Type::TypeUsize),
             ast::Expr::TypeF16 => (hir::ExprKind::TypeF16, Type::TypeF16),
             ast::Expr::TypeF32 => (hir::ExprKind::TypeF32, Type::TypeF32),
             ast::Expr::TypeF64 => (hir::ExprKind::TypeF64, Type::TypeF64),
@@ -2422,7 +2432,7 @@ impl Checker<'_> {
                 let ty = rhs_h.ty.clone();
                 (hir::ExprKind::Assign(name.clone(), Box::new(rhs_h)), ty)
             }
-            ast::Expr::Add(l, r) => self.bin(l, r, hir::ExprKind::Add)?,
+            ast::Expr::Add(l, r) => self.check_add(l, r)?,
             ast::Expr::Mul(l, r) => self.bin(l, r, hir::ExprKind::Mul)?,
             ast::Expr::Minus(l, r) => self.bin(l, r, hir::ExprKind::Minus)?,
             ast::Expr::Div(l, r) => self.bin(l, r, hir::ExprKind::Div)?,
@@ -2660,16 +2670,64 @@ impl Checker<'_> {
         Ok(hir::Expr { kind, ty, span })
     }
 
+    fn pointer_offset_type_error(&self, span: Span, actual: &Type) -> SprsError {
+        type_err(
+            &self.file,
+            span,
+            1,
+            format!(
+                "Type mismatch: pointer offset expects usize or a non-negative integer literal, got {actual}"
+            ),
+            Some("usize".to_string()),
+            Some(format!("{actual}")),
+            None,
+        )
+    }
+
+    fn is_valid_pointer_offset(expr: &hir::Expr) -> bool {
+        matches!(expr.ty, Type::TypeUsize)
+            || matches!(expr.kind, hir::ExprKind::Number(n) if n >= 0)
+    }
+
+    fn check_add(
+        &mut self,
+        l: &Spanned<ast::Expr>,
+        r: &Spanned<ast::Expr>,
+    ) -> Result<(hir::ExprKind, Type), SprsError> {
+        let left = self.check_expr(l, None)?;
+        let right = self.check_expr(r, None)?;
+        if ptr_element(&left.ty).is_some() {
+            if Self::is_valid_pointer_offset(&right) {
+                let ty = left.ty.clone();
+                return Ok((hir::ExprKind::Add(Box::new(left), Box::new(right)), ty));
+            }
+            return Err(self.pointer_offset_type_error(r.span, &right.ty));
+        }
+        if ptr_element(&right.ty).is_some() {
+            return Err(self.pointer_offset_type_error(r.span, &right.ty));
+        }
+        let ty = infer_binary_arith_type(&left.ty, &right.ty);
+        Ok((hir::ExprKind::Add(Box::new(left), Box::new(right)), ty))
+    }
+
     fn bin(
         &mut self,
         l: &Spanned<ast::Expr>,
         r: &Spanned<ast::Expr>,
         ctor: fn(Box<hir::Expr>, Box<hir::Expr>) -> hir::ExprKind,
     ) -> Result<(hir::ExprKind, Type), SprsError> {
-        let l = self.check_expr(l, None)?;
-        let r = self.check_expr(r, None)?;
-        let ty = infer_binary_arith_type(&l.ty, &r.ty);
-        Ok((ctor(Box::new(l), Box::new(r)), ty))
+        let left = self.check_expr(l, None)?;
+        let right = self.check_expr(r, None)?;
+        if ptr_element(&left.ty).is_some() || ptr_element(&right.ty).is_some() {
+            let actual = if ptr_element(&left.ty).is_some() {
+                &right.ty
+            } else {
+                &left.ty
+            };
+            return Err(self.pointer_offset_type_error(r.span, actual));
+        }
+        let ty = infer_binary_arith_type(&left.ty, &right.ty);
+        Ok((ctor(Box::new(left), Box::new(right)), ty))
     }
 
     fn bin_bool(
@@ -2879,7 +2937,55 @@ impl Checker<'_> {
             }
             "raw" => arity_err(1, "@raw expects 1 argument".into(), 13)?,
             "free" => arity_err(1, "@free expects 1 argument".into(), 13)?,
-            "println" | "buf_len" | "buf_get" | "buf_set" | "clone" | "move" | "fcast"
+            "move" => {
+                arity_err(1, "@move expects 1 argument".into(), 13)?;
+                match &args[0].node {
+                    ast::Expr::Var(_) | ast::Expr::Deref(_) => {}
+                    _ => {
+                        return Err(semantic(
+                            &self.file,
+                            args[0].span,
+                            13,
+                            "@move expects a variable or dereference place argument".into(),
+                            None,
+                        ));
+                    }
+                }
+            }
+            "init" => {
+                arity_err(2, "@init expects 2 arguments".into(), 13)?;
+                match &args[0].node {
+                    ast::Expr::Deref(_) => {}
+                    _ => {
+                        return Err(semantic(
+                            &self.file,
+                            args[0].span,
+                            13,
+                            "@init first argument must be a dereference place".into(),
+                            None,
+                        ));
+                    }
+                }
+                let dest = self.check_expr(&args[0], None)?;
+                let pointee = dest.ty.clone();
+                let value = self.check_expr_in(&args[1], Some(&pointee))?;
+                if !types_assignable(&pointee, &value.ty) {
+                    return Err(self.type_mismatch_assign(
+                        args[1].span,
+                        format!(
+                            "Type mismatch: cannot initialize dereference of type {pointee} with {}",
+                            value.ty
+                        ),
+                        &pointee,
+                        &value.ty,
+                    ));
+                }
+                return Ok((
+                    hir::ExprKind::Macro("init".into(), vec![dest, value]),
+                    Type::Unit,
+                ));
+            }
+            "println" | "buf_len" | "buf_get" | "buf_set" | "clone" | "fcast"
             | "lshift" | "rshift" | "not" | "error_message" | "label_payload" | "label_name"
             | "error" => {}
             _ => {
@@ -4013,5 +4119,128 @@ fn main(p >> Ptr(i64)) >> i64 { return read(p); }
         };
         assert_eq!(ret.ty, Type::TypeI64);
         assert!(matches!(ret.kind, hir::ExprKind::Deref(_)));
+    }
+
+    #[test]
+    fn ptr_add_preserves_pointee_type() {
+        let src = r#"
+fn offset(p >> Ptr(i64), n >> usize) >> Ptr(i64) { return p + n; }
+fn one(p >> Ptr(i64)) >> Ptr(i64) { return p + 1; }
+"#;
+        let module = check(src).expect("check");
+        let ptr_i64 = Type::App("Ptr".into(), vec![Type::TypeI64]);
+        let offset = first_fn(&module);
+        let hir::StmtKind::Return(Some(ret)) = &offset.body[0].kind else {
+            panic!("expected return p + n");
+        };
+        assert_eq!(ret.ty, ptr_i64);
+        assert!(matches!(ret.kind, hir::ExprKind::Add(_, _)));
+
+        let one = &module.functions[1];
+        let hir::StmtKind::Return(Some(ret)) = &one.body[0].kind else {
+            panic!("expected return p + 1");
+        };
+        assert_eq!(ret.ty, ptr_i64);
+
+        let generic = r#"
+fn offset<T>(p >> Ptr(T), n >> usize) >> Ptr(T) { return p + n; }
+fn main(p >> Ptr(i64), n >> usize) >> Ptr(i64) { return offset(p, n); }
+"#;
+        let module = check(generic).expect("generic ptr add");
+        assert_eq!(module.function_specializations.len(), 1);
+        let spec = &module.function_specializations[0];
+        assert_eq!(spec.function.ret_ty.as_ref(), Some(&ptr_i64));
+        let hir::StmtKind::Return(Some(ret)) = &spec.function.body[0].kind else {
+            panic!("expected specialized add");
+        };
+        assert_eq!(ret.ty, ptr_i64);
+    }
+
+    #[test]
+    fn rejects_invalid_ptr_offset() {
+        let cases = [
+            r#"fn bad(p >> Ptr(i64)) { @println(p + -1); }"#,
+            r#"fn bad(p >> Ptr(i64)) { @println(p + "x"); }"#,
+            r#"fn bad(p >> Ptr(i64)) { @println(1 + p); }"#,
+            r#"fn bad(p >> Ptr(i64)) { @println(p - 1); }"#,
+            r#"fn bad(p >> Ptr(i64)) { @println(p * 1); }"#,
+            r#"fn bad(p >> Ptr(i64)) { @println(p / 1); }"#,
+            r#"fn bad(p >> Ptr(i64)) { @println(p % 1); }"#,
+        ];
+        for src in cases {
+            let err = check(src).expect_err(src);
+            assert_eq!(err_code(&err), (ErrorCategory::Type, 1), "{src} => {}", err_message(&err));
+            assert!(
+                err_message(&err).starts_with(
+                    "Type mismatch: pointer offset expects usize or a non-negative integer literal, got "
+                ),
+                "{src} => {}",
+                err_message(&err)
+            );
+        }
+    }
+
+    #[test]
+    fn pointer_move_and_init_preserve_pointee_type() {
+        let src = r#"
+fn take(p >> Ptr(i64)) >> i64 {
+    var x = @move(*p);
+    @init(*p, x);
+    return x;
+}
+"#;
+        let module = check(src).expect("check");
+        let body = &first_fn(&module).body;
+        let hir::StmtKind::Var { init, binding_ty, .. } = &body[0].kind else {
+            panic!("expected move binding");
+        };
+        assert_eq!(init.ty, Type::TypeI64);
+        assert_eq!(binding_ty, &Type::TypeI64);
+        match &init.kind {
+            hir::ExprKind::Macro(name, args) => {
+                assert_eq!(name, "move");
+                assert!(matches!(args[0].kind, hir::ExprKind::Deref(_)));
+            }
+            other => panic!("expected @move, got {other:?}"),
+        }
+        let hir::StmtKind::Expr(init_call) = &body[1].kind else {
+            panic!("expected @init statement");
+        };
+        assert_eq!(init_call.ty, Type::Unit);
+        match &init_call.kind {
+            hir::ExprKind::Macro(name, args) => {
+                assert_eq!(name, "init");
+                assert_eq!(args.len(), 2);
+                assert!(matches!(args[0].kind, hir::ExprKind::Deref(_)));
+            }
+            other => panic!("expected @init, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_pointer_init() {
+        let arity = check("fn bad(p >> Ptr(i64)) { @init(*p); }").expect_err("arity");
+        assert_eq!(err_code(&arity), (ErrorCategory::Semantic, 13));
+
+        let place = check("fn bad(p >> Ptr(i64), x >> i64) { @init(p, x); }").expect_err("place");
+        assert_eq!(err_code(&place), (ErrorCategory::Semantic, 13));
+        assert_eq!(
+            err_message(&place),
+            "@init first argument must be a dereference place"
+        );
+
+        let mismatch = check(r#"fn bad(p >> Ptr(i64)) { @init(*p, "x"); }"#).expect_err("mismatch");
+        assert_eq!(err_code(&mismatch), (ErrorCategory::Type, 6));
+        assert_eq!(
+            err_message(&mismatch),
+            "Type mismatch: cannot initialize dereference of type i64 with str"
+        );
+
+        let move_place = check("fn bad(p >> Ptr(i64)) { @move(1); }").expect_err("move place");
+        assert_eq!(err_code(&move_place), (ErrorCategory::Semantic, 13));
+        assert_eq!(
+            err_message(&move_place),
+            "@move expects a variable or dereference place argument"
+        );
     }
 }

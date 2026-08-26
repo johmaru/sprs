@@ -4,7 +4,7 @@ use crate::front::error::{ErrorCategory, ErrorCode, SprsError};
 use crate::front::label_name::LabelName;
 use crate::front::span::Span;
 use crate::front::type_helper::{
-    Type, list_element,
+    Type, list_element, ptr_element,
 };
 use crate::llvm::builder_helper;
 use crate::llvm::builder_helper::BuilderExt;
@@ -127,7 +127,7 @@ impl<'ctx> Compiler<'ctx> {
         Ok(copied)
     }
 
-    fn compile_deref_place(
+    pub(crate) fn compile_deref_place(
         &mut self,
         pointer: &hir::Expr,
         module: &Module<'ctx>,
@@ -479,6 +479,7 @@ impl<'ctx> Compiler<'ctx> {
             hir::ExprKind::TypeU32 => builder_helper::create_uint32(self),
             hir::ExprKind::TypeI64 => builder_helper::create_int64(self),
             hir::ExprKind::TypeU64 => builder_helper::create_uint64(self),
+            hir::ExprKind::TypeUsize => builder_helper::create_uint64(self),
             hir::ExprKind::TypeF16 => builder_helper::create_float16(self),
             hir::ExprKind::TypeF32 => builder_helper::create_float32(self),
             hir::ExprKind::TypeF64 => builder_helper::create_float64(self),
@@ -533,6 +534,7 @@ impl<'ctx> Compiler<'ctx> {
                     "label_payload" => Ok(builder_helper::call_builtin_macro_label_payload(self, args, module)?),
                     "label_name" => Ok(builder_helper::call_builtin_macro_label_name(self, args, module)?),
                     "error" => Ok(builder_helper::call_builtin_macro_error(self, args, module)?),
+                    "init" => Ok(builder_helper::call_builtin_macro_init(self, args, module)?),
                     _ => Err(SprsError::Semantic {
                         code: ErrorCode { category: ErrorCategory::Semantic, number: 3 },
                         location: self.location(expr.span),
@@ -545,7 +547,13 @@ impl<'ctx> Compiler<'ctx> {
                 let struct_name = self.resolve_struct_backend_name(struct_ref)?;
                 Ok(builder_helper::create_field_access(self, receiver, *field_index, &struct_name, module)?)
             }
-            hir::ExprKind::Add(lhs, rhs) => Ok(builder_helper::create_add_expr(self, lhs, rhs, module)?),
+            hir::ExprKind::Add(lhs, rhs) => {
+                if ptr_element(&lhs.ty).is_some() {
+                    Ok(builder_helper::create_ptr_add_expr(self, lhs, rhs, module)?)
+                } else {
+                    Ok(builder_helper::create_add_expr(self, lhs, rhs, module)?)
+                }
+            }
             hir::ExprKind::Mul(lhs, rhs) => Ok(builder_helper::create_mul_expr(self, lhs, rhs, module)?),
             hir::ExprKind::Minus(lhs, rhs) => Ok(builder_helper::create_minus_expr(self, lhs, rhs, module)?),
             hir::ExprKind::Div(lhs, rhs) => Ok(builder_helper::create_div_expr(self, lhs, rhs, module)?),
@@ -989,12 +997,63 @@ mod tests {
         expr(hir::ExprKind::Var("p".into()), ptr_i64())
     }
 
+    fn compile_deref_slots<'ctx>(
+        compiler: &mut Compiler<'ctx>,
+        context: &'ctx Context,
+        slot1_tag: u64,
+        slot1_data: u64,
+    ) {
+        let array_ty = compiler.runtime_value_type.array_type(2);
+        let cells = compiler.builder.build_alloca(array_ty, "cells").unwrap();
+        let i64_ty = context.i64_type();
+        let zero = i64_ty.const_int(0, false);
+        let one = i64_ty.const_int(1, false);
+        let slot0 = unsafe {
+            compiler
+                .builder
+                .build_in_bounds_gep(array_ty, cells, &[zero, zero], "slot0")
+        }
+        .unwrap();
+        let slot1 = unsafe {
+            compiler
+                .builder
+                .build_in_bounds_gep(array_ty, cells, &[zero, one], "slot1")
+        }
+        .unwrap();
+        compiler.build_runtime_value_store(
+            slot0,
+            StoreTag::Int(Tag::Integer as u64),
+            StoreValue::Int(i64_ty.const_int(41, true)),
+            "cell0",
+        );
+        compiler.build_runtime_value_store(
+            slot1,
+            StoreTag::Int(slot1_tag),
+            StoreValue::Int(i64_ty.const_int(slot1_data, false)),
+            "cell1",
+        );
+        let p = create_entry_block_alloca(compiler, "p").expect("p");
+        let addr = compiler
+            .builder
+            .build_ptr_to_int(slot0, i64_ty, "pointee_addr")
+            .unwrap();
+        compiler.build_runtime_value_store(
+            p,
+            StoreTag::Int(Tag::RawPtr as u64),
+            StoreValue::Int(addr),
+            "ptr",
+        );
+        compiler.add_variable("p".into(), p.into());
+    }
+
     fn compile_deref_fixture<'ctx>(
         compiler: &mut Compiler<'ctx>,
         context: &'ctx Context,
         module: &Module<'ctx>,
         body: Vec<hir::Stmt>,
         name: &str,
+        slot1_tag: u64,
+        slot1_data: u64,
     ) {
         let func = hir::Function {
             name: name.to_string(),
@@ -1013,28 +1072,10 @@ mod tests {
         compiler.function_signatures = Some(fn_val);
         compiler.enter_scope();
 
-        let pointee = create_entry_block_alloca(compiler, "pointee").expect("pointee");
-        compiler.build_runtime_value_store(
-            pointee,
-            StoreTag::Int(Tag::Integer as u64),
-            StoreValue::Int(context.i64_type().const_int(41, true)),
-            "cell",
-        );
-        let p = create_entry_block_alloca(compiler, "p").expect("p");
-        let addr = compiler
-            .builder
-            .build_ptr_to_int(pointee, context.i64_type(), "pointee_addr")
-            .unwrap();
-        compiler.build_runtime_value_store(
-            p,
-            StoreTag::Int(Tag::RawPtr as u64),
-            StoreValue::Int(addr),
-            "ptr",
-        );
-        compiler.add_variable("p".into(), p.into());
-
+        compile_deref_slots(compiler, context, slot1_tag, slot1_data);
         let _ = compiler.get_runtime_fn(module, "__drop").expect("declare drop");
         let _ = compiler.get_runtime_fn(module, "__clone").expect("declare clone");
+        let _ = compiler.get_runtime_fn(module, "__panic").expect("declare panic");
 
         compiler.compile_block(&func.body, module).expect("compile body");
         if compiler
@@ -1058,6 +1099,34 @@ mod tests {
         if let Some(clone_fn) = module.get_function("__clone") {
             engine.add_global_mapping(&clone_fn, sprs_runtime::__clone as *const () as usize);
         }
+        if let Some(panic_fn) = module.get_function("__panic") {
+            engine.add_global_mapping(&panic_fn, sprs_runtime::__panic as *const () as usize);
+        }
+    }
+
+    fn add_one() -> hir::Expr {
+        expr(
+            hir::ExprKind::Add(
+                Box::new(var_p()),
+                Box::new(expr(hir::ExprKind::Number(1), Type::Int)),
+            ),
+            ptr_i64(),
+        )
+    }
+
+    fn deref_p() -> hir::Expr {
+        expr(hir::ExprKind::Deref(Box::new(var_p())), Type::Int)
+    }
+
+    fn jit_i64(module: &Module, name: &str) -> SprsValue {
+        Target::initialize_native(&InitializationConfig::default()).expect("native target");
+        let engine = module
+            .create_jit_execution_engine(OptimizationLevel::None)
+            .expect("jit");
+        map_runtime(&engine, module);
+        type TestFn = unsafe extern "C" fn() -> SprsValue;
+        let f = unsafe { engine.get_function::<TestFn>(name) }.expect("lookup");
+        unsafe { f.call() }
     }
 
     #[test]
@@ -1076,7 +1145,7 @@ mod tests {
                 Type::Int,
             )))),
         ];
-        compile_deref_fixture(&mut compiler, &context, &module, body, "deref_place");
+        compile_deref_fixture(&mut compiler, &context, &module, body, "deref_place", Tag::Unit as u64, 0);
 
         Target::initialize_native(&InitializationConfig::default()).expect("native target");
         let engine = module
@@ -1107,7 +1176,7 @@ mod tests {
                 Type::Int,
             )))),
         ];
-        compile_deref_fixture(&mut compiler, &context, &module, body, "deref_self");
+        compile_deref_fixture(&mut compiler, &context, &module, body, "deref_self", Tag::Unit as u64, 0);
         let ir = module.print_to_string().to_string();
         let clone_at = ir.find("call {{ i32, i64 }} @__clone").or_else(|| ir.find("@__clone"));
         let drop_at = ir.find("call void @__drop").or_else(|| ir.find("@__drop"));
@@ -1117,5 +1186,119 @@ mod tests {
             clone_at < drop_at,
             "__clone should be emitted before __drop for *p = *p\n{ir}"
         );
+    }
+
+    #[test]
+    fn ptr_add_uses_runtime_value_stride() {
+        let context = Context::create();
+        let builder = context.create_builder();
+        let mut compiler = Compiler::new(&context, builder, "ptr_add.sprs".into());
+        let module = context.create_module("ptr_add_test");
+        let body = vec![stmt(hir::StmtKind::Return(Some(expr(
+            hir::ExprKind::Deref(Box::new(add_one())),
+            Type::Int,
+        ))))];
+        compile_deref_fixture(
+            &mut compiler,
+            &context,
+            &module,
+            body,
+            "ptr_add",
+            Tag::Integer as u64,
+            42,
+        );
+        let ir = module.print_to_string().to_string();
+        assert!(ir.contains("llvm.umul.with.overflow"), "{ir}");
+        assert!(ir.contains("llvm.uadd.with.overflow"), "{ir}");
+        assert!(ir.contains("Pointer arithmetic overflow"), "{ir}");
+        let result = jit_i64(&module, "ptr_add");
+        assert_eq!(result.tag, Tag::Integer as i32);
+        assert_eq!(result.data, 42);
+    }
+
+    #[test]
+    fn deref_move_leaves_unit() {
+        let context = Context::create();
+        let builder = context.create_builder();
+        let mut compiler = Compiler::new(&context, builder, "deref_move.sprs".into());
+        let module = context.create_module("deref_move_test");
+        let moved = expr(
+            hir::ExprKind::Macro("move".into(), vec![deref_p()]),
+            Type::Int,
+        );
+        let body = vec![
+            stmt(hir::StmtKind::Expr(moved)),
+            stmt(hir::StmtKind::Return(Some(deref_p()))),
+        ];
+        compile_deref_fixture(
+            &mut compiler,
+            &context,
+            &module,
+            body,
+            "deref_move",
+            Tag::Unit as u64,
+            0,
+        );
+        let ir = module.print_to_string().to_string();
+        let move_ir = ir
+            .split("%move_deref =")
+            .nth(1)
+            .and_then(|rest| rest.split("%deref_data_ptr1").next())
+            .unwrap_or(&ir);
+        assert!(!move_ir.contains("@__clone"), "{ir}");
+        assert!(!move_ir.contains("@__drop"), "{ir}");
+        assert!(move_ir.contains("store i32 6"), "expected Unit tag store\n{ir}");
+        let result = jit_i64(&module, "deref_move");
+        assert_eq!(result.tag, Tag::Unit as i32);
+    }
+
+    #[test]
+    fn deref_move_init_through_offset() {
+        let context = Context::create();
+        let builder = context.create_builder();
+        let mut compiler = Compiler::new(&context, builder, "deref_init.sprs".into());
+        let module = context.create_module("deref_init_test");
+        let moved = expr(
+            hir::ExprKind::Macro("move".into(), vec![deref_p()]),
+            Type::Int,
+        );
+        let dest = expr(hir::ExprKind::Deref(Box::new(add_one())), Type::Int);
+        let init = expr(
+            hir::ExprKind::Macro(
+                "init".into(),
+                vec![dest, expr(hir::ExprKind::Var("x".into()), Type::Int)],
+            ),
+            Type::Unit,
+        );
+        let body = vec![
+            stmt(hir::StmtKind::Var {
+                name: "x".into(),
+                binding_ty: Type::Int,
+                is_ambi: false,
+                is_annotated: false,
+                init: moved,
+            }),
+            stmt(hir::StmtKind::Expr(init)),
+            stmt(hir::StmtKind::Return(Some(expr(
+                hir::ExprKind::Deref(Box::new(add_one())),
+                Type::Int,
+            )))),
+        ];
+        compile_deref_fixture(
+            &mut compiler,
+            &context,
+            &module,
+            body,
+            "deref_init",
+            Tag::Unit as u64,
+            0,
+        );
+        let ir = module.print_to_string().to_string();
+        assert!(ir.contains("@init destination is already initialized"), "{ir}");
+        let init_ir = ir.split("init_ok_bb").nth(1).unwrap_or(&ir);
+        assert!(!init_ir.contains("call void @__drop"), "{ir}");
+        let result = jit_i64(&module, "deref_init");
+        assert_eq!(result.tag, Tag::Integer as i32);
+        assert_eq!(result.data, 41);
     }
 }

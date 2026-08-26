@@ -516,6 +516,7 @@ impl<'ctx> Compiler<'ctx> {
                     Type::Int
                     | Type::TypeI64
                     | Type::TypeU64
+                    | Type::TypeUsize
                     | Type::Bool
                     | Type::Str
                     | Type::Float

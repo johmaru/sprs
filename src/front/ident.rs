@@ -106,6 +106,7 @@ pub fn is_keyword(name: &str) -> bool {
             | "u32"
             | "i64"
             | "u64"
+            | "usize"
             | "f16"
             | "f32"
             | "f64"

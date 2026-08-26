@@ -131,6 +131,20 @@ pub fn var_load_at_init_variable<'ctx>(
     Ok(ptr)
 }
 
+/// Copy `{tag,data}` out of a pointer place and unconditionally mark the
+/// destination slot `Tag::Unit`. Unlike [`move_variable`], this is not
+/// limited to heap tags.
+pub fn move_out_pointer_place<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+    dest_ptr: PointerValue<'ctx>,
+    name: &str,
+) -> Result<PointerValue<'ctx>, SprsError> {
+    let copied = var_load_at_init_variable(self_compiler, dest_ptr, name)?;
+    let tag_ptr = self_compiler.build_tag_gep(dest_ptr, name);
+    self_compiler.build_tag_store(Tag::Unit, tag_ptr);
+    Ok(copied)
+}
+
 #[allow(dead_code)]
 pub fn var_return_store<'ctx>(
     self_compiler: &mut Compiler<'ctx>,

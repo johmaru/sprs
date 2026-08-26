@@ -70,6 +70,7 @@ pub enum Expr {
     TypeU32,
     TypeI64,
     TypeU64,
+    TypeUsize,
 
     TypeF16,
     TypeF32,

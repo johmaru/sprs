@@ -25,8 +25,8 @@ fn identity(value >> Tree) >> Tree {
 `StructField.default_value` を、各 `init` の呼び出し側の式コンテキストで評価します。
 default 式に `self` や先行フィールドの束縛はありません。default も初期化子もない
 フィールドは `missing required field \`name\` in init Type` です。未知フィールドと
-重複フィールドは初期化子の span でコンパイルエラーです。旧 `@init(...)` は構造体
-初期化ではありません。`@init` は未知マクロです。
+重複フィールドは初期化子の span でコンパイルエラーです。旧 `@init(...)` は構造体初期化ではありません。
+`init Type { ... }` が構造体を作り、`@init(*p, value)` はポインタ place の初期化マクロです。
 
 ```sprs
 pub struct Point {

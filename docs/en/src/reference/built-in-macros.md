@@ -59,16 +59,23 @@ var a = "hello";
 
 ```
 
-* `@move(value)`: Move out of a variable (invalidates the binding)
+* `@move(value)`: Move out of a variable or a pointer place. A variable binding or `*p` slot becomes `Unit`.
 
 examples:
 
 ```sprs
 var a = "hello";
 @println(@move(a)); # a becomes Unit
+var x = @move(*p);  # *p becomes Unit
 ```
 
-See [Memory Management](memory-management.md) for move semantics, `@clone`, `@move`, and automatic drop.
+* `@init(*p, value)`: Initialize a `Unit` pointer place. First argument must be a dereference. Result type is `unit`. A non-`Unit` destination panics. This is not struct initialization (`init Type { ... }`).
+
+```sprs
+@init(*p, x);
+```
+
+See [Memory Management](memory-management.md) for move semantics, `@clone`, `@move`, `@init`, and automatic drop.
 
 * `@cast(value, type)`: Cast the value to the specified type
 

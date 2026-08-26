@@ -6,7 +6,7 @@
 
 | 表面 | 意味 |
 |------|------|
-| `i8` `u8` `i16` `u16` `i32` `u32` `i64` `u64` | 整数幅。注釈のない整数リテラルは `i64`。 |
+| `i8` `u8` `i16` `u16` `i32` `u32` `i64` `u64` `usize` | 整数幅。注釈のない整数リテラルは `i64`。`usize` は別の静的型です。現行の x86_64 対象では実行時タグと LLVM 格納は `u64` と同じです。`u64` との暗黙 alias はありません。 |
 | `f16` `f32` `f64` | 浮動小数点幅。注釈のない浮動リテラルは `f64`。`@cast` もこの名前。 |
 | `bool` | 真偽値 |
 | `str` | 文字列 |
@@ -17,7 +17,7 @@
 | `Range` | Range |
 | `Buffer` | 固定長でゼロ初期化されたバイト配列 |
 | `RawPtr` | `@raw(buf)` から得られる素のアドレス |
-| `Ptr(T)` | 型付きポインタ。引数は常に 1 つ。pointee 型はコンパイル時だけ保持し、実行時は `{ tag, data }` の `Tag::RawPtr`（素のアドレス）を使う。`RawPtr` との暗黙変換はない。 |
+| `Ptr(T)` | 型付きポインタ。引数は常に 1 つ。pointee 型はコンパイル時だけ保持し、実行時は `{ tag, data }` の `Tag::RawPtr`（素のアドレス）を使う。`RawPtr` との暗黙変換はない。`Ptr(T) + offset` は `offset` が `usize` または非負の整数リテラルなら結果も `Ptr(T)` です。 |
 | `Label` | 広いラベル。payload なし atom と payload 付きラベルの両方 |
 | `:name` | 正確な payload なし atom（`:ready`） |
 | `Label(:name, T)` | 正確な payload ラベル。第 1 引数は `:name`。 |
@@ -111,7 +111,7 @@ ASCII のみ。数字は 2 文字目以降に置けます。略語は通常の�
 
 分類規則を満たす非キーワードをエスケープすると `SPRS-SYN-008`（`` unnecessary identifier escape `^foo` ``）で、`help: use foo instead of ^foo` です。`^BadName` をローカルに使う場合は不要エスケープより `SPRS-SEM-025` を先に出します。
 
-キーワード: `if` `else` `while` `fn` `use` `function_build` `private` `return` `pkg` `import` `var` `pub` `struct` `ambi` `new` `destroy` `exist` `unsafe` `defer` `match` `case` `break` `true` `false` `bool` `str` `unit` `i8`…`u64` `f16` `f32` `f64` `label` `init` `source` `params` `return_type` `visibility` `type_param` `when` `is` `neq` `and` `or` `not`。`label` は宣言専用（`label Color { ... }`、`label :ready;`）。型位置は `Label` です。型位置に残るキーワードは上記のプリミティブ型名と `ambi` だけです。
+キーワード: `if` `else` `while` `fn` `use` `function_build` `private` `return` `pkg` `import` `var` `pub` `struct` `ambi` `new` `destroy` `exist` `unsafe` `defer` `match` `case` `break` `true` `false` `bool` `str` `unit` `i8`…`u64` `usize` `f16` `f32` `f64` `label` `init` `source` `params` `return_type` `visibility` `type_param` `when` `is` `neq` `and` `or` `not`。`label` は宣言専用（`label Color { ... }`、`label :ready;`）。型位置は `Label` です。型位置に残るキーワードは上記のプリミティブ型名と `ambi` だけです。
 
 単独の `^`、`^1`、`^^name` はレキサーエラーです。
 

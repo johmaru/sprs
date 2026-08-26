@@ -73,6 +73,7 @@ pub enum ExprKind {
     TypeU32,
     TypeI64,
     TypeU64,
+    TypeUsize,
     TypeF16,
     TypeF32,
     TypeF64,

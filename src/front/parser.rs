@@ -1432,6 +1432,71 @@ fn write(p >> Ptr(i64)) { *p = 7; }
     }
 
     #[test]
+    fn parses_usize_and_pointer_phase2_forms() {
+        let src = r#"
+fn offset(p >> Ptr(i64), n >> usize) >> Ptr(i64) {
+    var m >> usize = @cast(1, usize);
+    var q = p + 1;
+    var x = @move(*p);
+    @init(*p, x);
+    return q;
+}
+"#;
+        let items = parse_only(src, "usize_ptr.sprs").expect("parse");
+        let Item::FunctionItem(function_item) = &items[0] else {
+            panic!("expected function");
+        };
+        assert_eq!(
+            function_item.params[1].ty.as_ref().map(|a| &a.ty),
+            Some(&Type::TypeUsize)
+        );
+        assert_eq!(function_item.ret_ty.as_ref(), Some(&Type::App("Ptr".into(), vec![Type::TypeI64])));
+
+        let Stmt::Var(var_m) = &function_item.blk[0].node else {
+            panic!("expected usize binding");
+        };
+        assert_eq!(var_m.ty.as_ref().map(|a| &a.ty), Some(&Type::TypeUsize));
+        let init = var_m.expr.as_ref().expect("cast init");
+        match &init.node {
+            Expr::Macro(name, args) if name == "cast" => {
+                assert!(matches!(&args[1].node, Expr::TypeUsize));
+            }
+            other => panic!("expected @cast(..., usize), got {other:?}"),
+        }
+
+        let Stmt::Var(var_q) = &function_item.blk[1].node else {
+            panic!("expected p + 1");
+        };
+        let add = var_q.expr.as_ref().expect("add");
+        assert!(matches!(&add.node, Expr::Add(_, _)));
+
+        let Stmt::Var(var_x) = &function_item.blk[2].node else {
+            panic!("expected @move(*p)");
+        };
+        let moved = var_x.expr.as_ref().expect("move");
+        match &moved.node {
+            Expr::Macro(name, args) if name == "move" => {
+                assert!(matches!(&args[0].node, Expr::Deref(_)));
+            }
+            other => panic!("expected @move(*p), got {other:?}"),
+        }
+
+        match &function_item.blk[3].node {
+            Stmt::Expr(call) => match &call.node {
+                Expr::Macro(name, args) if name == "init" => {
+                    assert!(matches!(&args[0].node, Expr::Deref(_)));
+                    assert_eq!(args.len(), 2);
+                }
+                other => panic!("expected @init(*p, x), got {other:?}"),
+            },
+            other => panic!("expected init statement, got {other:?}"),
+        }
+
+        assert!(parse_only("fn f() { var p = @init(Point); }
+", "old_init.sprs").is_err());
+    }
+
+    #[test]
     fn preserves_star_precedence() {
         let src = r#"
 fn mul(a >> i64, b >> i64) >> i64 { return a * b; }
