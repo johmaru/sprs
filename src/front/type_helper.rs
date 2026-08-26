@@ -2,63 +2,18 @@
 ///
 /// Runtime values are still `{ tag, data }` (`Tag` in `llvm/compiler.rs`).
 /// `Type` is the static knowledge attached to bindings and expressions.
-/// When a type is monomorphic at runtime, [`Type::tag_discriminant`] matches
-/// the corresponding `Tag as u32` value.
+/// Static `Type` and runtime `Tag` are managed separately.
 ///
-/// Correspondence (`Type` → `Tag`):
-/// | Type            | Tag          | discriminant |
-/// |-----------------|--------------|--------------|
-/// | Int             | Integer      | 0            |
-/// | Float           | Float        | 1            |
-/// | Str             | String       | 2            |
-/// | Bool            | Boolean      | 3            |
-/// | List            | List         | 4            |
-/// | Range           | Range        | 5            |
-/// | Unit            | Unit         | 6            |
-/// | ClosedLabelSet(_) | Atom      | 9            |
-/// | Struct(_)       | Struct       | 8            |
-/// | 7              | (unused)     | (was Enum)   |
-/// | Label           | Label        | 10           |
-/// | AtomVal         | Atom         | 9            |
-/// | Buffer          | Buffer       | 11           |
-/// | RawPtr          | RawPtr       | 12           |
-/// | TypeI8          | Int8         | 100          |
-/// | TypeU8          | Uint8        | 101          |
-/// | TypeI16         | Int16        | 102          |
-/// | TypeU16         | Uint16       | 103          |
-/// | TypeI32         | Int32        | 104          |
-/// | TypeU32         | Uint32       | 105          |
-/// | TypeI64         | Int64        | 106          |
-/// | TypeU64         | Uint64       | 107          |
-/// | TypeF16         | Float16      | 108          |
-/// | TypeF32         | Float32      | 109          |
-/// | TypeF64         | Float64      | 110          |
-/// | Any             | (none)       | (none)       |
-/// | App(name, args) | (none)       | (none)       |
-/// | Param(name)     | (none)       | (none)       |
-/// | Atom(name)      | (none)       | (none)       |
-///
-/// `App` / `Param` / `Atom` are compile-time only: inputs to checking and
-/// substitution. They are not LLVM types. `tag_discriminant` is `None` for
-/// `App`; [`Type::runtime_shape`] recovers `Tag::List` / `Tag::Label` for
-/// those constructors. `Process(T)` has no runtime tag yet (#25).
-/// `Atom` carries a label name as written in a type argument (`Label(:ok)`).
-///
-/// Flat `List` / `Range` / `Label` coexist with parametric forms such as
-/// `App("List", [Int])`. Surface annotations use `List(T)` / `List(Any)`;
-/// `Type::List` remains an internal alias of `List(Any)`.
-///
-/// Runtime tag 9 is `Atom`: an interned, immutable symbol with no payload
-/// (`Tag::Atom`, data = intern id). It is an immediate value, not a slab
-/// handle — `is_heap_tag` excludes it and `__drop` / `__clone` are no-ops.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Surface annotations use `List(T)` / `List(Any)`, represented as
+/// `Type::App("List", ...)`. `App` / `Param` / `Atom` are compile-time only.
+/// Runtime tag 9 is `Atom`: an interned, immutable symbol with no payload.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Type {
     Any,
     Int,
     Float,
     Bool,
     Str,
-    List,
     Range,
     Unit,
     ClosedLabelSet(String),
@@ -70,7 +25,7 @@ pub enum Type {
 
     App(String, Vec<Type>),
     Param(String),
-    Atom(String), // compile-time only: `:name` in type args. No tag_discriminant.
+    Atom(String), // compile-time only: `:name` in type args.
     /// Unresolved bare struct name from a type annotation. Compile-time only.
     Named(String),
     /// Unresolved `Self` in a struct field annotation. Compile-time only.
@@ -99,99 +54,6 @@ pub struct TypeAnnot {
     pub ambi: bool,
 }
 
-impl Type {
-    /// Runtime `Tag` discriminant for this type, if any.
-    ///
-    /// `Any` has no tag. `Struct(name)` maps to Struct (`8`) regardless of name.
-    /// `App` / `Param` never have a tag.
-    /// Values must stay in sync with `Tag` in `llvm/compiler.rs`.
-    pub fn tag_discriminant(&self) -> Option<u32> {
-        self.base_tag_discriminant()
-    }
-
-    fn base_tag_discriminant(&self) -> Option<u32> {
-        match self {
-            Type::Any => None,
-            Type::Int => Some(0),
-            Type::Float => Some(1),
-            Type::Str => Some(2),
-            Type::Bool => Some(3),
-            Type::List => Some(4),
-            Type::Range => Some(5),
-            Type::Unit => Some(6),
-            Type::ClosedLabelSet(_) => Some(9),
-            Type::Struct(_) => Some(8),
-            Type::AtomVal => Some(9),
-            Type::Label => None,
-            Type::Buffer => Some(11),
-            Type::RawPtr => Some(12),
-            Type::App(_, _) => None,
-            Type::Param(_) => None,
-            Type::Atom(_) => None,
-            Type::Named(_) => None,
-            Type::SelfType => None,
-            Type::TypeI8 => Some(100),
-            Type::TypeU8 => Some(101),
-            Type::TypeI16 => Some(102),
-            Type::TypeU16 => Some(103),
-            Type::TypeI32 => Some(104),
-            Type::TypeU32 => Some(105),
-            Type::TypeI64 => Some(106),
-            Type::TypeU64 => Some(107),
-            Type::TypeF16 => Some(108),
-            Type::TypeF32 => Some(109),
-            Type::TypeF64 => Some(110),
-        }
-    }
-
-    /// Runtime lowering shape. Distinct from `tag_discriminant`: constructor
-    /// applications do not store a tag on `App` itself.
-    #[allow(dead_code)]
-    pub fn runtime_shape(&self) -> Option<u32> {
-        match self {
-            Type::App(name, _) if name == "List" => Some(4),
-            Type::App(name, _) if name == "Label" => Some(10),
-            Type::App(_, _) => None,
-            other => other.base_tag_discriminant(),
-        }
-    }
-
-    /// Static type for a runtime `Tag` discriminant.
-    ///
-    /// Struct (`8`) becomes `Type::Struct(String::new())` because the struct
-    /// name is not stored in the tag.
-    /// There is no discriminant for `App` / `Param`.
-    pub fn from_tag_discriminant(disc: u32) -> Option<Type> {
-        match disc {
-            0 => Some(Type::Int),
-            1 => Some(Type::Float),
-            2 => Some(Type::Str),
-            3 => Some(Type::Bool),
-            4 => Some(Type::List),
-            5 => Some(Type::Range),
-            6 => Some(Type::Unit),
-            7 => None,
-            8 => Some(Type::Struct(String::new())),
-            9 => Some(Type::AtomVal),
-            10 => Some(Type::Label),
-            11 => Some(Type::Buffer),
-            12 => Some(Type::RawPtr),
-            100 => Some(Type::TypeI8),
-            101 => Some(Type::TypeU8),
-            102 => Some(Type::TypeI16),
-            103 => Some(Type::TypeU16),
-            104 => Some(Type::TypeI32),
-            105 => Some(Type::TypeU32),
-            106 => Some(Type::TypeI64),
-            107 => Some(Type::TypeU64),
-            108 => Some(Type::TypeF16),
-            109 => Some(Type::TypeF32),
-            110 => Some(Type::TypeF64),
-            _ => None,
-        }
-    }
-}
-
 impl std::fmt::Display for Type {
     /// Canonical surface spelling of a type. `Int`/`Float` render as their
     /// default widths (`i64`/`f64`); `App` renders constructor application
@@ -203,7 +65,6 @@ impl std::fmt::Display for Type {
             Type::Float => write!(formatter, "f64"),
             Type::Bool => write!(formatter, "bool"),
             Type::Str => write!(formatter, "str"),
-            Type::List => write!(formatter, "List"),
             Type::Range => write!(formatter, "Range"),
             Type::Unit => write!(formatter, "unit"),
             Type::ClosedLabelSet(name) | Type::Struct(name) | Type::Named(name) => {
@@ -257,9 +118,7 @@ impl std::fmt::Display for Type {
 /// - `Label(:name, T)` applications compare name and payload recursively;
 ///   arity differences are incompatible
 /// - Flat monomorphic forms bridge empty / `Any`-arg applications:
-///   - `List` ≡ `App("List", [])` ≡ `App("List", [Any])`
 ///   - `Range` ≡ `App("Range", [])` ≡ `App("Range", [Any])`
-///   `App("List", [Int])` is not compatible with bare `List`
 /// - `AtomVal` is not a constructor name on the surface; the old
 ///   `App("Atom", ...)` bridge has been removed
 pub fn types_compatible(expected: &Type, actual: &Type) -> bool {
@@ -296,9 +155,6 @@ pub fn types_compatible(expected: &Type, actual: &Type) -> bool {
                     .all(|(x, y)| types_compatible(x, y))
         }
         (Type::Param(a), Type::Param(b)) => a == b,
-        (Type::List, Type::App(n, args)) | (Type::App(n, args), Type::List) => {
-            n == "List" && is_untyped_collection_args(args)
-        }
         (Type::Range, Type::App(n, args)) | (Type::App(n, args), Type::Range) => {
             n == "Range" && is_untyped_collection_args(args)
         }
@@ -331,12 +187,11 @@ pub fn types_assignable(expected: &Type, actual: &Type) -> bool {
     }
 }
 
-/// Element type of `List(T)` / `List(Any)` / internal flat `List`.
+/// Element type of `List(T)` / `List(Any)`.
 const ANY_TYPE: Type = Type::Any;
 
 pub fn list_element(ty: &Type) -> Option<&Type> {
     match ty {
-        Type::List => Some(&ANY_TYPE),
         Type::App(name, args) if name == "List" => match args.as_slice() {
             [] => Some(&ANY_TYPE),
             [elem] => Some(elem),
@@ -488,7 +343,11 @@ pub fn resolve_type(
             for arg in &mut *args {
                 resolve_type(arg, known_structs, known_closed_sets, self_struct)?;
             }
-            validate_type_app(name, args)
+            if is_builtin_type_name(name) {
+                validate_type_app(name, args)
+            } else {
+                Ok(())
+            }
         }
         _ => Ok(()),
     }
@@ -524,9 +383,93 @@ pub fn validate_type_app(name: &str, args: &[Type]) -> Result<(), String> {
                 Err(format!("{name} does not take type arguments"))
             }
         }
-        _ => Err(format!(
-            "unknown type constructor `{name}`; builtin constructors are List(T), Process(T), Label(:name, T)"
-        )),
+        _ => Ok(()),
+    }
+}
+
+/// Builtin type constructor names that cannot be shadowed by a type parameter.
+pub fn is_builtin_type_name(name: &str) -> bool {
+    matches!(
+        name,
+        "Any" | "List" | "Label" | "Process" | "Range" | "Buffer" | "RawPtr" | "Self"
+    )
+}
+
+/// Rewrite declared type-parameter names to `Type::Param`, resolve other
+/// `Named` / `Self` / nested `App` annotations, and leave user generic
+/// constructors for the semantic checker.
+pub fn resolve_declared_type_params(
+    ty: &mut Type,
+    declared: &std::collections::HashSet<String>,
+    known_structs: &std::collections::HashSet<String>,
+    known_closed_sets: &std::collections::HashSet<String>,
+    self_type: Option<&Type>,
+) -> Result<(), String> {
+    match ty {
+        Type::Named(name) => {
+            let name = name.clone();
+            if declared.contains(&name) {
+                *ty = Type::Param(name);
+                Ok(())
+            } else {
+                resolve_type(ty, known_structs, known_closed_sets, None)
+            }
+        }
+        Type::SelfType => match self_type {
+            Some(resolved) => {
+                *ty = resolved.clone();
+                Ok(())
+            }
+            None => Err("`Self` is only valid in struct field type annotations".to_string()),
+        },
+        Type::App(_, args) => {
+            for arg in args {
+                resolve_declared_type_params(
+                    arg,
+                    declared,
+                    known_structs,
+                    known_closed_sets,
+                    self_type,
+                )?;
+            }
+            match ty {
+                Type::App(name, args) if is_builtin_type_name(name) => {
+                    validate_type_app(name, args)
+                }
+                _ => Ok(()),
+            }
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Substitute concrete bindings into `Type::Param` and nested `Type::App`.
+pub fn substitute_type(
+    ty: &Type,
+    bindings: &std::collections::HashMap<String, Type>,
+) -> Result<Type, String> {
+    match ty {
+        Type::Param(name) => bindings
+            .get(name)
+            .cloned()
+            .ok_or_else(|| format!("unresolved type parameter `{name}`")),
+        Type::App(name, args) => {
+            let mut substituted = Vec::with_capacity(args.len());
+            for arg in args {
+                substituted.push(substitute_type(arg, bindings)?);
+            }
+            Ok(Type::App(name.clone(), substituted))
+        }
+        other => Ok(other.clone()),
+    }
+}
+
+/// True when a type still contains `Param` / `Named` / `SelfType`.
+pub fn contains_unresolved_type(ty: &Type) -> bool {
+    match ty {
+        Type::Param(_) | Type::Named(_) | Type::SelfType => true,
+        Type::App(_, args) => args.iter().any(contains_unresolved_type),
+        _ => false,
     }
 }
 
@@ -538,82 +481,10 @@ fn is_default_float(ty: &Type) -> bool {
     matches!(ty, Type::Float | Type::TypeF64)
 }
 
-pub fn is_int_type_in_llvm() -> Vec<Type> {
-    vec![
-        Type::Int,
-        Type::TypeI8,
-        Type::TypeU8,
-        Type::TypeI16,
-        Type::TypeU16,
-        Type::TypeI32,
-        Type::TypeU32,
-        Type::TypeI64,
-        Type::TypeU64,
-    ]
-}
-
-pub fn not_int_type_in_llvm() -> Vec<Type> {
-    vec![
-        Type::Float,
-        Type::TypeF16,
-        Type::TypeF32,
-        Type::TypeF64,
-        Type::Str,
-        Type::List,
-        Type::Range,
-        Type::Unit,
-        Type::Bool,
-        Type::Label,
-        Type::App(String::new(), Vec::new()),
-        Type::Param(String::new()),
-        Type::Atom(String::new()),
-    ]
-}
-
-pub fn is_float_type_in_llvm() -> Vec<Type> {
-    vec![Type::Float, Type::TypeF16, Type::TypeF32, Type::TypeF64]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::HashSet;
-
-    #[test]
-    fn tag_discriminants_match_known_tag_values() {
-        assert_eq!(Type::Int.tag_discriminant(), Some(0));
-        assert_eq!(Type::List.tag_discriminant(), Some(4));
-        assert_eq!(Type::Buffer.tag_discriminant(), Some(11));
-        assert_eq!(Type::Range.tag_discriminant(), Some(5));
-        // Label is the surface union of tags 9/10: no static tag.
-        assert_eq!(Type::Label.tag_discriminant(), None);
-        assert_eq!(Type::Any.tag_discriminant(), None);
-        assert_eq!(Type::Atom("ok".into()).tag_discriminant(), None);
-        assert_eq!(
-            Type::App("List".into(), vec![Type::Int]).tag_discriminant(),
-            None
-        );
-        assert_eq!(
-            Type::App("List".into(), vec![Type::Int]).runtime_shape(),
-            Some(4)
-        );
-        assert_eq!(
-            Type::App("Label".into(), vec![Type::Atom("ok".into()), Type::Str]).runtime_shape(),
-            Some(10)
-        );
-        assert_eq!(
-            Type::App("Process".into(), vec![Type::Int]).runtime_shape(),
-            None
-        );
-        assert_eq!(Type::Param("T".into()).tag_discriminant(), None);
-        assert_eq!(Type::from_tag_discriminant(4), Some(Type::List));
-        assert_eq!(Type::AtomVal.tag_discriminant(), Some(9));
-        assert_eq!(Type::from_tag_discriminant(9), Some(Type::AtomVal));
-        assert_eq!(Type::from_tag_discriminant(10), Some(Type::Label));
-        assert_eq!(Type::from_tag_discriminant(11), Some(Type::Buffer));
-        assert_eq!(Type::RawPtr.tag_discriminant(), Some(12));
-        assert_eq!(Type::from_tag_discriminant(12), Some(Type::RawPtr));
-    }
 
     #[test]
     fn types_compatible_int_equals_i64() {
@@ -654,16 +525,13 @@ mod tests {
 
     #[test]
     fn types_compatible_list_bridges_empty_app() {
+        let list_any = Type::App("List".into(), vec![Type::Any]);
         assert!(types_compatible(
-            &Type::List,
-            &Type::App("List".into(), vec![])
+            &list_any,
+            &Type::App("List".into(), vec![Type::Any])
         ));
         assert!(types_compatible(
-            &Type::App("List".into(), vec![Type::Any]),
-            &Type::List
-        ));
-        assert!(!types_compatible(
-            &Type::List,
+            &list_any,
             &Type::App("List".into(), vec![Type::Int])
         ));
         assert!(types_compatible(
@@ -847,7 +715,7 @@ mod tests {
         assert_eq!(Type::Str.to_string(), "str");
         assert_eq!(Type::Unit.to_string(), "unit");
         assert_eq!(Type::Any.to_string(), "Any");
-        assert_eq!(Type::List.to_string(), "List");
+        assert_eq!(Type::App("List".into(), vec![Type::Any]).to_string(), "List(Any)");
         assert_eq!(Type::Range.to_string(), "Range");
         assert_eq!(Type::Buffer.to_string(), "Buffer");
         assert_eq!(Type::RawPtr.to_string(), "RawPtr");
@@ -901,9 +769,10 @@ mod tests {
         assert!(validate_type_app("List", &[Type::Int, Type::Str]).is_err());
         assert!(validate_type_app("Process", &[Type::Int]).is_ok());
         assert!(validate_type_app("Range", &[Type::Int]).is_err());
-        assert!(validate_type_app("Result", &[Type::Int]).is_err());
+        assert!(validate_type_app("Result", &[Type::Int]).is_ok());
     }
 
+    #[test]
     fn reject_payloadless_label_type_uses_atom_spelling() {
         let bad = Type::App("Label".into(), vec![Type::Atom("ok".into())]);
         assert_eq!(

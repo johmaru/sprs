@@ -1,23 +1,17 @@
+use crate::front::hir;
 use crate::front::ast;
 use crate::front::ast::FbCondition;
 use crate::front::error::{ErrorCategory, ErrorCode, Location, SprsError};
 use crate::front::span::Span;
-use crate::front::span::Spanned;
-use crate::front::type_helper;
-use crate::front::type_helper::{Type, TypeAnnot};
+use crate::front::type_helper::Type;
 use crate::llvm::builder_helper;
-use crate::llvm::builder_helper::Comparison;
-use crate::llvm::builder_helper::EqNeq;
-use crate::llvm::builder_helper::UpDown;
-use crate::llvm::parser::parse_only;
-use crate::naming;
 use inkwell::AddressSpace;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::Linkage;
 use inkwell::module::Module;
 use inkwell::types::BasicTypeEnum;
-use inkwell::types::{BasicMetadataTypeEnum, StructType};
+use inkwell::types::StructType;
 use inkwell::values::GlobalValue;
 use inkwell::values::IntValue;
 use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
@@ -26,41 +20,13 @@ use std::collections::HashSet;
 
 pub struct StructDef<'ctx> {
     pub fields: Vec<ast::StructField>,
-    pub field_indices: HashMap<String, u32>,
     pub llvm_type: StructType<'ctx>,
-}
-
-/// Compiler-local frame for a source closed label set (`label State { idle, running }`).
-///
-/// Members are kept in source order; the frame only exists at compile time.
-/// Runtime values of `:State.running` are `Tag::Atom` with intern key `"State.running"`
-/// (immediate, not a slab handle), so no runtime table is emitted.
-pub struct ClosedLabelSetFrame {
-    pub members: Vec<String>,
-    pub is_public: bool,
-}
-
-/// Sprs-level function signature (not the LLVM ABI).
-#[derive(Debug, Clone)]
-pub struct FnTypeInfo {
-    pub ret_ty: Option<Type>,
-    pub params: Vec<Option<TypeAnnot>>,
-    /// Declared FunctionBuild type parameters (empty for normal functions).
-    pub type_params: Vec<String>,
-    /// Conditional `when` return rules, in source order. Empty for normal
-    /// functions and for unconditional FunctionBuild contracts.
-    pub when_rules: Vec<(FbCondition, Type)>,
 }
 
 /// Local binding metadata in a scope.
 #[derive(Clone)]
 pub struct VarBinding<'ctx> {
     pub value: BasicValueEnum<'ctx>,
-    pub ty: Type,
-    /// Annotated with `ambi` — reassignment may change the static type.
-    pub is_ambi: bool,
-    /// Came from a type annotation (`>> T` / `>> ambi T`).
-    pub is_annotated: bool,
 }
 
 pub struct Compiler<'ctx> {
@@ -69,20 +35,17 @@ pub struct Compiler<'ctx> {
     pub builder: Builder<'ctx>,
     pub scopes: Vec<Scope<'ctx>>,
     pub function_signatures: Option<FunctionValue<'ctx>>,
-    /// Current function's Sprs return annotation while compiling its body.
-    pub current_fn_ret_ty: Option<Type>,
-    /// Declared Sprs signatures, keyed by LLVM/function name.
-    pub fn_types: HashMap<String, FnTypeInfo>,
     pub runtime_value_type: StructType<'ctx>,
     pub target_os: OS,
     pub string_counter: usize,
-    pub malloc_type: inkwell::types::FunctionType<'ctx>,
     pub source_path: String,
     /// Absolute/relative path of the module currently being compiled.
     /// Used for type/semantic error locations (was previously left empty).
     pub current_file: String,
     pub struct_defs: HashMap<String, StructDef<'ctx>>, // struct name -> struct definition
-    pub closed_label_sets: HashMap<String, ClosedLabelSetFrame>,
+    pub struct_specialization_names: HashMap<hir::StructInstanceId, String>,
+    pub next_struct_specialization_id: usize,
+    pub closed_label_sets: HashSet<String>,
     /// FunctionBuild type parameters and `when` rules, keyed by build name.
     /// Filled from the registry during module loading so prototype declaration
     /// and call-site resolution can reuse the resolved contract.
@@ -97,9 +60,8 @@ pub struct Compiler<'ctx> {
     pub sources: HashMap<String, String>, // module name → source text
     /// Values captured by @attach within the current function.
     pub attachments: HashMap<String, PointerValue<'ctx>>,
-    /// Nesting depth of `unsafe { ... }` blocks in the current function.
-    /// `@raw` / `@free` are gated on this being > 0.
-    pub unsafe_depth: u32,
+    pub hir_modules: HashMap<String, crate::front::hir::Module>,
+    pub typecheck_visiting: Vec<String>,
 }
 
 pub enum StoreTag<'ctx> {
@@ -110,13 +72,7 @@ pub enum StoreTag<'ctx> {
 pub enum StoreValue<'ctx> {
     Int(IntValue<'ctx>),
     Float(f64),
-    Ptr(PointerValue<'ctx>),
     Bool(IntValue<'ctx>),
-}
-
-pub enum StrConstantResult<'ctx> {
-    Global(GlobalValue<'ctx>),
-    Pointer(PointerValue<'ctx>),
 }
 
 // Support builder_helper.rs for LLVM instuctions of execution.
@@ -161,10 +117,6 @@ impl<'ctx> Compiler<'ctx> {
                 .context
                 .i64_type()
                 .const_int(float_value.to_bits(), false),
-            StoreValue::Ptr(pointer_value) => self
-                .builder
-                .build_ptr_to_int(pointer_value, self.context.i64_type(), "ptr_to_int")
-                .unwrap(),
             StoreValue::Bool(boolean_value) => self
                 .builder
                 .build_int_z_extend(boolean_value, self.context.i64_type(), name)
@@ -260,7 +212,7 @@ impl<'ctx> Compiler<'ctx> {
         source_text: &str,
         is_global: bool,
         is_const: bool,
-    ) -> Option<StrConstantResult<'ctx>> {
+    ) -> GlobalValue<'ctx> {
         let idx = self.string_counter;
         self.string_counter += 1;
         let global_name = if is_global {
@@ -283,7 +235,7 @@ impl<'ctx> Compiler<'ctx> {
         } else {
             Linkage::Internal
         });
-        Some(StrConstantResult::Global(global_str))
+        global_str
     }
 }
 
@@ -296,8 +248,6 @@ pub enum OS {
 
 /// Runtime value tag stored in `{ i32 tag, i64 data }`.
 ///
-/// Discriminants must stay in sync with [`Type::tag_discriminant`]
-/// (`front/type_helper.rs`).
 #[derive(PartialEq, Eq, Hash, Clone, Copy, Debug)]
 pub enum Tag {
     // Dynamic value tags
@@ -329,46 +279,6 @@ pub enum Tag {
     Float64 = 110,
 }
 
-impl Tag {
-    pub fn from_type(ty: &Type) -> Option<Tag> {
-        ty.tag_discriminant().and_then(Self::from_discriminant)
-    }
-
-    pub fn to_type(self) -> Type {
-        Type::from_tag_discriminant(self as u32).unwrap_or(Type::Any)
-    }
-
-    pub fn from_discriminant(disc: u32) -> Option<Tag> {
-        match disc {
-            0 => Some(Tag::Integer),
-            1 => Some(Tag::Float),
-            2 => Some(Tag::String),
-            3 => Some(Tag::Boolean),
-            4 => Some(Tag::List),
-            5 => Some(Tag::Range),
-            6 => Some(Tag::Unit),
-            7 => None,
-            8 => Some(Tag::Struct),
-            9 => Some(Tag::Atom),
-            10 => Some(Tag::Label),
-            11 => Some(Tag::Buffer),
-            12 => Some(Tag::RawPtr),
-            100 => Some(Tag::Int8),
-            101 => Some(Tag::Uint8),
-            102 => Some(Tag::Int16),
-            103 => Some(Tag::Uint16),
-            104 => Some(Tag::Int32),
-            105 => Some(Tag::Uint32),
-            106 => Some(Tag::Int64),
-            107 => Some(Tag::Uint64),
-            108 => Some(Tag::Float16),
-            109 => Some(Tag::Float32),
-            110 => Some(Tag::Float64),
-            _ => None,
-        }
-    }
-}
-
 pub(crate) const WINDOWS_STR: &str = "Windows";
 pub(crate) const LINUX_STR: &str = "Linux";
 
@@ -376,7 +286,7 @@ pub struct Scope<'ctx> {
     pub variables: HashMap<String, VarBinding<'ctx>>,
     pub var_name: Vec<String>,
     /// `defer <expr>;` queue; run LIFO at scope exit, before variable `__drop`.
-    pub deferred: Vec<Spanned<ast::Expr>>,
+    pub deferred: Vec<hir::Expr>,
 }
 
 impl<'ctx> Scope<'ctx> {
@@ -396,10 +306,6 @@ impl<'ctx> Compiler<'ctx> {
             false,
         );
 
-        let i64_type = context.i64_type();
-        let i8_ptr_type = context.ptr_type(AddressSpace::default());
-        let malloc_type = i8_ptr_type.fn_type(&[i64_type.into()], false);
-
         // scope index 0 equals global scope
         let mut scopes = Vec::new();
         scopes.push(Scope::new());
@@ -410,63 +316,28 @@ impl<'ctx> Compiler<'ctx> {
             builder,
             scopes,
             function_signatures: None,
-            current_fn_ret_ty: None,
-            fn_types: HashMap::new(),
             runtime_value_type,
             target_os: OS::Unknown,
             string_counter: 0,
-            malloc_type,
             source_path,
             current_file: String::new(),
             struct_defs: HashMap::new(),
-            closed_label_sets: HashMap::new(),
+            struct_specialization_names: HashMap::new(),
+            next_struct_specialization_id: 0,
+            closed_label_sets: HashSet::new(),
             function_build_contracts: HashMap::new(),
             private_closed_label_members: HashSet::new(),
             atom_defs: HashSet::new(),
             private_atom_defs: HashSet::new(),
             sources: HashMap::new(),
             attachments: HashMap::new(),
-            unsafe_depth: 0,
+            hir_modules: HashMap::new(),
+            typecheck_visiting: Vec::new(),
         }
     }
 
     pub(crate) fn location(&self, span: crate::front::span::Span) -> Location {
         Location::new(self.current_file.clone(), span)
-    }
-
-    pub(crate) fn is_visible_atom_def(&self, name: &str) -> bool {
-        self.atom_defs.contains(name) && !self.private_atom_defs.contains(name)
-    }
-
-    /// Resolve a static Atom name as a closed label set member.
-    ///
-    /// `set.member` form: `Some(set)` when declared and visible, otherwise
-    /// `SPRS-SEM-004`. Unqualified names return `None` (open Atom).
-    pub fn resolve_closed_label_member(
-        &self,
-        name: &str,
-        span: Span,
-    ) -> Result<Option<String>, SprsError> {
-        let Some((set, member)) = name.split_once('.') else {
-            return Ok(None);
-        };
-        let undefined = || SprsError::Semantic {
-            code: ErrorCode {
-                category: ErrorCategory::Semantic,
-                number: 4,
-            },
-            location: self.location(span),
-            message: format!("Undefined closed label member: {}", name),
-            help: None,
-        };
-        let Some(frame) = self.closed_label_sets.get(set) else {
-            return Err(undefined());
-        };
-        let member_known = frame.members.iter().any(|known| known == member);
-        if self.private_closed_label_members.contains(name) || !member_known {
-            return Err(undefined());
-        }
-        Ok(Some(set.to_string()))
     }
 
     pub(crate) fn enter_scope(&mut self) {
@@ -520,30 +391,13 @@ impl<'ctx> Compiler<'ctx> {
         &mut self,
         name: String,
         value: BasicValueEnum<'ctx>,
-        ty: Type,
-        is_ambi: bool,
-        is_annotated: bool,
     ) {
         if let Some(current_scope) = self.scopes.last_mut() {
             current_scope.variables.insert(
                 name.clone(),
-                VarBinding {
-                    value,
-                    ty,
-                    is_ambi,
-                    is_annotated,
-                },
+                VarBinding { value },
             );
             current_scope.var_name.push(name);
-        }
-    }
-
-    pub fn set_variable_type(&mut self, name: &str, ty: Type) {
-        for scope in self.scopes.iter_mut().rev() {
-            if let Some(var) = scope.variables.get_mut(name) {
-                var.ty = ty;
-                return;
-            }
         }
     }
 
@@ -556,7 +410,7 @@ impl<'ctx> Compiler<'ctx> {
     pub(crate) fn emit_drop_for_return(&mut self, module: &Module<'ctx>) -> Result<(), SprsError> {
         let drop_fn = self.get_runtime_fn(module, "__drop")?;
 
-        let mut scope_work: Vec<(Vec<Spanned<ast::Expr>>, Vec<(PointerValue<'ctx>, String)>)> =
+        let mut scope_work: Vec<(Vec<hir::Expr>, Vec<(PointerValue<'ctx>, String)>)> =
             Vec::new();
         // skip(1): exclude scopes[0] (global). Remaining scopes, including the
         // function-argument scope, are cleaned up innermost-first. Deferred/vars
@@ -607,16 +461,12 @@ impl<'ctx> Compiler<'ctx> {
         name: String,
         fields: Vec<ast::StructField>,
     ) -> Result<(), SprsError> {
-        let mut field_indices = HashMap::new();
         let mut llvm_field_types: Vec<BasicTypeEnum> = Vec::new();
-        for (field_index, field) in fields.iter().enumerate() {
-            field_indices.insert(field.ident.clone(), field_index as u32);
-
+        for field in fields.iter() {
             let llvm_ty = if let Some(ty) = &field.ty {
                 match ty {
                     Type::Any
                     | Type::Unit
-                    | Type::List
                     | Type::Range
                     | Type::Struct(_)
                     | Type::Label
@@ -627,15 +477,7 @@ impl<'ctx> Compiler<'ctx> {
                     | Type::App(_, _)
                     | Type::Param(_)
                     | Type::Atom(_) => self.runtime_value_type.into(),
-                    Type::Named(_) | Type::SelfType => {
-                        return Err(SprsError::Internal {
-                            message: format!(
-                                "unresolved type in struct `{}` field `{}`",
-                                name, field.ident
-                            ),
-                            location: None,
-                        });
-                    }
+                    Type::Named(_) | Type::SelfType => self.runtime_value_type.into(),
                     Type::Int
                     | Type::TypeI64
                     | Type::TypeU64
@@ -664,39 +506,79 @@ impl<'ctx> Compiler<'ctx> {
             name,
             StructDef {
                 fields,
-                field_indices,
                 llvm_type,
             },
         );
         Ok(())
     }
 
-    /// Returns the index of a field in a struct definition.
-    ///
-    /// rust-analyzer may report `Result<u32, ()>` (E0308) on this function due to
-    /// incomplete type resolution of `inkwell`'s FFI types (see `analysis-stats`:
-    /// `??ty` unresolved types). `cargo check` passes, so this is a false positive.
-    pub fn get_field_index(&self, struct_name: &str, field_name: &str) -> Result<u32, SprsError> {
-        self.struct_defs
-            .get(struct_name)
-            .and_then(|def| def.field_indices.get(field_name).cloned())
-            .ok_or_else(|| SprsError::Semantic {
-                code: ErrorCode {
-                    category: ErrorCategory::Semantic,
-                    number: 7,
-                },
-                location: Location::new(String::new(), Span::DUMMY),
-                message: format!(
-                    "Field '{}' not found in struct '{}'",
-                    field_name, struct_name
-                ),
-                help: None,
+    pub fn ensure_struct_specialization(
+        &mut self,
+        specialization: &hir::StructSpecialization,
+    ) -> Result<String, SprsError> {
+        if let Some(name) = self.struct_specialization_names.get(&specialization.id) {
+            return Ok(name.clone());
+        }
+        for field in &specialization.fields {
+            if crate::front::type_helper::contains_unresolved_type(&field.ty) {
+                return Err(SprsError::Internal {
+                    message: format!(
+                        "unresolved type in specialization field `{}`",
+                        field.name
+                    ),
+                    location: None,
+                });
+            }
+        }
+        let name = format!(
+            "__sprs_mono_struct_{}",
+            self.next_struct_specialization_id
+        );
+        self.next_struct_specialization_id += 1;
+        let fields: Vec<ast::StructField> = specialization
+            .fields
+            .iter()
+            .map(|field| ast::StructField {
+                ident: field.name.clone(),
+                ty: Some(field.ty.clone()),
+                default_value: None,
+                span: field.span,
             })
+            .collect();
+        self.register_struct(name.clone(), fields)?;
+        self.struct_specialization_names
+            .insert(specialization.id.clone(), name.clone());
+        Ok(name)
+    }
+
+    pub fn resolve_struct_backend_name(
+        &self,
+        struct_ref: &hir::StructRef,
+    ) -> Result<String, SprsError> {
+        match struct_ref {
+            hir::StructRef::Plain(name) => Ok(name.clone()),
+            hir::StructRef::Generic(id) => self
+                .struct_specialization_names
+                .get(id)
+                .cloned()
+                .ok_or_else(|| SprsError::Internal {
+                    message: format!(
+                        "missing backend specialization for {}({})",
+                        id.declaration.name,
+                        id.args
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                    location: None,
+                }),
+        }
     }
 
     pub fn build_list_from_exprs(
         &mut self,
-        elements: &[Spanned<ast::Expr>],
+        elements: &[hir::Expr],
         module: &Module<'ctx>,
     ) -> Result<IntValue<'ctx>, SprsError> {
         let create = builder_helper::create_list_from_expr(self, elements, module);
@@ -929,76 +811,63 @@ impl<'ctx> Compiler<'ctx> {
     }
 }
 
+
 #[cfg(test)]
-mod tag_type_sync_tests {
-    use super::Tag;
-    use crate::front::type_helper::Type;
+mod tests {
+    use super::*;
+    use crate::front::span::Span;
+    use crate::front::type_helper::{contains_unresolved_type, Type};
+    use inkwell::context::Context;
 
-    #[test]
-    fn type_and_tag_discriminants_stay_aligned() {
-        let cases: &[(Type, Tag)] = &[
-            (Type::Int, Tag::Integer),
-            (Type::Float, Tag::Float),
-            (Type::Str, Tag::String),
-            (Type::Bool, Tag::Boolean),
-            (Type::List, Tag::List),
-            (Type::Range, Tag::Range),
-            (Type::Unit, Tag::Unit),
-            (Type::ClosedLabelSet("Point".into()), Tag::Atom),
-            (Type::Struct("Point".into()), Tag::Struct),
-            (Type::Buffer, Tag::Buffer),
-            (Type::RawPtr, Tag::RawPtr),
-            (Type::TypeI8, Tag::Int8),
-            (Type::TypeU8, Tag::Uint8),
-            (Type::TypeI16, Tag::Int16),
-            (Type::TypeU16, Tag::Uint16),
-            (Type::TypeI32, Tag::Int32),
-            (Type::TypeU32, Tag::Uint32),
-            (Type::TypeI64, Tag::Int64),
-            (Type::TypeU64, Tag::Uint64),
-            (Type::TypeF16, Tag::Float16),
-            (Type::TypeF32, Tag::Float32),
-            (Type::TypeF64, Tag::Float64),
-        ];
-
-        for (ty, tag) in cases {
-            assert_eq!(
-                ty.tag_discriminant(),
-                Some(*tag as u32),
-                "Type::{ty:?} discriminant mismatch"
-            );
-            assert_eq!(Tag::from_type(ty), Some(*tag));
-            assert_eq!(tag.to_type().tag_discriminant(), Some(*tag as u32));
+    fn spec(args: Vec<Type>) -> hir::StructSpecialization {
+        hir::StructSpecialization {
+            id: hir::StructInstanceId {
+                declaration: hir::StructId {
+                    module: "test".into(),
+                    name: "Pair".into(),
+                },
+                args: args.clone(),
+            },
+            type_bindings: vec![("T".into(), args[0].clone())],
+            fields: vec![
+                hir::StructField {
+                    name: "a".into(),
+                    ty: args[0].clone(),
+                    default_value: None,
+                    span: Span::DUMMY,
+                },
+                hir::StructField {
+                    name: "b".into(),
+                    ty: args[0].clone(),
+                    default_value: None,
+                    span: Span::DUMMY,
+                },
+            ],
+            span: Span::DUMMY,
         }
-
-        assert_eq!(Type::Any.tag_discriminant(), None);
-        assert_eq!(Tag::from_type(&Type::Any), None);
-        // Broad Label is a surface union of tags 9/10, not a single discriminant.
-        assert_eq!(Type::Label.tag_discriminant(), None);
-        assert_eq!(Type::from_tag_discriminant(10), Some(Type::Label));
     }
 
     #[test]
-    fn sprs_return_allows_declared_type_or_error_label() {
-        // Mirrors validate_sprs_return_type rules without needing LLVM.
-        use crate::front::type_helper::{is_error_label_type, types_compatible};
-        fn ok(expected: Option<Type>, actual: Type) -> bool {
-            match expected {
-                None => true,
-                Some(exp) => {
-                    actual == Type::Any
-                        || is_error_label_type(&actual)
-                        || types_compatible(&exp, &actual)
-                }
+    fn specialization_cache_reuses_backend_name() {
+        let context = Context::create();
+        let builder = context.create_builder();
+        let mut compiler = Compiler::new(&context, builder, "test.sprs".into());
+        let i64_spec = spec(vec![Type::TypeI64]);
+        let first = compiler.ensure_struct_specialization(&i64_spec).unwrap();
+        let second = compiler.ensure_struct_specialization(&i64_spec).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(compiler.struct_defs.len(), 1);
+        assert_eq!(compiler.struct_specialization_names.len(), 1);
+        let f64_spec = spec(vec![Type::TypeF64]);
+        let other = compiler.ensure_struct_specialization(&f64_spec).unwrap();
+        assert_ne!(first, other);
+        assert_eq!(compiler.struct_defs.len(), 2);
+        assert_eq!(compiler.struct_specialization_names.len(), 2);
+        for def in compiler.struct_defs.values() {
+            for field in &def.fields {
+                let ty = field.ty.as_ref().expect("typed");
+                assert!(!contains_unresolved_type(ty), "{ty}");
             }
         }
-        let err_label = Type::App("Label".into(), vec![Type::Atom("error".into())]);
-        let ok_label = Type::App("Label".into(), vec![Type::Atom("ok".into())]);
-        assert!(ok(Some(Type::List), Type::List));
-        assert!(ok(Some(Type::List), err_label.clone()));
-        assert!(ok(Some(Type::List), Type::Any));
-        assert!(!ok(Some(Type::List), ok_label));
-        assert!(!ok(Some(Type::List), Type::Int));
-        assert!(ok(None, Type::Int));
     }
 }

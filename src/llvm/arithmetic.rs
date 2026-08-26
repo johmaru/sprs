@@ -3,10 +3,8 @@ use crate::llvm::value::{
     build_label_is_error, create_entry_block_alloca, create_error_label_from_atom,
     create_error_label_from_str,
 };
-use crate::llvm::variable::move_variable;
 use crate::{
-    front::ast,
-    front::span::Spanned,
+    front::hir,
     llvm::compiler::{Compiler, StoreTag, StoreValue, Tag},
 };
 use inkwell::{
@@ -38,8 +36,8 @@ impl BinOpKind {
 
 pub fn create_add_expr<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    lhs: &Spanned<ast::Expr>,
-    rhs: &Spanned<ast::Expr>,
+    lhs: &hir::Expr,
+    rhs: &hir::Expr,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
     create_binary_dispatch(self_compiler, lhs, rhs, module, BinOpKind::Add)
@@ -47,8 +45,8 @@ pub fn create_add_expr<'ctx>(
 
 fn create_binary_dispatch<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    lhs: &Spanned<ast::Expr>,
-    rhs: &Spanned<ast::Expr>,
+    lhs: &hir::Expr,
+    rhs: &hir::Expr,
     module: &inkwell::module::Module<'ctx>,
     op: BinOpKind,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
@@ -198,8 +196,8 @@ fn create_binary_dispatch<'ctx>(
 
     let error_message = format!(
         "TypeError: type miss match : '{}' and '{}'",
-        self_compiler.infer_type(lhs),
-        self_compiler.infer_type(rhs)
+        lhs.ty.clone(),
+        rhs.ty.clone()
     );
 
     let error_ptr = create_error_label_from_str(self_compiler, &error_message, module)?;
@@ -1323,232 +1321,10 @@ fn create_add_expr_build_string_branch<'ctx>(
     Ok(str_res_ptr)
 }
 
-fn create_float16_add_logic<'ctx>(
-    _self_compiler: &mut Compiler<'ctx>,
-    _lhs: &Spanned<ast::Expr>,
-    _rhs: &Spanned<ast::Expr>,
-    _module: &inkwell::module::Module<'ctx>,
-) -> Result<BasicValueEnum<'ctx>, SprsError> {
-    let l_ptr = _self_compiler
-        .compile_expr(_lhs, _module)?
-        .into_pointer_value();
-    let r_ptr = _self_compiler
-        .compile_expr(_rhs, _module)?
-        .into_pointer_value();
-
-    let l_data_ptr = _self_compiler
-        .builder
-        .build_struct_gep(_self_compiler.runtime_value_type, l_ptr, 1, "l_data_ptr")
-        .unwrap();
-    let l_val_i64 = _self_compiler
-        .builder
-        .build_load(_self_compiler.context.i64_type(), l_data_ptr, "l_val_i64")
-        .unwrap()
-        .into_int_value();
-
-    let r_data_ptr = _self_compiler
-        .builder
-        .build_struct_gep(_self_compiler.runtime_value_type, r_ptr, 1, "r_data_ptr")
-        .unwrap();
-    let r_val_i64 = _self_compiler
-        .builder
-        .build_load(_self_compiler.context.i64_type(), r_data_ptr, "r_val_i64")
-        .unwrap()
-        .into_int_value();
-
-    let l_i16 = _self_compiler
-        .builder
-        .build_int_truncate(l_val_i64, _self_compiler.context.i16_type(), "l_trunc_i16")
-        .unwrap();
-    let l_f16 = _self_compiler
-        .builder
-        .build_bit_cast(l_i16, _self_compiler.context.f16_type(), "l_i64_to_f16")
-        .unwrap()
-        .into_float_value();
-
-    let r_i16 = _self_compiler
-        .builder
-        .build_int_truncate(r_val_i64, _self_compiler.context.i16_type(), "r_trunc_i16")
-        .unwrap();
-    let r_f16 = _self_compiler
-        .builder
-        .build_bit_cast(r_i16, _self_compiler.context.f16_type(), "r_i64_to_f16")
-        .unwrap()
-        .into_float_value();
-
-    let res_f16 = _self_compiler
-        .builder
-        .build_float_add(l_f16, r_f16, "f16_sum")
-        .unwrap();
-    let res_i16 = _self_compiler
-        .builder
-        .build_bit_cast(res_f16, _self_compiler.context.i16_type(), "f16_sum_to_i16")
-        .unwrap()
-        .into_int_value();
-    let res_i64 = _self_compiler
-        .builder
-        .build_int_s_extend(res_i16, _self_compiler.context.i64_type(), "f16_sum_to_i64")
-        .unwrap();
-    let res_ptr = create_entry_block_alloca(_self_compiler, "float16_add_res_alloc")?;
-    _self_compiler.build_runtime_value_store(
-        res_ptr,
-        StoreTag::Int(Tag::Float16 as u64),
-        StoreValue::Int(res_i64),
-        "float16_add_res",
-    );
-
-    Ok(res_ptr.into())
-}
-
-fn create_float32_add_logic<'ctx>(
-    self_compiler: &mut Compiler<'ctx>,
-    lhs: &Spanned<ast::Expr>,
-    rhs: &Spanned<ast::Expr>,
-    module: &inkwell::module::Module<'ctx>,
-) -> Result<BasicValueEnum<'ctx>, SprsError> {
-    let l_ptr = self_compiler
-        .compile_expr(lhs, module)?
-        .into_pointer_value();
-    let r_ptr = self_compiler
-        .compile_expr(rhs, module)?
-        .into_pointer_value();
-
-    let l_data_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, l_ptr, 1, "l_data_ptr")
-        .unwrap();
-    let l_val_i64 = self_compiler
-        .builder
-        .build_load(self_compiler.context.i64_type(), l_data_ptr, "l_val_i64")
-        .unwrap()
-        .into_int_value();
-
-    let r_data_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, r_ptr, 1, "r_data_ptr")
-        .unwrap();
-    let r_val_i64 = self_compiler
-        .builder
-        .build_load(self_compiler.context.i64_type(), r_data_ptr, "r_val_i64")
-        .unwrap()
-        .into_int_value();
-
-    let l_i32 = self_compiler
-        .builder
-        .build_int_truncate(l_val_i64, self_compiler.context.i32_type(), "l_f32_to_i32")
-        .unwrap();
-
-    let l_f32 = self_compiler
-        .builder
-        .build_bit_cast(l_i32, self_compiler.context.f32_type(), "l_i64_to_f32")
-        .unwrap()
-        .into_float_value();
-
-    let r_i32 = self_compiler
-        .builder
-        .build_int_truncate(r_val_i64, self_compiler.context.i32_type(), "r_f32_to_i32")
-        .unwrap();
-
-    let r_f32 = self_compiler
-        .builder
-        .build_bit_cast(r_i32, self_compiler.context.f32_type(), "r_i64_to_f32")
-        .unwrap()
-        .into_float_value();
-
-    let res_f32 = self_compiler
-        .builder
-        .build_float_add(l_f32, r_f32, "f32_sum")
-        .unwrap();
-
-    let res_i32 = self_compiler
-        .builder
-        .build_bit_cast(res_f32, self_compiler.context.i32_type(), "f32_sum_to_i32")
-        .unwrap()
-        .into_int_value();
-    let res_i64 = self_compiler
-        .builder
-        .build_int_z_extend(res_i32, self_compiler.context.i64_type(), "f32_sum_to_i64")
-        .unwrap();
-    let res_ptr = create_entry_block_alloca(self_compiler, "float32_add_res_alloc")?;
-    self_compiler.build_runtime_value_store(
-        res_ptr,
-        StoreTag::Int(Tag::Float32 as u64),
-        StoreValue::Int(res_i64),
-        "float32_add_res",
-    );
-
-    Ok(res_ptr.into())
-}
-
-fn create_float64_add_logic<'ctx>(
-    self_compiler: &mut Compiler<'ctx>,
-    lhs: &Spanned<ast::Expr>,
-    rhs: &Spanned<ast::Expr>,
-    module: &inkwell::module::Module<'ctx>,
-) -> Result<BasicValueEnum<'ctx>, SprsError> {
-    let l_ptr = self_compiler
-        .compile_expr(lhs, module)?
-        .into_pointer_value();
-    let r_ptr = self_compiler
-        .compile_expr(rhs, module)?
-        .into_pointer_value();
-
-    let l_data_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, l_ptr, 1, "l_data_ptr")
-        .unwrap();
-    let l_val_i64 = self_compiler
-        .builder
-        .build_load(self_compiler.context.i64_type(), l_data_ptr, "l_val_i64")
-        .unwrap()
-        .into_int_value();
-
-    let r_data_ptr = self_compiler
-        .builder
-        .build_struct_gep(self_compiler.runtime_value_type, r_ptr, 1, "r_data_ptr")
-        .unwrap();
-    let r_val_i64 = self_compiler
-        .builder
-        .build_load(self_compiler.context.i64_type(), r_data_ptr, "r_val_i64")
-        .unwrap()
-        .into_int_value();
-
-    let l_f64 = self_compiler
-        .builder
-        .build_bit_cast(l_val_i64, self_compiler.context.f64_type(), "l_i64_to_f64")
-        .unwrap()
-        .into_float_value();
-    let r_f64 = self_compiler
-        .builder
-        .build_bit_cast(r_val_i64, self_compiler.context.f64_type(), "r_i64_to_f64")
-        .unwrap()
-        .into_float_value();
-
-    let res_f64 = self_compiler
-        .builder
-        .build_float_add(l_f64, r_f64, "f64_sum")
-        .unwrap();
-    let res_i64 = self_compiler
-        .builder
-        .build_bit_cast(res_f64, self_compiler.context.i64_type(), "f64_sum_to_i64")
-        .unwrap()
-        .into_int_value();
-
-    let res_ptr = create_entry_block_alloca(self_compiler, "float64_add_res_alloc")?;
-    self_compiler.build_runtime_value_store(
-        res_ptr,
-        StoreTag::Int(Tag::Float64 as u64),
-        StoreValue::Int(res_i64),
-        "float64_add_res",
-    );
-
-    Ok(res_ptr.into())
-}
-
 pub fn create_mul_expr<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    lhs: &Spanned<ast::Expr>,
-    rhs: &Spanned<ast::Expr>,
+    lhs: &hir::Expr,
+    rhs: &hir::Expr,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
     create_binary_dispatch(self_compiler, lhs, rhs, module, BinOpKind::Mul)
@@ -1556,8 +1332,8 @@ pub fn create_mul_expr<'ctx>(
 
 pub fn create_minus_expr<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    lhs: &Spanned<ast::Expr>,
-    rhs: &Spanned<ast::Expr>,
+    lhs: &hir::Expr,
+    rhs: &hir::Expr,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
     create_binary_dispatch(self_compiler, lhs, rhs, module, BinOpKind::Sub)
@@ -1565,8 +1341,8 @@ pub fn create_minus_expr<'ctx>(
 
 pub fn create_div_expr<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    lhs: &Spanned<ast::Expr>,
-    rhs: &Spanned<ast::Expr>,
+    lhs: &hir::Expr,
+    rhs: &hir::Expr,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
     create_binary_dispatch(self_compiler, lhs, rhs, module, BinOpKind::Div)
@@ -1574,8 +1350,8 @@ pub fn create_div_expr<'ctx>(
 
 pub fn create_mod_expr<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    lhs: &Spanned<ast::Expr>,
-    rhs: &Spanned<ast::Expr>,
+    lhs: &hir::Expr,
+    rhs: &hir::Expr,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
     create_binary_dispatch(self_compiler, lhs, rhs, module, BinOpKind::Mod)

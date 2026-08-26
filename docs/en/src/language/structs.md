@@ -60,3 +60,34 @@ fn main() {
   var e = init Empty {};
 }
 ```
+
+
+## Generic structs
+
+A struct may declare one or more PascalCase type parameters after its name:
+`struct Pair(T)` or `struct Pair(A, B)`. Field types may mention those
+parameters. A generic struct is used only through an explicit concrete
+application such as `Pair(i64)` or `init Pair(str) { ... }`. The compiler
+substitutes the arguments at compile time and produces a distinct concrete
+layout for each distinct argument list (`Pair(i64)` is not `Pair(f64)`).
+Nested applications such as `Pair(Pair(i64))` specialize the inner type first.
+
+Owned string specializations use `str` (`init Pair(str) { a = "owned", b = "x" }`).
+`String` is not a type name. Generic field defaults, `init Pair { ... }` without
+type arguments (including inference from an expected type), and generic methods cannot be used.
+
+```sprs
+struct Pair(T) {
+  a >> T,
+  b >> T
+}
+
+fn use_pair() {
+  var nums = init Pair(i64) { a = 1, b = 2 };
+  var owned = init Pair(str) { a = "owned", b = "x" };
+  var nested = init Pair(Pair(i64)) {
+    a = init Pair(i64) { a = 1, b = 2 },
+    b = init Pair(i64) { a = 3, b = 4 },
+  };
+}
+```

@@ -1,14 +1,10 @@
-use std::unreachable;
 
-use crate::front::ast;
-use crate::front::error::{ErrorCategory, ErrorCode, Location, SprsError};
+use crate::front::hir;
+use crate::front::error::{ErrorCategory, ErrorCode, SprsError};
 use crate::front::label_name::LabelName;
 use crate::front::span::Span;
-use crate::front::span::Spanned;
-use crate::front::type_helper;
 use crate::front::type_helper::{
-    Type, is_error_label_type, join_list_element_types, list_element, list_type,
-    reject_payloadless_label_type, types_assignable, types_compatible,
+    Type, list_element,
 };
 use crate::llvm::builder_helper;
 use crate::llvm::builder_helper::BuilderExt;
@@ -17,7 +13,6 @@ use crate::llvm::builder_helper::ContextExt;
 use crate::llvm::builder_helper::EqNeq;
 use crate::llvm::builder_helper::UpDown;
 use crate::llvm::compiler::{Compiler, Tag};
-use crate::llvm::function_build::{CallContractError, resolve_call_contract};
 use crate::llvm::value::{build_label_is_error, create_atom, create_label};
 use crate::naming;
 use inkwell::AddressSpace;
@@ -25,473 +20,20 @@ use inkwell::module::Module;
 use inkwell::types::{BasicMetadataTypeEnum, BasicTypeEnum};
 use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue, ValueKind};
 
-fn is_int_family(ty: &Type) -> bool {
-    matches!(
-        ty,
-        Type::Int
-            | Type::TypeI8
-            | Type::TypeU8
-            | Type::TypeI16
-            | Type::TypeU16
-            | Type::TypeI32
-            | Type::TypeU32
-            | Type::TypeI64
-            | Type::TypeU64
-    )
-}
-
-fn is_float_family(ty: &Type) -> bool {
-    matches!(
-        ty,
-        Type::Float | Type::TypeF16 | Type::TypeF32 | Type::TypeF64
-    )
-}
-
-fn infer_binary_arith_type(lhs: &Type, rhs: &Type) -> Type {
-    if is_int_family(lhs) && is_int_family(rhs) {
-        if lhs == rhs { lhs.clone() } else { Type::Int }
-    } else if is_float_family(lhs) && is_float_family(rhs) {
-        if lhs == rhs { lhs.clone() } else { Type::Float }
-    } else {
-        lhs.clone()
-    }
-}
-
 impl<'ctx> Compiler<'ctx> {
-    pub fn get_expr_name(&self, expr: &Spanned<ast::Expr>) -> Option<String> {
-        match &expr.node {
-            ast::Expr::Var(name) => Some(name.clone()),
-            _ => None,
-        }
-    }
-
-    /// Check call arity and parameter types against argument expressions.
-    ///
-    /// Plain functions reuse the same call-contract resolver as FunctionBuild
-    /// (empty type parameters / when rules), so arity and annotated parameter
-    /// types share one code path.
-    pub fn check_call_arguments(
-        &self,
-        fn_name: &str,
-        args: &[Spanned<ast::Expr>],
-    ) -> Result<(), SprsError> {
-        let Some(sig) = self.fn_types.get(fn_name) else {
-            return Ok(());
-        };
-
-        let actuals: Vec<Type> = args
-            .iter()
-            .enumerate()
-            .map(|(idx, arg)| {
-                let expected = sig.params.get(idx).and_then(|param| param.as_ref()).map(|a| &a.ty);
-                self.infer_type_in(arg, expected)
-            })
-            .collect();
-        for (idx, arg) in args.iter().enumerate() {
-            if let Some(expected) = sig.params.get(idx).and_then(|param| param.as_ref()).map(|a| &a.ty)
-            {
-                self.check_list_literal_elements(arg, expected)?;
-            }
-        }
-        let contract = crate::llvm::function_build::ResolvedFunctionSignature {
-            params: sig
-                .params
-                .iter()
-                .map(|ty| ast::FunctionParam {
-                    ident: String::new(),
-                    ty: ty.clone(),
-                    span: Span::DUMMY,
-                })
-                .collect(),
-            ret_ty: sig.ret_ty.clone(),
-            is_public: false,
-            type_params: sig.type_params.clone(),
-            when_rules: sig.when_rules.clone(),
-        };
-        match resolve_call_contract(&contract, &actuals) {
-            Ok(_) => Ok(()),
-            Err(CallContractError::Arity { expected, actual }) => {
-                let span = args
-                    .first()
-                    .map(|argument| argument.span)
-                    .unwrap_or(Span::DUMMY);
-                Err(SprsError::Semantic {
-                    code: ErrorCode {
-                        category: ErrorCategory::Semantic,
-                        number: 16,
-                    },
-                    location: self.location(span),
-                    message: format!(
-                        "Argument count mismatch: function `{}` expects {} argument(s), found {}",
-                        fn_name, expected, actual
-                    ),
-                    help: None,
-                })
-            }
-            Err(err) => {
-                let span = args
-                    .first()
-                    .map(|argument| argument.span)
-                    .unwrap_or(Span::DUMMY);
-                let (message, expected_type, actual_type) = match &err {
-                    CallContractError::TypeConflict { message } => (
-                        format!("Type mismatch in call to `{}`: {}", fn_name, message),
-                        None,
-                        None,
-                    ),
-                    CallContractError::UnresolvedTypeParam { name } => (
-                        format!(
-                            "Type mismatch in call to `{}`: type parameter `{}` was not resolved to a concrete type",
-                            fn_name, name
-                        ),
-                        None,
-                        None,
-                    ),
-                    CallContractError::NotConcrete { message } => (
-                        format!("Type mismatch in call to `{}`: {}", fn_name, message),
-                        None,
-                        None,
-                    ),
-                    CallContractError::MultipleMatches => (
-                        format!(
-                            "Type mismatch in call to `{}`: multiple `when` rules matched",
-                            fn_name
-                        ),
-                        None,
-                        None,
-                    ),
-                    CallContractError::Arity { .. } => unreachable!("handled above"),
-                };
-                Err(SprsError::Type {
-                    code: ErrorCode {
-                        category: ErrorCategory::Type,
-                        number: 7,
-                    },
-                    location: self.location(span),
-                    message,
-                    expected_type,
-                    actual_type,
-                    help: None,
-                })
-            }
-        }
-    }
-
-    /// Infer the return type of a call through the FunctionBuild call-contract
-    /// resolver. Plain functions (no type params / when rules) fall back to
-    /// the declared `ret_ty`; resolution failures yield `Any`.
-    fn infer_call_return_type(
-        &self,
-        name: &str,
-        args: &[Spanned<ast::Expr>],
-    ) -> Type {
-        let Some(sig) = self.fn_types.get(name) else {
-            return Type::Any;
-        };
-        if sig.type_params.is_empty() && sig.when_rules.is_empty() {
-            return sig.ret_ty.clone().unwrap_or(Type::Any);
-        }
-        let actuals: Vec<Type> = args
-            .iter()
-            .enumerate()
-            .map(|(idx, arg)| {
-                let expected = sig.params.get(idx).and_then(|param| param.as_ref()).map(|a| &a.ty);
-                self.infer_type_in(arg, expected)
-            })
-            .collect();
-        let contract = crate::llvm::function_build::ResolvedFunctionSignature {
-            params: sig
-                .params
-                .iter()
-                .map(|ty| ast::FunctionParam {
-                    ident: String::new(),
-                    ty: ty.clone(),
-                    span: Span::DUMMY,
-                })
-                .collect(),
-            ret_ty: sig.ret_ty.clone(),
-            is_public: false,
-            type_params: sig.type_params.clone(),
-            when_rules: sig.when_rules.clone(),
-        };
-        resolve_call_contract(&contract, &actuals)
-            .ok()
-            .flatten()
-            .unwrap_or(Type::Any)
-    }
-
-    pub(crate) fn infer_type(&self, expr: &Spanned<ast::Expr>) -> Type {
-        match &expr.node {
-            ast::Expr::Number(_) => Type::Int,
-            ast::Expr::Float(_) => Type::Float,
-            ast::Expr::Str(_) => Type::Str,
-            ast::Expr::Bool(_) => Type::Bool,
-            ast::Expr::Unit() => Type::Unit,
-            ast::Expr::Var(name) => {
-                if let Some(binding) = self.get_variables(name) {
-                    binding.ty
-                } else if self.is_visible_atom_def(name) {
-                    Type::App("Atom".into(), vec![Type::Atom(name.clone())])
-                } else {
-                    Type::Any
-                }
-            }
-            ast::Expr::TypeI8 => Type::TypeI8,
-            ast::Expr::TypeU8 => Type::TypeU8,
-            ast::Expr::TypeI16 => Type::TypeI16,
-            ast::Expr::TypeU16 => Type::TypeU16,
-            ast::Expr::TypeI32 => Type::TypeI32,
-            ast::Expr::TypeU32 => Type::TypeU32,
-            ast::Expr::TypeI64 => Type::TypeI64,
-            ast::Expr::TypeU64 => Type::TypeU64,
-            ast::Expr::TypeF16 => Type::TypeF16,
-            ast::Expr::TypeF32 => Type::TypeF32,
-            ast::Expr::TypeF64 => Type::TypeF64,
-            ast::Expr::Eq(_, _)
-            | ast::Expr::Neq(_, _)
-            | ast::Expr::Lt(_, _)
-            | ast::Expr::Gt(_, _)
-            | ast::Expr::Le(_, _)
-            | ast::Expr::Ge(_, _) => Type::Bool,
-            ast::Expr::Add(lhs, rhs)
-            | ast::Expr::Mul(lhs, rhs)
-            | ast::Expr::Minus(lhs, rhs)
-            | ast::Expr::Div(lhs, rhs)
-            | ast::Expr::Mod(lhs, rhs) => {
-                infer_binary_arith_type(&self.infer_type(lhs), &self.infer_type(rhs))
-            }
-            ast::Expr::Assign(_, rhs) => self.infer_type(rhs),
-            ast::Expr::Increment(value) | ast::Expr::Decrement(value) | ast::Expr::Neg(value) => {
-                self.infer_type(value)
-            }
-            ast::Expr::If(_, then, if_else) => {
-                let then_ty = self.infer_type(then);
-                let else_ty = self.infer_type(if_else);
-                if types_compatible(&then_ty, &else_ty) {
-                    // Prefer the more specific side when one is a default-width alias.
-                    if then_ty != Type::Any {
-                        then_ty
-                    } else {
-                        else_ty
-                    }
-                } else {
-                    Type::Any
-                }
-            }
-            ast::Expr::Match { scrutinee: _, arms } => {
-                // Fold the arm value types like Expr::If; incompatible arms
-                // fall back to Type::Any.
-                let mut result: Option<Type> = None;
-                for arm in arms {
-                    let arm_ty = self.infer_type(&arm.value);
-                    result = Some(match result {
-                        None => arm_ty,
-                        Some(t) if types_compatible(&t, &arm_ty) => {
-                            if t != Type::Any {
-                                t
-                            } else {
-                                arm_ty
-                            }
-                        }
-                        Some(_) => Type::Any,
-                    });
-                    if result == Some(Type::Any) {
-                        break;
-                    }
-                }
-                result.unwrap_or(Type::Any)
-            }
-            ast::Expr::Call(name, args) => self.infer_call_return_type(name, args),
-            ast::Expr::ModuleAccess(_, function_name, args) => {
-                self.infer_call_return_type(function_name, args)
-            }
-            ast::Expr::Macro(ident, args) => match ident.as_str() {
-                "cast" => {
-                    if args.len() >= 2 {
-                        self.infer_type(&args[1])
-                    } else {
-                        Type::Any
-                    }
-                }
-                "fcast" => Type::Str,
-                "lshift" | "rshift" => {
-                    if !args.is_empty() {
-                        self.infer_type(&args[0])
-                    } else {
-                        Type::Any
-                    }
-                }
-                "not" => Type::Bool,
-                "raw" => Type::RawPtr,
-                "free" => Type::Unit,
-                "error" => {
-                    if args.is_empty() {
-                        Type::App("Label".into(), vec![Type::Atom("error".into())])
-                    } else {
-                        Type::App(
-                            "Label".into(),
-                            vec![Type::Atom("error".into()), self.infer_type(&args[0])],
-                        )
-                    }
-                }
-                "label_is" => Type::Bool,
-                "label_name" => Type::Str,
-                "label_payload" => Type::Any,
-                "init" => Type::Any,
-                "clone" | "move" => {
-                    if !args.is_empty() {
-                        self.infer_type(&args[0])
-                    } else {
-                        Type::Any
-                    }
-                }
-                "list_push" => Type::Unit,
-                _ => Type::Any,
-            },
-            ast::Expr::List(elements) => {
-                let elem_tys: Vec<Type> = elements.iter().map(|e| self.infer_type(e)).collect();
-                list_type(join_list_element_types(&elem_tys))
-            },
-            ast::Expr::Range(_, _) => Type::Range,
-            // On the continuing path after `?`, the value has the inner type;
-            // Error propagates by returning from the function.
-            ast::Expr::Try(inner) => self.infer_type(inner),
-            ast::Expr::StructInit(name, _) => Type::Struct(name.clone()),
-            ast::Expr::HeapAlloc(_) => Type::Buffer,
-            ast::Expr::Destroy(_) => Type::Unit,
-            ast::Expr::Exist(_) => Type::Bool,
-            ast::Expr::Atom(name) => match name {
-                LabelName::Static(static_name) => {
-                    match self.resolve_closed_label_member(static_name, expr.span) {
-                        Ok(Some(set)) => Type::ClosedLabelSet(set),
-                        _ => Type::App("Atom".into(), vec![Type::Atom(static_name.clone())]),
-                    }
-                }
-                LabelName::Dynamic(_) => Type::AtomVal,
-            },
-            ast::Expr::Label(name, payload) => {
-                let payload_ty = self.infer_type(payload);
-                match name {
-                    LabelName::Static(static_name) => {
-                        if matches!(payload_ty, Type::Unit) {
-                            Type::App("Label".into(), vec![Type::Atom(static_name.clone())])
-                        } else {
-                            Type::App(
-                                "Label".into(),
-                                vec![Type::Atom(static_name.clone()), payload_ty],
-                            )
-                        }
-                    }
-                    LabelName::Dynamic(_) => {
-                        if matches!(payload_ty, Type::Unit) {
-                            Type::Label
-                        } else {
-                            Type::App("Label".into(), vec![payload_ty])
-                        }
-                    }
-                }
-            }
-            ast::Expr::AttachSlot(_) => Type::Any,
-            ast::Expr::FieldAccess(lhs, rhs) => {
-                if let Type::Struct(struct_name) = self.infer_type(lhs) {
-                    if let Some(def) = self.struct_defs.get(&struct_name) {
-                        if let Some(field) = def.fields.iter().find(|field| field.ident == *rhs) {
-                            return field.ty.clone().unwrap_or(Type::Any);
-                        }
-                    }
-                }
-                Type::Any
-            }
-            ast::Expr::Index(collection, _) => list_element(&self.infer_type(collection))
-                .cloned()
-                .unwrap_or(Type::Any),
-        }
-    }
-
-    pub(crate) fn infer_type_in(
-        &self,
-        expr: &Spanned<ast::Expr>,
-        expected: Option<&Type>,
-    ) -> Type {
-        if let ast::Expr::List(_) = &expr.node {
-            if let Some(exp_elem) = expected.and_then(list_element) {
-                return list_type(exp_elem.clone());
-            }
-        }
-        self.infer_type(expr)
-    }
-
-    fn resolve_local_type(&self, ty: &mut Type) -> Result<(), String> {
-        let known_structs: std::collections::HashSet<String> =
-            self.struct_defs.keys().cloned().collect();
-        let known_closed: std::collections::HashSet<String> =
-            self.closed_label_sets.keys().cloned().collect();
-        crate::front::type_helper::resolve_type(ty, &known_structs, &known_closed, None)
-    }
-
-    fn check_list_literal_elements(
-        &self,
-        expr: &Spanned<ast::Expr>,
-        expected: &Type,
-    ) -> Result<(), SprsError> {
-        let ast::Expr::List(elements) = &expr.node else {
-            return Ok(());
-        };
-        let Some(elem_ty) = list_element(expected) else {
-            return Ok(());
-        };
-        if matches!(elem_ty, Type::Any) {
-            return Ok(());
-        }
-        for element in elements {
-            let actual = self.infer_type(element);
-            if !types_assignable(elem_ty, &actual) {
-                return Err(self.type_mismatch_assign(
-                    element.span,
-                    format!(
-                        "Type mismatch: list element has {actual}, expected {elem_ty}"
-                    ),
-                    elem_ty,
-                    &actual,
-                ));
-            }
-        }
-        Ok(())
-    }
-
-    fn type_mismatch_assign(
-        &self,
-        span: crate::front::span::Span,
-        message: String,
-        expected: &Type,
-        actual: &Type,
-    ) -> SprsError {
-        SprsError::Type {
-            code: ErrorCode {
-                category: ErrorCategory::Type,
-                number: 6,
-            },
-            location: self.location(span),
-            message,
-            expected_type: Some(format!("{expected}")),
-            actual_type: Some(format!("{actual}")),
-            help: None,
-        }
-    }
-
     pub fn compile_fn(
         &mut self,
-        func: &ast::Function,
+        func: &hir::Function,
         module: &Module<'ctx>,
     ) -> Result<FunctionValue<'ctx>, SprsError> {
-        let arg_types: Vec<BasicMetadataTypeEnum> = (0..func.params.len())
+        let _arg_types: Vec<BasicMetadataTypeEnum> = (0..func.params.len())
             .map(|_| self.context.ptr_type(AddressSpace::default()).into())
             .collect();
 
-        let func_name = if func.ident == "main" {
+        let func_name = if func.name == "main" {
             naming::INTERNAL_MAIN_FN
         } else {
-            &func.ident
+            &func.name
         };
 
         let fn_val = module
@@ -508,20 +50,6 @@ impl<'ctx> Compiler<'ctx> {
         self.enter_scope();
         self.attachments.clear();
 
-        let fn_sig = self.fn_types.get(func_name).cloned();
-        if let Some(ret_ty) = &func.ret_ty {
-            reject_payloadless_label_type(ret_ty).map_err(|msg| SprsError::Semantic {
-                code: ErrorCode {
-                    category: ErrorCategory::Semantic,
-                    number: 11,
-                },
-                location: self.location(func.span),
-                message: msg,
-                help: None,
-            })?;
-        }
-        self.current_fn_ret_ty = func.ret_ty.clone();
-
         for (idx, param) in func.params.iter().enumerate() {
             let arg_val = fn_val.get_nth_param(idx as u32).unwrap();
             // Params are declared as pointers to SprsValue (see declare_fn_prototype).
@@ -529,11 +57,11 @@ impl<'ctx> Compiler<'ctx> {
 
             let alloca = self
                 .builder
-                .build_alloca(self.runtime_value_type, &param.ident)
+                .build_alloca(self.runtime_value_type, &param.name)
                 .unwrap();
             let loaded = self
                 .builder
-                .build_load(self.runtime_value_type, arg_ptr, &param.ident)
+                .build_load(self.runtime_value_type, arg_ptr, &param.name)
                 .unwrap();
             self.builder
                 .build_store(alloca, loaded)
@@ -541,36 +69,13 @@ impl<'ctx> Compiler<'ctx> {
                     message: compile_error.to_string(),
                     location: None,
                 })?;
-            let annot = param.ty.clone().or_else(|| {
-                fn_sig
-                    .as_ref()
-                    .and_then(|signature| signature.params.get(idx).cloned().flatten())
-            });
-            if let Some(argument) = &annot {
-                reject_payloadless_label_type(&argument.ty).map_err(|msg| SprsError::Semantic {
-                    code: ErrorCode {
-                        category: ErrorCategory::Semantic,
-                        number: 11,
-                    },
-                    location: self.location(param.span),
-                    message: msg,
-                    help: None,
-                })?;
-            }
-            let (param_ty, is_ambi, is_annotated) = match annot {
-                Some(argument) => (argument.ty, argument.ambi, true),
-                None => (Type::Any, false, false),
-            };
             self.add_variable(
-                param.ident.clone(),
+                param.name.clone(),
                 alloca.into(),
-                param_ty,
-                is_ambi,
-                is_annotated,
             );
         }
 
-        self.compile_block(&func.blk, module)?;
+        self.compile_block(&func.body, module)?;
         let current_block = self.builder.get_insert_block().unwrap();
         if current_block.get_terminator().is_none() {
             // Body's compile_block already exited its scopes; drop the remaining arg scope here.
@@ -582,7 +87,6 @@ impl<'ctx> Compiler<'ctx> {
         }
         self.attachments.clear();
 
-        self.current_fn_ret_ty = None;
         if fn_val.verify(true) {
             Ok(fn_val)
         } else {
@@ -598,13 +102,13 @@ impl<'ctx> Compiler<'ctx> {
 
     pub(crate) fn compile_owned_expr(
         &mut self,
-        expr: &Spanned<ast::Expr>,
+        expr: &hir::Expr,
         module: &Module<'ctx>,
         temp_name: &str,
     ) -> Result<PointerValue<'ctx>, SprsError> {
         let compiled = self.compile_expr(expr, module)?.into_pointer_value();
-        let owned_name = match &expr.node {
-            ast::Expr::Var(name) | ast::Expr::Assign(name, _) => Some(name.clone()),
+        let owned_name = match &expr.kind {
+            hir::ExprKind::Var(name) | hir::ExprKind::Assign(name, _) => Some(name.clone()),
             _ => None,
         };
         let Some(name) = owned_name else {
@@ -623,7 +127,7 @@ impl<'ctx> Compiler<'ctx> {
     /// to the function's return type, emit drops, and build the `ret` instr.
     fn compile_return(
         &mut self,
-        expr_opt: &Option<Spanned<ast::Expr>>,
+        expr_opt: &Option<hir::Expr>,
         module: &Module<'ctx>,
     ) -> Result<(), SprsError> {
         let ret_val = if let Some(expr) = expr_opt {
@@ -631,15 +135,6 @@ impl<'ctx> Compiler<'ctx> {
 
             let current_fn = self.function_signatures.unwrap();
             let return_type = current_fn.get_type().get_return_type();
-            let expected_ret = self.current_fn_ret_ty.clone();
-            let expr_type = self.infer_type_in(expr, expected_ret.as_ref());
-
-            if let Some(expected) = &expected_ret {
-                self.check_list_literal_elements(expr, expected)?;
-            }
-            self.validate_sprs_return_type(&expected_ret, expr_type.clone(), expr)?;
-            self.validate_return_type(return_type, expr_type, expr)?;
-
             self.convert_return_value(return_type, ptr)?
         } else {
             None
@@ -651,134 +146,6 @@ impl<'ctx> Compiler<'ctx> {
             self.builder.build_return(Some(&val)).unwrap();
         } else {
             builder_helper::create_dummy_for_no_return(self)?;
-        }
-        Ok(())
-    }
-
-    /// Check a `return` expression against the Sprs `>> T` annotation.
-    ///
-    /// An `:error` label (including the `err` sugar) may always propagate
-    /// (catchable errors), so it is allowed alongside the declared success
-    /// type. `Any` (unknown) is not rejected.
-    fn validate_sprs_return_type(
-        &self,
-        expected: &Option<Type>,
-        actual: Type,
-        expr: &Spanned<ast::Expr>,
-    ) -> Result<(), SprsError> {
-        let Some(expected_ty) = expected else {
-            return Ok(());
-        };
-        if actual == Type::Any
-            || is_error_label_type(&actual)
-            || types_assignable(expected_ty, &actual)
-        {
-            return Ok(());
-        }
-        Err(SprsError::Type {
-            code: ErrorCode {
-                category: ErrorCategory::Type,
-                number: 5,
-            },
-            location: self.location(expr.span),
-            message: format!(
-                "Type mismatch: Function declares >> {} but return expression has {}",
-                expected_ty, actual
-            ),
-            expected_type: Some(format!("{}", expected_ty)),
-            actual_type: Some(format!("{}", actual)),
-            help: None,
-        })
-    }
-
-    /// Validate that the expression type matches the LLVM function return type.
-    ///
-    /// After catchable errors, Sprs functions always use `runtime_value_type` as
-    /// the LLVM return type, so the int/float/pointer branches below are mainly
-    /// for residual / non-Sprs ABI cases. Prefer [`validate_sprs_return_type`]
-    /// for `>> T` checking.
-    fn validate_return_type(
-        &self,
-        return_type: Option<BasicTypeEnum<'ctx>>,
-        expr_type: Type,
-        expr: &Spanned<ast::Expr>,
-    ) -> Result<(), SprsError> {
-        if let Some(ret_ty) = return_type {
-            if ret_ty.is_pointer_type() {
-                let llvm_int_ty = type_helper::is_int_type_in_llvm();
-                if llvm_int_ty.contains(&expr_type) {
-                    return Err(SprsError::Type {
-                        code: ErrorCode {
-                            category: ErrorCategory::Type,
-                            number: 1,
-                        },
-                        location: self.location(expr.span),
-                        message: format!(
-                            "Type mismatch: Function expects pointer type (e.g. str) but got {} from expression {:?}",
-                            expr_type, expr
-                        ),
-                        expected_type: Some("pointer".to_string()),
-                        actual_type: Some(format!("{}", expr_type)),
-                        help: None,
-                    });
-                }
-            } else if ret_ty.is_int_type() {
-                let width = ret_ty.into_int_type().get_bit_width();
-                if width == 1 {
-                    if expr_type != Type::Bool {
-                        return Err(SprsError::Type {
-                            code: ErrorCode {
-                                category: ErrorCategory::Type,
-                                number: 2,
-                            },
-                            location: self.location(expr.span),
-                            message: format!(
-                                "Type mismatch: Function expects Bool but got {} from expression {:?}",
-                                expr_type, expr
-                            ),
-                            expected_type: Some("Bool".to_string()),
-                            actual_type: Some(format!("{}", expr_type)),
-                            help: None,
-                        });
-                    }
-                } else {
-                    let llvm_not_int = type_helper::not_int_type_in_llvm();
-                    if llvm_not_int.contains(&expr_type) {
-                        return Err(SprsError::Type {
-                            code: ErrorCode {
-                                category: ErrorCategory::Type,
-                                number: 3,
-                            },
-                            location: self.location(expr.span),
-                            message: format!(
-                                "Type mismatch: Function expects Int type but got {} from expression {:?}",
-                                expr_type, expr
-                            ),
-                            expected_type: Some("Int".to_string()),
-                            actual_type: Some(format!("{}", expr_type)),
-                            help: None,
-                        });
-                    }
-                }
-            } else if ret_ty.is_float_type() {
-                let llvm_float_ty = type_helper::is_float_type_in_llvm();
-                if !llvm_float_ty.contains(&expr_type) {
-                    return Err(SprsError::Type {
-                        code: ErrorCode {
-                            category: ErrorCategory::Type,
-                            number: 4,
-                        },
-                        location: self.location(expr.span),
-                        message: format!(
-                            "Type mismatch: Function expects Float type but got {} from expression {:?}",
-                            expr_type, expr
-                        ),
-                        expected_type: Some("Float".to_string()),
-                        actual_type: Some(format!("{}", expr_type)),
-                        help: None,
-                    });
-                }
-            }
         }
         Ok(())
     }
@@ -853,7 +220,7 @@ impl<'ctx> Compiler<'ctx> {
 
     pub(crate) fn compile_block(
         &mut self,
-        stmts: &Vec<Spanned<ast::Stmt>>,
+        stmts: &Vec<hir::Stmt>,
         module: &Module<'ctx>,
     ) -> Result<(), SprsError> {
         self.enter_scope(); // New scope for the block
@@ -869,121 +236,62 @@ impl<'ctx> Compiler<'ctx> {
                 break;
             }
 
-            match &stmt.node {
-                ast::Stmt::Var(var) => {
-                    let unit_expr = Spanned::new(ast::Expr::Unit(), Span::DUMMY);
-                    let init_expr = var.expr.as_ref().unwrap_or(&unit_expr);
-                    let mut annot = var.ty.clone();
-                    if let Some(annotation) = &mut annot {
-                        self.resolve_local_type(&mut annotation.ty).map_err(|message| {
-                            SprsError::Semantic {
-                                code: ErrorCode {
-                                    category: ErrorCategory::Semantic,
-                                    number: 11,
-                                },
-                                location: self.location(var.span),
-                                message,
-                                help: None,
-                            }
-                        })?;
-                        reject_payloadless_label_type(&annotation.ty).map_err(|message| {
-                            SprsError::Semantic {
-                                code: ErrorCode {
-                                    category: ErrorCategory::Semantic,
-                                    number: 11,
-                                },
-                                location: self.location(var.span),
-                                message,
-                                help: None,
-                            }
-                        })?;
-                    }
-                    let expected_ty = annot.as_ref().map(|a| &a.ty);
+            match &stmt.kind {
+                hir::StmtKind::Var { name, binding_ty: _, is_ambi: _, is_annotated: _, init } => {
                     let compiled_init_val =
-                        self.compile_expr(init_expr, module)?.into_pointer_value();
-
-                    let inferred = self.infer_type_in(init_expr, expected_ty);
-                    if let Some(expected) = expected_ty {
-                        if !types_assignable(expected, &inferred) {
-                            return Err(self.type_mismatch_assign(
-                                var.span,
-                                format!(
-                                    "Type mismatch: cannot assign {inferred} to fixed binding `{}` of type {expected}",
-                                    var.ident
-                                ),
-                                expected,
-                                &inferred,
-                            ));
-                        }
-                        self.check_list_literal_elements(init_expr, expected)?;
-                    }
-                    let var_type = match &annot {
-                        Some(a) => a.ty.clone(),
-                        None => inferred,
-                    };
-
-                    let init_val = if let ast::Expr::Var(src_val_name) = &init_expr.node {
+                        self.compile_expr(init, module)?.into_pointer_value();
+                    let init_val = if let hir::ExprKind::Var(src_val_name) = &init.kind {
                         if let Some(src) = self.get_variables(src_val_name) {
                             let copied_val = builder_helper::var_load_at_init_variable(
                                 self,
                                 compiled_init_val,
-                                &var.ident,
+                                name,
                             )?;
-                            builder_helper::move_variable(self, &src.value, &var.ident);
+                            builder_helper::move_variable(self, &src.value, name);
                             copied_val
                         } else {
                             builder_helper::var_load_at_init_variable(
                                 self,
                                 compiled_init_val,
-                                &var.ident,
+                                name,
                             )?
                         }
                     } else {
                         builder_helper::var_load_at_init_variable(
                             self,
                             compiled_init_val,
-                            &var.ident,
+                            name,
                         )?
                     };
-                    let (is_ambi, is_annotated) = match &annot {
-                        Some(a) => (a.ambi, true),
-                        None => (false, false),
-                    };
                     self.add_variable(
-                        var.ident.clone(),
+                        name.clone(),
                         init_val.into(),
-                        var_type,
-                        is_ambi,
-                        is_annotated,
                     );
                 }
-                ast::Stmt::Return(expr_opt) => {
+                hir::StmtKind::Return(expr_opt) => {
                     self.compile_return(expr_opt, module)?;
                 }
-                ast::Stmt::If {
+                hir::StmtKind::If {
                     cond,
                     then_blk,
                     else_blk,
                 } => {
                     builder_helper::create_if_condition(self, cond, then_blk, else_blk, module)?;
                 }
-                ast::Stmt::While { cond, body } => {
+                hir::StmtKind::While { cond, body } => {
                     builder_helper::create_while_condition(self, cond, body, module)?;
                 }
-                ast::Stmt::Unsafe { body, .. } => {
+                hir::StmtKind::Unsafe { body, .. } => {
                     // Always restore depth, including when compile_block returns Err.
-                    self.unsafe_depth += 1;
-                    let result = self.compile_block(body, module);
-                    self.unsafe_depth -= 1;
-                    result?;
+                    self.compile_block(body, module)?;
                 }
-                ast::Stmt::Defer { expr, .. } => {
+                hir::StmtKind::Defer { expr, .. } => {
                     // Queue only; exit_scope / emit_drop_for_return execute LIFO later.
                     if let Some(scope) = self.scopes.last_mut() {
                         scope.deferred.push(expr.clone());
                     }
                 }
-                ast::Stmt::Match {
+                hir::StmtKind::Match {
                     scrutinee,
                     bind,
                     arms,
@@ -991,39 +299,18 @@ impl<'ctx> Compiler<'ctx> {
                 } => {
                     builder_helper::create_match_stmt(self, scrutinee, bind, arms, module)?;
                 }
-                ast::Stmt::Expr(expr) => {
+                hir::StmtKind::Expr(expr) => {
                     self.compile_expr(expr, module)?;
                 }
-                ast::Stmt::Assign(assign_stmt) => {
-                    self.emit_named_assign(
-                        &assign_stmt.name,
-                        &assign_stmt.expr,
-                        module,
-                        assign_stmt.span,
-                    )?;
+                hir::StmtKind::Assign { name, rhs } => {
+                    self.emit_named_assign(name, rhs, module, stmt.span)?;
                 }
-                ast::Stmt::IndexAssign {
+                hir::StmtKind::IndexAssign {
                     collection,
                     index,
                     expr,
-                    span,
                 } => {
-                    let coll_ty = self.infer_type(collection);
-                    if let Some(elem_ty) = list_element(&coll_ty) {
-                        if !matches!(elem_ty, Type::Any) {
-                            let rhs_ty = self.infer_type_in(expr, Some(elem_ty));
-                            if !types_assignable(elem_ty, &rhs_ty) {
-                                return Err(self.type_mismatch_assign(
-                                    *span,
-                                    format!(
-                                        "Type mismatch: list element has {rhs_ty}, expected {elem_ty}"
-                                    ),
-                                    elem_ty,
-                                    &rhs_ty,
-                                ));
-                            }
-                        }
-                    }
+                    let coll_ty = collection.ty.clone();
                     let is_list = list_element(&coll_ty).is_some();
                     let buf_ptr = self.compile_expr(collection, module)?.into_pointer_value();
                     let buf_data_ptr = self
@@ -1112,7 +399,7 @@ impl<'ctx> Compiler<'ctx> {
     fn emit_named_assign(
         &mut self,
         name: &str,
-        rhs: &Spanned<ast::Expr>,
+        rhs: &hir::Expr,
         module: &Module<'ctx>,
         span: Span,
     ) -> Result<PointerValue<'ctx>, SprsError> {
@@ -1131,7 +418,7 @@ impl<'ctx> Compiler<'ctx> {
 
         // Self-assign is a no-op: drop-then-load on the same binding
         // would destroy the value.
-        if let ast::Expr::Var(src_val_name) = &rhs.node {
+        if let hir::ExprKind::Var(src_val_name) = &rhs.kind {
             if src_val_name == name {
                 return Ok(target_ptr);
             }
@@ -1139,7 +426,7 @@ impl<'ctx> Compiler<'ctx> {
 
         let val_ptr = self.compile_owned_expr(rhs, module, "assign_owned")?;
 
-        let target = self
+        let _target = self
             .get_variables(name)
             .ok_or_else(|| SprsError::Semantic {
                 code: ErrorCode {
@@ -1151,30 +438,6 @@ impl<'ctx> Compiler<'ctx> {
                 help: None,
             })?;
 
-        let rhs_ty = self.infer_type_in(rhs, Some(&target.ty));
-        if target.is_annotated && !target.is_ambi {
-            self.check_list_literal_elements(rhs, &target.ty)?;
-            if !types_assignable(&target.ty, &rhs_ty) {
-                return Err(SprsError::Type {
-                    code: ErrorCode {
-                        category: ErrorCategory::Type,
-                        number: 6,
-                    },
-                    location: self.location(span),
-                    message: format!(
-                        "Type mismatch: cannot assign {} to fixed binding `{}` of type {}",
-                        rhs_ty, name, target.ty
-                    ),
-                    expected_type: Some(format!("{}", target.ty)),
-                    actual_type: Some(format!("{}", rhs_ty)),
-                    help: Some(
-                        "use `>> ambi T` if this parameter should allow dynamic reassignment"
-                            .to_string(),
-                    ),
-                });
-            }
-        }
-
         let drop_fn = self.get_runtime_fn(module, "__drop")?;
         builder_helper::drop_var(self, target_ptr, drop_fn, name);
 
@@ -1184,47 +447,43 @@ impl<'ctx> Compiler<'ctx> {
             .unwrap();
         self.builder.build_store(target_ptr, new_val).unwrap();
 
-        // Update static type: ambi / unannotated bindings track the RHS.
-        if !target.is_annotated || target.is_ambi {
-            self.set_variable_type(name, rhs_ty);
-        }
-
         Ok(target_ptr)
     }
 
     pub(crate) fn compile_expr(
         &mut self,
-        expr: &Spanned<ast::Expr>,
+        expr: &hir::Expr,
         module: &Module<'ctx>,
     ) -> Result<BasicValueEnum<'ctx>, SprsError> {
-        match &expr.node {
-            ast::Expr::Number(number_value) => Ok(builder_helper::create_integer(self, number_value)?),
-            ast::Expr::Float(fp) => Ok(builder_helper::create_float(self, *fp)?),
-            ast::Expr::TypeI8 => builder_helper::create_int8(self),
-            ast::Expr::TypeU8 => builder_helper::create_uint8(self),
-            ast::Expr::TypeI16 => builder_helper::create_int16(self),
-            ast::Expr::TypeU16 => builder_helper::create_uint16(self),
-            ast::Expr::TypeI32 => builder_helper::create_int32(self),
-            ast::Expr::TypeU32 => builder_helper::create_uint32(self),
-            ast::Expr::TypeI64 => builder_helper::create_int64(self),
-            ast::Expr::TypeU64 => builder_helper::create_uint64(self),
-            ast::Expr::TypeF16 => builder_helper::create_float16(self),
-            ast::Expr::TypeF32 => builder_helper::create_float32(self),
-            ast::Expr::TypeF64 => builder_helper::create_float64(self),
-            ast::Expr::Str(str) => Ok(builder_helper::create_string(self, str, module)?),
-            ast::Expr::Bool(boolean) => Ok(builder_helper::create_bool(self, boolean)?),
-            ast::Expr::Assign(name, rhs) => {
+        match &expr.kind {
+            hir::ExprKind::Number(number_value) => Ok(builder_helper::create_integer(self, number_value)?),
+            hir::ExprKind::Float(fp) => Ok(builder_helper::create_float(self, *fp)?),
+            hir::ExprKind::TypeI8 => builder_helper::create_int8(self),
+            hir::ExprKind::TypeU8 => builder_helper::create_uint8(self),
+            hir::ExprKind::TypeI16 => builder_helper::create_int16(self),
+            hir::ExprKind::TypeU16 => builder_helper::create_uint16(self),
+            hir::ExprKind::TypeI32 => builder_helper::create_int32(self),
+            hir::ExprKind::TypeU32 => builder_helper::create_uint32(self),
+            hir::ExprKind::TypeI64 => builder_helper::create_int64(self),
+            hir::ExprKind::TypeU64 => builder_helper::create_uint64(self),
+            hir::ExprKind::TypeF16 => builder_helper::create_float16(self),
+            hir::ExprKind::TypeF32 => builder_helper::create_float32(self),
+            hir::ExprKind::TypeF64 => builder_helper::create_float64(self),
+            hir::ExprKind::Str(str) => Ok(builder_helper::create_string(self, str, module)?),
+            hir::ExprKind::Bool(boolean) => Ok(builder_helper::create_bool(self, boolean)?),
+            hir::ExprKind::Assign(name, rhs) => {
                 Ok(self.emit_named_assign(name, rhs, module, expr.span)?.into())
             }
-            ast::Expr::Var(ident) => {
+            hir::ExprKind::AtomRef(ident) => {
+                Ok(create_atom(
+                    self,
+                    &LabelName::Static(ident.clone()),
+                    module,
+                )?)
+            }
+            hir::ExprKind::Var(ident) => {
                 if let Some(binding) = self.get_variables(ident) {
                     Ok(binding.value)
-                } else if self.is_visible_atom_def(ident) {
-                    Ok(create_atom(
-                        self,
-                        &LabelName::Static(ident.clone()),
-                        module,
-                    )?)
                 } else {
                     Err(SprsError::Semantic {
                         code: ErrorCode { category: ErrorCategory::Semantic, number: 2 },
@@ -1234,8 +493,8 @@ impl<'ctx> Compiler<'ctx> {
                     })
                 }
             }
-            ast::Expr::Call(ident, args) => Ok(builder_helper::create_call_expr(self, ident, args, module)?),
-            ast::Expr::Macro(ident, args) => {
+            hir::ExprKind::Call(ident, args) => Ok(builder_helper::create_call_expr(self, ident, args, module)?),
+            hir::ExprKind::Macro(ident, args) => {
                 match ident.as_str() {
                     "println" => Ok(builder_helper::call_builtin_macro_println(self, args, module)?),
                     "list_push" => Ok(builder_helper::call_builtin_macro_list_push(self, args, module)?),
@@ -1266,41 +525,23 @@ impl<'ctx> Compiler<'ctx> {
                     }),
                 }
             }
-            ast::Expr::FieldAccess(lhs, rhs) => {
-                let lhs_type = self.infer_type(lhs);
-
-                let struct_name = match lhs_type {
-                    Type::Struct(name) => name,
-                    _ => {
-                        return Err(SprsError::Semantic {
-                            code: ErrorCode { category: ErrorCategory::Semantic, number: 2 },
-                            location: self.location(lhs.span),
-                            message: format!(
-                                "Undefined variable: {}",
-                                self.get_expr_name(lhs).unwrap_or_default()
-                            ),
-                            help: None,
-                        });
-                    }
-                };
-
-                let index = self.get_field_index(&struct_name, rhs)?;
-
-                Ok(builder_helper::create_field_access(self, lhs, index, &struct_name, module)?)
+            hir::ExprKind::FieldAccess { receiver, struct_ref, field_index, .. } => {
+                let struct_name = self.resolve_struct_backend_name(struct_ref)?;
+                Ok(builder_helper::create_field_access(self, receiver, *field_index, &struct_name, module)?)
             }
-            ast::Expr::Add(lhs, rhs) => Ok(builder_helper::create_add_expr(self, lhs, rhs, module)?),
-            ast::Expr::Mul(lhs, rhs) => Ok(builder_helper::create_mul_expr(self, lhs, rhs, module)?),
-            ast::Expr::Minus(lhs, rhs) => Ok(builder_helper::create_minus_expr(self, lhs, rhs, module)?),
-            ast::Expr::Div(lhs, rhs) => Ok(builder_helper::create_div_expr(self, lhs, rhs, module)?),
-            ast::Expr::Mod(lhs, rhs) => Ok(builder_helper::create_mod_expr(self, lhs, rhs, module)?),
-            ast::Expr::Increment(expr) => {
+            hir::ExprKind::Add(lhs, rhs) => Ok(builder_helper::create_add_expr(self, lhs, rhs, module)?),
+            hir::ExprKind::Mul(lhs, rhs) => Ok(builder_helper::create_mul_expr(self, lhs, rhs, module)?),
+            hir::ExprKind::Minus(lhs, rhs) => Ok(builder_helper::create_minus_expr(self, lhs, rhs, module)?),
+            hir::ExprKind::Div(lhs, rhs) => Ok(builder_helper::create_div_expr(self, lhs, rhs, module)?),
+            hir::ExprKind::Mod(lhs, rhs) => Ok(builder_helper::create_mod_expr(self, lhs, rhs, module)?),
+            hir::ExprKind::Increment(expr) => {
                 Ok(builder_helper::create_increment_or_decrement(self, expr, UpDown::Up, module)?)
             }
-            ast::Expr::Decrement(expr) => {
+            hir::ExprKind::Decrement(expr) => {
                 Ok(builder_helper::create_increment_or_decrement(self, expr, UpDown::Down, module)?)
             }
-            ast::Expr::Neg(expr) => {
-                let zero = Spanned::new(ast::Expr::Number(0), Span::DUMMY);
+            hir::ExprKind::Neg(expr) => {
+                let zero = hir::Expr { kind: hir::ExprKind::Number(0), ty: Type::Int, span: Span::DUMMY };
                 Ok(builder_helper::create_minus_expr(
                     self,
                     &zero,
@@ -1308,7 +549,7 @@ impl<'ctx> Compiler<'ctx> {
                     module,
                 )?)
             }
-            ast::Expr::Eq(lhs, rhs) => {
+            hir::ExprKind::Eq(lhs, rhs) => {
                 Ok(builder_helper::create_eq_or_neq(
                     self,
                     lhs,
@@ -1322,7 +563,7 @@ impl<'ctx> Compiler<'ctx> {
                     },
                 )?)
             }
-            ast::Expr::Neq(lhs, rhs) => {
+            hir::ExprKind::Neq(lhs, rhs) => {
                 Ok(builder_helper::create_eq_or_neq(
                     self,
                     lhs,
@@ -1336,7 +577,7 @@ impl<'ctx> Compiler<'ctx> {
                     },
                 )?)
             }
-            ast::Expr::Gt(lhs, rhs) => {
+            hir::ExprKind::Gt(lhs, rhs) => {
                 Ok(builder_helper::create_comparison(
                     self,
                     lhs,
@@ -1350,7 +591,7 @@ impl<'ctx> Compiler<'ctx> {
                     },
                 )?)
             }
-            ast::Expr::Lt(lhs, rhs) => {
+            hir::ExprKind::Lt(lhs, rhs) => {
                 Ok(builder_helper::create_comparison(
                     self,
                     lhs,
@@ -1364,7 +605,7 @@ impl<'ctx> Compiler<'ctx> {
                     },
                 )?)
             }
-            ast::Expr::Ge(lhs, rhs) => {
+            hir::ExprKind::Ge(lhs, rhs) => {
                 Ok(builder_helper::create_comparison(
                     self,
                     lhs,
@@ -1378,7 +619,7 @@ impl<'ctx> Compiler<'ctx> {
                     },
                 )?)
             }
-            ast::Expr::Le(lhs, rhs) => {
+            hir::ExprKind::Le(lhs, rhs) => {
                 Ok(builder_helper::create_comparison(
                     self,
                     lhs,
@@ -1392,18 +633,15 @@ impl<'ctx> Compiler<'ctx> {
                     },
                 )?)
             }
-            ast::Expr::If(cond, then_expr, else_expr) => {
-                Ok(builder_helper::create_if_expr(self, cond, then_expr, else_expr, module)?)
-            }
-            ast::Expr::Match { scrutinee, arms } => {
+            hir::ExprKind::Match { scrutinee, arms } => {
                 Ok(builder_helper::create_match_expr(self, scrutinee, arms, module)?)
             }
-            ast::Expr::List(elements) => Ok(builder_helper::create_list(self, elements, module)?),
-            ast::Expr::Index(collection_expr, index_expr) => {
+            hir::ExprKind::List(elements) => Ok(builder_helper::create_list(self, elements, module)?),
+            hir::ExprKind::Index(collection_expr, index_expr) => {
                 Ok(builder_helper::create_index(self, collection_expr, index_expr, module)?)
             }
-            ast::Expr::Range(start_expr, end_expr) => Ok(builder_helper::create_range(self, start_expr, end_expr, module)?),
-            ast::Expr::ModuleAccess(module_name, function_name, args) => {
+            hir::ExprKind::Range(start_expr, end_expr) => Ok(builder_helper::create_range(self, start_expr, end_expr, module)?),
+            hir::ExprKind::ModuleAccess(module_name, function_name, args) => {
                 Ok(builder_helper::create_module_access(
                     self,
                     module_name,
@@ -1412,17 +650,14 @@ impl<'ctx> Compiler<'ctx> {
                     module,
                 )?)
             }
-            ast::Expr::Unit() => Ok(builder_helper::create_unit(self)?),
-            ast::Expr::Atom(name) => {
-                if let LabelName::Static(static_name) = name {
-                    self.resolve_closed_label_member(static_name, expr.span)?;
-                }
+            hir::ExprKind::Unit() => Ok(builder_helper::create_unit(self)?),
+            hir::ExprKind::Atom(name) => {
                 Ok(create_atom(self, name, module)?)
             }
-            ast::Expr::Label(name, payload) => {
+            hir::ExprKind::Label(name, payload) => {
                 Ok(create_label(self, name, payload, module)?)
             }
-            ast::Expr::AttachSlot(slot_name) => {
+            hir::ExprKind::AttachSlot(slot_name) => {
                 if let Some(attached) = self.attachments.get(slot_name).copied() {
                     Ok(builder_helper::clone_runtime_value(self, attached, module)?.into())
                 } else {
@@ -1437,8 +672,11 @@ impl<'ctx> Compiler<'ctx> {
                     })
                 }
             }
-            ast::Expr::StructInit(struct_name, fields) => Ok(builder_helper::create_struct_init(self, struct_name, fields, module)?),
-            ast::Expr::Try(inner_expr) => {
+            hir::ExprKind::StructInit { struct_ref, fields } => {
+                let struct_name = self.resolve_struct_backend_name(struct_ref)?;
+                Ok(builder_helper::create_struct_init(self, &struct_name, fields, module)?)
+            }
+            hir::ExprKind::Try(inner_expr) => {
                 let inner_ptr = self.compile_owned_expr(inner_expr, module, "try_owned")?;
 
                 // Load the tag and data of the inner result.
@@ -1485,7 +723,7 @@ impl<'ctx> Compiler<'ctx> {
                 self.builder.position_at_end(continue_bb);
                 Ok(inner_ptr.into())
             }
-            ast::Expr::HeapAlloc(size_expr) => {
+            hir::ExprKind::HeapAlloc(size_expr) => {
                 let size_ptr = self.compile_expr(size_expr, module)?.into_pointer_value();
                 let size_data_ptr = self
                     .builder
@@ -1534,7 +772,7 @@ impl<'ctx> Compiler<'ctx> {
 
                 Ok(res_ptr.into())
             }
-            ast::Expr::Destroy(inner_expr) => {
+            hir::ExprKind::Destroy(inner_expr) => {
                 let val_ptr = self.compile_expr(inner_expr, module)?.into_pointer_value();
 
                 let tag_ptr = self
@@ -1579,7 +817,7 @@ impl<'ctx> Compiler<'ctx> {
                 self.tag_only_runtime_value_store(res_ptr, Tag::Unit as u64, "destroy_unit");
                 Ok(res_ptr.into())
             }
-            ast::Expr::Exist(inner_expr) => {
+            hir::ExprKind::Exist(inner_expr) => {
                 let val_ptr = self.compile_expr(inner_expr, module)?.into_pointer_value();
 
                 let tag_ptr = self

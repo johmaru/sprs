@@ -30,9 +30,9 @@ Broad `Label` accepts exact atoms, payload labels, closed label sets, and the ru
 
 `Self` is valid only in struct field types (including `List(Self)`). See [Structs](structs.md).
 
-Type application is compile-time only: `List(i64)`, `Process(str)`, `Label(:ok, i64)`, `Label(:error, Any)`. Unknown constructors (`Result(i64, str)`) and wrong arity (`List(i64, str)`, `Process()`, `Range(i64)`) are `SPRS-SEM-011`. User-defined generic types are not supported.
+Type application is compile-time only: `List(i64)`, `Process(str)`, `Label(:ok, i64)`, `Label(:error, Any)`, and visible generic structs such as `Pair(i64)`. Builtin constructors keep their arity rules (`List(i64, str)`, `Process()`, `Range(i64)` are `SPRS-SEM-011`). A visible generic struct used with the wrong number of arguments is also `SPRS-SEM-011`. An unknown constructor name is an undefined type. `Type::Param` exists only during compile-time substitution; it is not a runtime tag.
 
-`List(T)` and `Process(T)` share runtime tags only for `List` (`Tag::List`). `Process(T)` is not a runtime tag yet. Element / result types are compile-time only.
+`List(T)` keeps its current runtime representation (`Tag::List`) in this phase. `Process(T)` is not a runtime tag yet. Element / result types of builtins remain compile-time only. Generic struct applications are monomorphized to concrete layouts before codegen.
 
 ## Typed lists
 

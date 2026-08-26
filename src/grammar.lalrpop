@@ -15,6 +15,7 @@ use crate::front::ast::{
     AssignStmt,
     Struct,
     StructField,
+    TypeParam,
     LabelName,
     MatchPat,
     MatchArm,
@@ -202,14 +203,30 @@ ClosedLabelMemberTail: Vec<String> = {
 };
 
 StructDef: Struct =
-    <start:@L> <is_pub:PublicKw> Struct <name:PascalName> LBrace <fields:StructFieldList> RBrace <end:@R> => {
+    <start:@L> <is_pub:PublicKw> Struct <name:PascalName> <params:TypeParamDecl?> LBrace <fields:StructFieldList> RBrace <end:@R> => {
         Struct {
             ident: name,
+            type_params: params.unwrap_or_default(),
             fields,
             is_public: is_pub,
             _methods: vec![],
             span: Span::new(start, end),
         }
+};
+
+TypeParamDecl: Vec<TypeParam> = {
+    LParen <first:TypeParamBind> <rest:(Comma <TypeParamBind>)*> RParen => {
+        let mut params = vec![first];
+        params.extend(rest);
+        params
+    }
+};
+
+TypeParamBind: TypeParam = {
+    <start:@L> <name:PascalName> <end:@R> => TypeParam {
+        ident: name,
+        span: Span::new(start, end),
+    }
 };
 
 StructFieldList: Vec<StructField> = {
@@ -770,8 +787,8 @@ Postfix: Spanned<Expr> = {
 }
 
 Atom: Spanned<Expr> = {
-    <start:@L> Init <name:PascalName> LBrace <fields:StructInitFields> RBrace <end:@R> =>
-        Spanned::new(Expr::StructInit(name, fields), Span::new(start, end)),
+    <start:@L> Init <ty:Type> LBrace <fields:StructInitFields> RBrace <end:@R> =>
+        Spanned::new(Expr::StructInit { ty, fields }, Span::new(start, end)),
     <start:@L> <m:MacroName> LParen RParen <end:@R> => Spanned::new(Expr::Macro(m, vec![]), Span::new(start, end)),
     <start:@L> <m:MacroName> LParen <first:Expr> <rest:(Comma <Expr>)*> RParen <end:@R> => {
         let mut args = vec![first];

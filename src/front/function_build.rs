@@ -9,7 +9,7 @@ use crate::front::ast::{FbCondition, FunctionBuild, FunctionBuildDirective, Func
 use crate::front::error::{ErrorCategory, ErrorCode, Location, SprsError};
 use crate::front::span::Span;
 use crate::front::type_helper::{self, types_assignable, types_compatible, Type};
-use crate::llvm::parser::parse_only;
+use crate::front::parser::parse_only;
 use crate::naming;
 use std::collections::{HashMap, HashSet};
 
@@ -221,10 +221,6 @@ pub fn known_structs_from_items(items: &[Item]) -> HashSet<String> {
         .collect()
 }
 
-/// Builtin type constructor names that cannot be shadowed by a type parameter.
-const BUILTIN_TYPE_NAMES: &[&str] =
-    &["Any", "List", "Label", "Process", "Range", "Buffer", "RawPtr", "Self"];
-
 /// Convert a FunctionBuild type annotation in place.
 ///
 /// A PascalCase `Named` that matches a declared `type_param` becomes
@@ -233,34 +229,17 @@ const BUILTIN_TYPE_NAMES: &[&str] =
 /// covers undeclared type parameter references).
 fn convert_fb_type(
     ty: &mut Type,
-    declared: &HashSet<&String>,
+    declared: &HashSet<String>,
     known_structs: &HashSet<String>,
     known_closed_sets: &HashSet<String>,
 ) -> Result<(), String> {
-    match ty {
-        Type::Named(name) => {
-            let name_clone = name.clone();
-            if declared.contains(&name_clone) {
-                *ty = Type::Param(name_clone);
-                Ok(())
-            } else {
-                type_helper::resolve_type(ty, known_structs, known_closed_sets, None)
-            }
-        }
-        Type::App(_, args) => {
-            for arg in args {
-                convert_fb_type(arg, declared, known_structs, known_closed_sets)?;
-            }
-            Ok(())
-        }
-        _ => Ok(()),
-    }
+    type_helper::resolve_declared_type_params(ty, declared, known_structs, known_closed_sets, None)
 }
 
 /// Convert every `FbCondition::Type` operand inside a `when` condition.
 fn convert_condition_types(
     cond: &mut FbCondition,
-    declared: &HashSet<&String>,
+    declared: &HashSet<String>,
     known_structs: &HashSet<String>,
     known_closed_sets: &HashSet<String>,
 ) -> Result<(), String> {
@@ -306,7 +285,7 @@ pub fn resolve_function_build_types(
                         Some("each `type_param` name may appear at most once".to_string()),
                     ));
                 }
-                if BUILTIN_TYPE_NAMES.contains(&ident.as_str())
+                if type_helper::is_builtin_type_name(ident)
                     || known_structs.contains(ident)
                     || known_closed_sets.contains(ident)
                 {
@@ -326,7 +305,7 @@ pub fn resolve_function_build_types(
                 declared.push(ident.clone());
             }
         }
-        let declared_set: HashSet<&String> = declared.iter().collect();
+        let declared_set: HashSet<String> = declared.iter().cloned().collect();
 
         for directive in &mut fb.directives {
             match directive {
@@ -498,21 +477,18 @@ fn substitute_type(
     ty: &Type,
     bindings: &HashMap<String, Type>,
 ) -> Result<Type, CallContractError> {
-    match ty {
-        Type::Param(name) => bindings.get(name).cloned().ok_or_else(|| {
+    type_helper::substitute_type(ty, bindings).map_err(|message| {
+        if let Some(name) = message
+            .strip_prefix("unresolved type parameter `")
+            .and_then(|rest| rest.strip_suffix('`'))
+        {
             CallContractError::UnresolvedTypeParam {
-                name: name.clone(),
+                name: name.to_string(),
             }
-        }),
-        Type::App(name, args) => {
-            let mut substituted = Vec::with_capacity(args.len());
-            for arg in args {
-                substituted.push(substitute_type(arg, bindings)?);
-            }
-            Ok(Type::App(name.clone(), substituted))
+        } else {
+            CallContractError::TypeConflict { message }
         }
-        other => Ok(other.clone()),
-    }
+    })
 }
 
 /// Evaluate a `when` condition against the concrete type bindings.
@@ -691,7 +667,7 @@ pub fn import_public_builds_from_source(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::llvm::parser::parse_only;
+    use crate::front::parser::parse_only;
 
     fn parse(src: &str) -> Vec<Item> {
         parse_only(src, "test.sprs").expect("parse")

@@ -3,9 +3,9 @@ use crate::llvm::value::{
 };
 use crate::llvm::variable::clone_runtime_value;
 use crate::{
-    front::ast,
+    front::hir,
     front::error::{ErrorCategory, ErrorCode, Location, SprsError},
-    front::span::{Span, Spanned},
+    front::span::Span,
     llvm::builder_helper::{BuilderExt, ContextExt},
     llvm::compiler::{Compiler, StoreTag, StoreValue, Tag},
 };
@@ -13,11 +13,10 @@ use inkwell::{
     AddressSpace,
     values::{BasicValueEnum, PointerValue, ValueKind},
 };
-use std::collections::HashMap;
 
 pub fn create_list<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    elements: &Vec<Spanned<ast::Expr>>,
+    elements: &Vec<hir::Expr>,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
     let list_handle = self_compiler.build_list_from_exprs(elements, module)?;
@@ -53,8 +52,8 @@ pub fn create_list<'ctx>(
 
 pub fn create_index<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    collection_expr: &Spanned<ast::Expr>,
-    index_expr: &Spanned<ast::Expr>,
+    collection_expr: &hir::Expr,
+    index_expr: &hir::Expr,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
     // `buf[i]` / `list[i]`
@@ -217,8 +216,8 @@ pub fn create_index<'ctx>(
 
 pub fn create_range<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    start_expr: &Spanned<ast::Expr>,
-    end_expr: &Spanned<ast::Expr>,
+    start_expr: &hir::Expr,
+    end_expr: &hir::Expr,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
     let range_fn = self_compiler.get_runtime_fn(module, "__range_new")?;
@@ -309,7 +308,7 @@ pub fn create_module_access<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
     module_name: &str,
     function_name: &str,
-    args: &Vec<Spanned<ast::Expr>>,
+    args: &Vec<hir::Expr>,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
     let target_module =
@@ -348,7 +347,6 @@ pub fn create_module_access<'ctx>(
         module.add_function(&function_name, target_func.get_type(), None)
     };
 
-    self_compiler.check_call_arguments(function_name, args)?;
 
     let compiled_args = crate::llvm::value::prepare_call_args(self_compiler, args, module)?;
 
@@ -460,7 +458,7 @@ fn emit_struct_track<'ctx>(
 
 pub fn create_field_access<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
-    struct_expr: &Spanned<ast::Expr>,
+    struct_expr: &hir::Expr,
     field_index: u32,
     struct_name: &str,
     module: &inkwell::module::Module<'ctx>,
@@ -720,99 +718,30 @@ pub fn create_field_access<'ctx>(
 pub fn create_struct_init<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
     struct_name: &str,
-    field_exprs: &[(String, Spanned<ast::Expr>)],
+    field_exprs: &[(u32, hir::Expr)],
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
-    // ---- field validation before any LLVM emission ----
-    let struct_def =
-        self_compiler
-            .struct_defs
-            .get(struct_name)
-            .ok_or_else(|| SprsError::Semantic {
-                code: ErrorCode {
-                    category: ErrorCategory::Semantic,
-                    number: 13,
-                },
-                location: Location::new(String::new(), Span::DUMMY),
-                message: format!("Undefined struct : {}", struct_name),
-                help: None,
-            })?;
-
-    for (field_name, field_expr) in field_exprs {
-        if !struct_def.field_indices.contains_key(field_name) {
-            return Err(SprsError::Semantic {
-                code: ErrorCode {
-                    category: ErrorCategory::Semantic,
-                    number: 13,
-                },
-                location: Location::new(String::new(), field_expr.span),
-                message: format!(
-                    "unknown field `{}` in init {}",
-                    field_name, struct_name
-                ),
-                help: Some("fields must match the struct declaration".to_string()),
-            });
-        }
-    }
-    for (idx, (field_name, field_expr)) in field_exprs.iter().enumerate() {
-        if field_exprs[..idx]
-            .iter()
-            .any(|(previous, _)| previous == field_name)
-        {
-            return Err(SprsError::Semantic {
-                code: ErrorCode {
-                    category: ErrorCategory::Semantic,
-                    number: 13,
-                },
-                location: Location::new(String::new(), field_expr.span),
-                message: format!(
-                    "duplicate field `{}` in init {}",
-                    field_name, struct_name
-                ),
-                help: Some("each field may be initialized at most once".to_string()),
-            });
-        }
-    }
-    for field in &struct_def.fields {
-        let has_explicit = field_exprs.iter().any(|(name, _)| name == &field.ident);
-        if !has_explicit && field.default_value.is_none() {
-            return Err(SprsError::Semantic {
-                code: ErrorCode {
-                    category: ErrorCategory::Semantic,
-                    number: 13,
-                },
-                location: Location::new(String::new(), field.span),
-                message: format!(
-                    "missing required field `{}` in init {}",
-                    field.ident, struct_name
-                ),
-                help: Some(
-                    "provide a value or add a default to the field declaration".to_string(),
-                ),
-            });
-        }
-    }
-
-    // Fields in declaration order: explicit value wins, otherwise the
-    // field's `default_value` is evaluated at the init site. The struct
-    // definition data is cloned so later mutable compiler use does not
-    // conflict with the borrow.
-    let fields: Vec<crate::front::ast::StructField> = struct_def.fields.clone();
-    let field_indices: HashMap<String, u32> = struct_def.field_indices.clone();
-    let llvm_type = struct_def.llvm_type;
-    let ordered_fields: Vec<(String, &Spanned<ast::Expr>, u32)> = fields
+    let (llvm_type, field_tys) = {
+        let struct_def =
+            self_compiler
+                .struct_defs
+                .get(struct_name)
+                .ok_or_else(|| SprsError::Internal {
+                    message: format!("Undefined struct : {}", struct_name),
+                    location: None,
+                })?;
+        (
+            struct_def.llvm_type,
+            struct_def
+                .fields
+                .iter()
+                .map(|f| f.ty.clone())
+                .collect::<Vec<Option<crate::front::type_helper::Type>>>(),
+        )
+    };
+    let ordered_fields: Vec<(String, &hir::Expr, u32)> = field_exprs
         .iter()
-        .map(|field| {
-            let index = field_indices[&field.ident];
-            match field_exprs.iter().find(|(name, _)| name == &field.ident) {
-                Some((name, expr)) => (name.clone(), expr, index),
-                None => (
-                    field.ident.clone(),
-                    field.default_value.as_ref().expect("validated above"),
-                    index,
-                ),
-            }
-        })
+        .map(|(index, expr)| (String::new(), expr, *index))
         .collect();
 
     let result_ptr = create_entry_block_alloca(self_compiler, "struct_init_result")?;
@@ -887,11 +816,8 @@ pub fn create_struct_init<'ctx>(
         )
         .unwrap();
 
-    for (field_name, field_expr, index) in &ordered_fields {
-        let field_ty = fields
-            .iter()
-            .find(|f| &f.ident == field_name)
-            .and_then(|f| f.ty.clone());
+    for (_field_name, field_expr, index) in &ordered_fields {
+        let field_ty = field_tys.get(*index as usize).cloned().flatten();
 
         let value = self_compiler.compile_owned_expr(field_expr, module, "struct_field_owned")?;
 

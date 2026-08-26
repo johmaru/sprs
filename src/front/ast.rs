@@ -1,7 +1,7 @@
 use crate::front::span::{Span, Spanned};
 use crate::front::type_helper::{Type, TypeAnnot};
 
-pub use crate::front::label_name::{LabelName, LabelNamePart, parse_dynamic_label_template};
+pub use crate::front::label_name::{LabelName, parse_dynamic_label_template};
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum Expr {
@@ -21,7 +21,6 @@ pub enum Expr {
     Gt(Box<Spanned<Expr>>, Box<Spanned<Expr>>),                     // Lhs, Rhs
     Le(Box<Spanned<Expr>>, Box<Spanned<Expr>>),                     // Lhs, Rhs
     Ge(Box<Spanned<Expr>>, Box<Spanned<Expr>>),                     // Lhs, Rhs
-    If(Box<Spanned<Expr>>, Box<Spanned<Expr>>, Box<Spanned<Expr>>), // Cond, Then, Else
     Call(String, Vec<Spanned<Expr>>),                               // Ident, Args
     Var(String),                                                    // Ident
     Increment(Box<Spanned<Expr>>),                                  // Ident
@@ -34,7 +33,10 @@ pub enum Expr {
     FieldAccess(Box<Spanned<Expr>>, String),          // e.g. struct.field
     Unit(),
     Macro(String, Vec<Spanned<Expr>>), // Ident, Args e.g. @lshift(x, 4)
-    StructInit(String, Vec<(String, Spanned<Expr>)>), // StructName, Fields
+    StructInit {
+        ty: Type,
+        fields: Vec<(String, Spanned<Expr>)>,
+    }, // `init Point {}` / `init Pair(i64) {}`
     Atom(LabelName),                   // :ok / :"{x}-item" — immutable atom, no payload
     Label(LabelName, Box<Spanned<Expr>>), // {:name, payload} — payload required
     AttachSlot(String),                // <:name — local operation slot reference (read)
@@ -81,7 +83,6 @@ pub enum Item {
     ClosedLabelSetItem(ClosedLabelSet),
     AtomItem(AtomDef),
     StructItem(Struct),
-    HeapAllocItem(HeapAlloc),
 }
 
 /// Dedicated FunctionBuild contract directives. These are not runtime macros
@@ -171,12 +172,6 @@ pub struct VarDecl {
 }
 
 #[derive(Debug, PartialEq)]
-pub struct HeapAlloc {
-    pub size: Box<Spanned<Expr>>,
-    pub span: Span,
-}
-
-#[derive(Debug, PartialEq)]
 pub struct AssignStmt {
     pub name: String,
     pub expr: Spanned<Expr>,
@@ -197,9 +192,16 @@ pub struct AtomDef {
     pub span: Span,
 }
 
+#[derive(Debug, PartialEq, Clone)]
+pub struct TypeParam {
+    pub ident: String,
+    pub span: Span,
+}
+
 #[derive(Debug, PartialEq)]
 pub struct Struct {
     pub ident: String,
+    pub type_params: Vec<TypeParam>,
     pub fields: Vec<StructField>,
     pub _methods: Vec<Function>, // currently not implemented
     pub is_public: bool,
@@ -212,12 +214,6 @@ pub struct StructField {
     pub ty: Option<Type>,
     pub default_value: Option<Spanned<Expr>>,
     pub span: Span,
-}
-
-#[derive(Debug, PartialEq, Clone)]
-pub enum Suffix {
-    Call(Vec<Spanned<Expr>>),
-    Struct(Vec<(String, Spanned<Expr>)>),
 }
 
 /// A `case` pattern in a `match` statement.

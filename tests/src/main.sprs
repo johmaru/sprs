@@ -184,6 +184,11 @@ fn main() {
     @println(data_structures.recursive_tree_child_value());
     @println(data_structures.init_default_value());
     @println(data_structures.init_empty());
+    @println(data_structures.generic_pair_i64());
+    @println(data_structures.generic_pair_i64_and_f64());
+    @println(data_structures.generic_pair_owned());
+    @println(data_structures.generic_pair_nested());
+    @println(data_structures.generic_pair_duplicate());
 
     @println("=== Module Import ===");
     @println(test.test());
