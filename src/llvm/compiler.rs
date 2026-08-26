@@ -43,6 +43,8 @@ pub struct Compiler<'ctx> {
     /// Used for type/semantic error locations (was previously left empty).
     pub current_file: String,
     pub struct_defs: HashMap<String, StructDef<'ctx>>, // struct name -> struct definition
+    pub struct_specialization_names: HashMap<hir::StructInstanceId, String>,
+    pub next_struct_specialization_id: usize,
     pub closed_label_sets: HashSet<String>,
     /// FunctionBuild type parameters and `when` rules, keyed by build name.
     /// Filled from the registry during module loading so prototype declaration
@@ -320,6 +322,8 @@ impl<'ctx> Compiler<'ctx> {
             source_path,
             current_file: String::new(),
             struct_defs: HashMap::new(),
+            struct_specialization_names: HashMap::new(),
+            next_struct_specialization_id: 0,
             closed_label_sets: HashSet::new(),
             function_build_contracts: HashMap::new(),
             private_closed_label_members: HashSet::new(),
@@ -506,6 +510,70 @@ impl<'ctx> Compiler<'ctx> {
             },
         );
         Ok(())
+    }
+
+    pub fn ensure_struct_specialization(
+        &mut self,
+        specialization: &hir::StructSpecialization,
+    ) -> Result<String, SprsError> {
+        if let Some(name) = self.struct_specialization_names.get(&specialization.id) {
+            return Ok(name.clone());
+        }
+        for field in &specialization.fields {
+            if crate::front::type_helper::contains_unresolved_type(&field.ty) {
+                return Err(SprsError::Internal {
+                    message: format!(
+                        "unresolved type in specialization field `{}`",
+                        field.name
+                    ),
+                    location: None,
+                });
+            }
+        }
+        let name = format!(
+            "__sprs_mono_struct_{}",
+            self.next_struct_specialization_id
+        );
+        self.next_struct_specialization_id += 1;
+        let fields: Vec<ast::StructField> = specialization
+            .fields
+            .iter()
+            .map(|field| ast::StructField {
+                ident: field.name.clone(),
+                ty: Some(field.ty.clone()),
+                default_value: None,
+                span: field.span,
+            })
+            .collect();
+        self.register_struct(name.clone(), fields)?;
+        self.struct_specialization_names
+            .insert(specialization.id.clone(), name.clone());
+        Ok(name)
+    }
+
+    pub fn resolve_struct_backend_name(
+        &self,
+        struct_ref: &hir::StructRef,
+    ) -> Result<String, SprsError> {
+        match struct_ref {
+            hir::StructRef::Plain(name) => Ok(name.clone()),
+            hir::StructRef::Generic(id) => self
+                .struct_specialization_names
+                .get(id)
+                .cloned()
+                .ok_or_else(|| SprsError::Internal {
+                    message: format!(
+                        "missing backend specialization for {}({})",
+                        id.declaration.name,
+                        id.args
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                    location: None,
+                }),
+        }
     }
 
     pub fn build_list_from_exprs(
@@ -740,5 +808,66 @@ impl<'ctx> Compiler<'ctx> {
         };
 
         Ok(module.add_function(name, fn_type, None))
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::front::span::Span;
+    use crate::front::type_helper::{contains_unresolved_type, Type};
+    use inkwell::context::Context;
+
+    fn spec(args: Vec<Type>) -> hir::StructSpecialization {
+        hir::StructSpecialization {
+            id: hir::StructInstanceId {
+                declaration: hir::StructId {
+                    module: "test".into(),
+                    name: "Pair".into(),
+                },
+                args: args.clone(),
+            },
+            type_bindings: vec![("T".into(), args[0].clone())],
+            fields: vec![
+                hir::StructField {
+                    name: "a".into(),
+                    ty: args[0].clone(),
+                    default_value: None,
+                    span: Span::DUMMY,
+                },
+                hir::StructField {
+                    name: "b".into(),
+                    ty: args[0].clone(),
+                    default_value: None,
+                    span: Span::DUMMY,
+                },
+            ],
+            span: Span::DUMMY,
+        }
+    }
+
+    #[test]
+    fn specialization_cache_reuses_backend_name() {
+        let context = Context::create();
+        let builder = context.create_builder();
+        let mut compiler = Compiler::new(&context, builder, "test.sprs".into());
+        let i64_spec = spec(vec![Type::TypeI64]);
+        let first = compiler.ensure_struct_specialization(&i64_spec).unwrap();
+        let second = compiler.ensure_struct_specialization(&i64_spec).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(compiler.struct_defs.len(), 1);
+        assert_eq!(compiler.struct_specialization_names.len(), 1);
+        let f64_spec = spec(vec![Type::TypeF64]);
+        let other = compiler.ensure_struct_specialization(&f64_spec).unwrap();
+        assert_ne!(first, other);
+        assert_eq!(compiler.struct_defs.len(), 2);
+        assert_eq!(compiler.struct_specialization_names.len(), 2);
+        for def in compiler.struct_defs.values() {
+            for field in &def.fields {
+                let ty = field.ty.as_ref().expect("typed");
+                assert!(!contains_unresolved_type(ty), "{ty}");
+            }
+        }
     }
 }

@@ -525,8 +525,9 @@ impl<'ctx> Compiler<'ctx> {
                     }),
                 }
             }
-            hir::ExprKind::FieldAccess { receiver, struct_name, field_index, .. } => {
-                Ok(builder_helper::create_field_access(self, receiver, *field_index, struct_name, module)?)
+            hir::ExprKind::FieldAccess { receiver, struct_ref, field_index, .. } => {
+                let struct_name = self.resolve_struct_backend_name(struct_ref)?;
+                Ok(builder_helper::create_field_access(self, receiver, *field_index, &struct_name, module)?)
             }
             hir::ExprKind::Add(lhs, rhs) => Ok(builder_helper::create_add_expr(self, lhs, rhs, module)?),
             hir::ExprKind::Mul(lhs, rhs) => Ok(builder_helper::create_mul_expr(self, lhs, rhs, module)?),
@@ -671,7 +672,10 @@ impl<'ctx> Compiler<'ctx> {
                     })
                 }
             }
-            hir::ExprKind::StructInit { struct_name, fields } => Ok(builder_helper::create_struct_init(self, struct_name, fields, module)?),
+            hir::ExprKind::StructInit { struct_ref, fields } => {
+                let struct_name = self.resolve_struct_backend_name(struct_ref)?;
+                Ok(builder_helper::create_struct_init(self, &struct_name, fields, module)?)
+            }
             hir::ExprKind::Try(inner_expr) => {
                 let inner_ptr = self.compile_owned_expr(inner_expr, module, "try_owned")?;
 

@@ -132,14 +132,7 @@ pub fn named_type(
             if args.is_empty() {
                 Ok(Type::Named(name))
             } else {
-                Err(sem(
-                    11,
-                    span,
-                    format!(
-                        "unknown type constructor `{name}`; builtin constructors are List(T), Process(T), Label(:name, T)"
-                    ),
-                    Some("user-defined generic types are not supported".to_string()),
-                ))
+                Ok(Type::App(name, args))
             }
         }
     }

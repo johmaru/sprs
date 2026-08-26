@@ -33,7 +33,10 @@ pub enum Expr {
     FieldAccess(Box<Spanned<Expr>>, String),          // e.g. struct.field
     Unit(),
     Macro(String, Vec<Spanned<Expr>>), // Ident, Args e.g. @lshift(x, 4)
-    StructInit(String, Vec<(String, Spanned<Expr>)>), // StructName, Fields
+    StructInit {
+        ty: Type,
+        fields: Vec<(String, Spanned<Expr>)>,
+    }, // `init Point {}` / `init Pair(i64) {}`
     Atom(LabelName),                   // :ok / :"{x}-item" — immutable atom, no payload
     Label(LabelName, Box<Spanned<Expr>>), // {:name, payload} — payload required
     AttachSlot(String),                // <:name — local operation slot reference (read)
@@ -189,9 +192,16 @@ pub struct AtomDef {
     pub span: Span,
 }
 
+#[derive(Debug, PartialEq, Clone)]
+pub struct TypeParam {
+    pub ident: String,
+    pub span: Span,
+}
+
 #[derive(Debug, PartialEq)]
 pub struct Struct {
     pub ident: String,
+    pub type_params: Vec<TypeParam>,
     pub fields: Vec<StructField>,
     pub _methods: Vec<Function>, // currently not implemented
     pub is_public: bool,

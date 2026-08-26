@@ -58,3 +58,33 @@ fn main() {
   var e = init Empty {};
 }
 ```
+
+
+## ジェネリック構造体
+
+構造体名の直後に PascalCase の型パラメータを置けます。例: `struct Pair(T)`、
+`struct Pair(A, B)`。フィールド型はそのパラメータを参照できます。
+ジェネリック構造体は `Pair(i64)` や `init Pair(str) { ... }` のように、
+明示した具象適用でのみ使います。コンパイラは引数をコンパイル時に置換し、
+引数リストごとに別の具象レイアウトを作ります（`Pair(i64)` と `Pair(f64)` は別です）。
+`Pair(Pair(i64))` のような入れ子は内側を先に特殊化します。
+
+所有文字列の特殊化は `str` です（`init Pair(str) { a = "owned", b = "x" }`）。
+`String` は型名ではありません。ジェネリックフィールドの default、期待型だけによる
+型引数なしの `init Pair { ... }`、ジェネリックメソッドは現在使えません。
+
+```sprs
+struct Pair(T) {
+  a >> T,
+  b >> T
+}
+
+fn use_pair() {
+  var nums = init Pair(i64) { a = 1, b = 2 };
+  var owned = init Pair(str) { a = "owned", b = "x" };
+  var nested = init Pair(Pair(i64)) {
+    a = init Pair(i64) { a = 1, b = 2 },
+    b = init Pair(i64) { a = 3, b = 4 },
+  };
+}
+```

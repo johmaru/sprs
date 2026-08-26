@@ -40,13 +40,13 @@ pub enum ExprKind {
     FieldAccess {
         receiver: Box<Expr>,
         field_name: String,
-        struct_name: String,
+        struct_ref: StructRef,
         field_index: u32,
     },
     Unit(),
     Macro(String, Vec<Expr>),
     StructInit {
-        struct_name: String,
+        struct_ref: StructRef,
         fields: Vec<(u32, Expr)>,
     },
     Atom(LabelName),
@@ -170,9 +170,37 @@ pub struct StructField {
     pub span: Span,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct StructId {
+    pub module: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct StructInstanceId {
+    pub declaration: StructId,
+    pub args: Vec<Type>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StructRef {
+    Plain(String),
+    Generic(StructInstanceId),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct StructSpecialization {
+    pub id: StructInstanceId,
+    pub type_bindings: Vec<(String, Type)>,
+    pub fields: Vec<StructField>,
+    pub span: Span,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Struct {
+    pub id: StructId,
     pub name: String,
+    pub type_params: Vec<String>,
     pub fields: Vec<StructField>,
     pub is_public: bool,
     pub span: Span,
@@ -209,6 +237,7 @@ pub struct Module {
     pub path: String,
     pub functions: Vec<Function>,
     pub structs: Vec<Struct>,
+    pub struct_specializations: Vec<StructSpecialization>,
     pub globals: Vec<VarDecl>,
     pub closed_label_sets: Vec<ClosedLabelSet>,
     pub atoms: Vec<AtomDef>,

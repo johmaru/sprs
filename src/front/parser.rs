@@ -1031,7 +1031,7 @@ fn main() {}
         let init = var_decl.expr.as_ref().expect("var has initializer");
         assert!(matches!(
             &init.node,
-            Expr::StructInit(name, fields)
+            Expr::StructInit { ty: Type::Named(name), fields }
                 if name == "Point"
                     && fields.len() == 2
                     && fields[0].0 == "x"
@@ -1050,7 +1050,7 @@ fn main() {}
             panic!("expected var statement");
         };
         let init = var_decl.expr.as_ref().expect("var has initializer");
-        assert!(matches!(&init.node, Expr::StructInit(name, fields) if name == "Empty" && fields.is_empty()));
+        assert!(matches!(&init.node, Expr::StructInit { ty: Type::Named(name), fields } if name == "Empty" && fields.is_empty()));
     }
 
     #[test]
@@ -1119,17 +1119,67 @@ fn main() {}
     }
 
     #[test]
-    fn rejects_unknown_type_constructor() {
-        let err = parse_only(
+    fn parses_unknown_user_type_constructor_as_app() {
+        let items = parse_only(
             "fn f(x >> Result(i64, str)) { return; }\n",
-            "bad_ctor.sprs",
+            "user_ctor.sprs",
         )
-        .unwrap_err();
-        let msg = format!("{err:?}");
-        assert!(
-            msg.contains("unknown type constructor") || msg.contains("Result"),
-            "{msg}"
+        .expect("parse");
+        let Item::FunctionItem(function_item) = &items[0] else {
+            panic!("expected function");
+        };
+        let ty = function_item.params[0].ty.as_ref().map(|a| &a.ty);
+        assert_eq!(
+            ty,
+            Some(&Type::App(
+                "Result".into(),
+                vec![Type::TypeI64, Type::Str]
+            ))
         );
+    }
+
+    #[test]
+    fn parses_generic_struct_decl_and_init() {
+        let src = r#"
+struct Pair(T) { a >> T, b >> T }
+struct PairTwo(A, B) { a >> A, b >> B }
+fn f() {
+    var p = init Pair(i64) { a = 1, b = 2 };
+}
+"#;
+        let items = parse_only(src, "generic.sprs").expect("parse");
+        let Item::StructItem(pair) = &items[0] else {
+            panic!("expected Pair struct");
+        };
+        assert_eq!(pair.ident, "Pair");
+        assert_eq!(pair.type_params.len(), 1);
+        assert_eq!(pair.type_params[0].ident, "T");
+        assert!(pair.type_params[0].span.end > pair.type_params[0].span.start);
+        let Item::StructItem(pair_two) = &items[1] else {
+            panic!("expected PairTwo struct");
+        };
+        assert_eq!(
+            pair_two
+                .type_params
+                .iter()
+                .map(|p| p.ident.as_str())
+                .collect::<Vec<_>>(),
+            vec!["A", "B"]
+        );
+        let Item::FunctionItem(function_item) = &items[2] else {
+            panic!("expected function");
+        };
+        let Stmt::Var(var_decl) = &function_item.blk[0].node else {
+            panic!("expected var");
+        };
+        let init = var_decl.expr.as_ref().expect("init");
+        match &init.node {
+            Expr::StructInit { ty, fields } => {
+                assert_eq!(ty, &Type::App("Pair".into(), vec![Type::TypeI64]));
+                assert_eq!(fields.len(), 2);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
     }
 
     #[test]

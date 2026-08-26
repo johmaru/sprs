@@ -217,3 +217,77 @@ pub fn init_empty() >> i64 {
     return 1;
 }
 
+
+struct Pair(T) {
+    a >> T,
+    b >> T
+}
+
+pub fn generic_pair_i64() >> i64 {
+    var p = init Pair(i64) {
+        a = 10,
+        b = 20,
+    };
+    return p.a + p.b;
+}
+
+pub fn generic_pair_i64_and_f64() >> bool {
+    var p = init Pair(i64) {
+        a = 1,
+        b = 2,
+    };
+    var q = init Pair(f64) {
+        a = 1.5,
+        b = 2.5,
+    };
+    if p.a != 1 {
+        return false;
+    }
+    if q.a < 1.0 {
+        return false;
+    }
+    return true;
+}
+
+pub fn generic_pair_owned() >> str {
+    var p = init Pair(str) {
+        a = "owned",
+        b = "other",
+    };
+    var moved = p;
+    return moved.a;
+}
+
+pub fn generic_pair_nested() >> bool {
+    var inner_a = init Pair(i64) {
+        a = 1,
+        b = 2,
+    };
+    var inner_b = init Pair(i64) {
+        a = 3,
+        b = 4,
+    };
+    var outer = init Pair(Pair(i64)) {
+        a = inner_a,
+        b = inner_b,
+    };
+    if outer.a.a != 1 {
+        return false;
+    }
+    if outer.b.b != 4 {
+        return false;
+    }
+    return true;
+}
+
+pub fn generic_pair_duplicate() >> bool {
+    var p = init Pair(i64) {
+        a = 7,
+        b = 8,
+    };
+    var q = init Pair(i64) {
+        a = 9,
+        b = 10,
+    };
+    return p.a + q.b == 17;
+}

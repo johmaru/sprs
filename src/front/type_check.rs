@@ -5,8 +5,10 @@ use crate::front::hir;
 use crate::front::label_name::{LabelName, LabelNamePart};
 use crate::front::span::{Span, Spanned};
 use crate::front::type_helper::{
-    Type, TypeAnnot, is_error_label_type, join_list_element_types, list_element, list_type,
-    reject_payloadless_label_type, resolve_type, types_assignable, types_compatible,
+    Type, TypeAnnot, contains_unresolved_type, is_builtin_type_name, is_error_label_type,
+    join_list_element_types, list_element, list_type, reject_payloadless_label_type,
+    resolve_declared_type_params, types_assignable, types_compatible,
+    validate_type_app,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -25,6 +27,8 @@ struct FnSig {
 }
 
 struct StructInfo {
+    id: hir::StructId,
+    type_params: Vec<String>,
     fields: Vec<hir::StructField>,
     field_indices: HashMap<String, u32>,
 }
@@ -41,6 +45,10 @@ struct Checker<'a> {
     attachments: HashSet<String>,
     unsafe_depth: u32,
     current_fn_ret_ty: Option<Type>,
+    current_type_params: HashSet<String>,
+    struct_specializations: HashMap<hir::StructInstanceId, hir::StructSpecialization>,
+    specialization_order: Vec<hir::StructInstanceId>,
+    specialization_stack: Vec<hir::StructInstanceId>,
     function_build_contracts: &'a HashMap<String, (Vec<String>, Vec<(FbCondition, Type)>)>,
 }
 
@@ -129,6 +137,10 @@ pub fn check_module(
         attachments: HashSet::new(),
         unsafe_depth: 0,
         current_fn_ret_ty: None,
+        current_type_params: HashSet::new(),
+        struct_specializations: HashMap::new(),
+        specialization_order: Vec::new(),
+        specialization_stack: Vec::new(),
         function_build_contracts,
     };
 
@@ -257,56 +269,146 @@ pub fn check_module(
                 });
             }
             Item::StructItem(s) => {
-                let mut fields = Vec::new();
-                let mut field_indices = HashMap::new();
-                for (idx, field) in s.fields.iter().enumerate() {
-                    let mut ty = field.ty.clone().unwrap_or(Type::Any);
-                    resolve_type(&mut ty, &known_structs, &known_closed, Some(&s.ident)).map_err(|message| {
-                        semantic(path, field.span, 11, message, None)
-                    })?;
-                    reject_payloadless_label_type(&ty).map_err(|message| {
-                        semantic(path, field.span, 11, message, None)
-                    })?;
-                    let default_value = match &field.default_value {
-                        Some(expr) => Some(checker.check_expr(expr, Some(&ty))?),
-                        None => None,
-                    };
-                    field_indices.insert(field.ident.clone(), idx as u32);
-                    fields.push(hir::StructField {
-                        name: field.ident.clone(),
-                        ty,
-                        default_value,
-                        span: field.span,
-                    });
+                let mut type_params = Vec::new();
+                let mut seen = HashSet::new();
+                for tp in &s.type_params {
+                    if !seen.insert(tp.ident.clone()) {
+                        return Err(semantic(
+                            path,
+                            tp.span,
+                            11,
+                            format!(
+                                "duplicate type parameter `{}` in struct `{}`",
+                                tp.ident, s.ident
+                            ),
+                            None,
+                        ));
+                    }
+                    if is_builtin_type_name(&tp.ident) {
+                        return Err(semantic(
+                            path,
+                            tp.span,
+                            11,
+                            format!(
+                                "builtin type name `{}` cannot be used as a type parameter",
+                                tp.ident
+                            ),
+                            None,
+                        ));
+                    }
+                    type_params.push(tp.ident.clone());
                 }
-                let hs = hir::Struct {
-                    name: s.ident.clone(),
-                    fields: fields.clone(),
-                    is_public: s.is_public,
-                    span: s.span,
-                };
+                if !type_params.is_empty() {
+                    for field in &s.fields {
+                        if field.default_value.is_some() {
+                            return Err(semantic(
+                                path,
+                                field.span,
+                                11,
+                                "generic struct field defaults are not supported in Phase 1; initialize the field explicitly".to_string(),
+                                None,
+                            ));
+                        }
+                    }
+                }
                 checker.structs.insert(
                     s.ident.clone(),
                     StructInfo {
-                        fields,
-                        field_indices,
+                        id: hir::StructId {
+                            module: module_name.to_string(),
+                            name: s.ident.clone(),
+                        },
+                        type_params,
+                        fields: Vec::new(),
+                        field_indices: HashMap::new(),
                     },
                 );
-                hir_structs.push(hs);
             }
             _ => {}
         }
     }
 
     for item in items {
+        let Item::StructItem(s) = item else {
+            continue;
+        };
+        let type_params = checker
+            .structs
+            .get(&s.ident)
+            .map(|info| info.type_params.clone())
+            .unwrap_or_default();
+        let declared: HashSet<String> = type_params.iter().cloned().collect();
+        let self_type = if type_params.is_empty() {
+            Type::Struct(s.ident.clone())
+        } else {
+            Type::App(
+                s.ident.clone(),
+                type_params.iter().cloned().map(Type::Param).collect(),
+            )
+        };
+        let mut fields = Vec::new();
+        let mut field_indices = HashMap::new();
+        for (idx, field) in s.fields.iter().enumerate() {
+            let mut ty = field.ty.clone().unwrap_or(Type::Any);
+            resolve_declared_type_params(
+                &mut ty,
+                &declared,
+                &known_structs,
+                &known_closed,
+                Some(&self_type),
+            )
+            .map_err(|message| semantic(path, field.span, 11, message, None))?;
+            reject_payloadless_label_type(&ty)
+                .map_err(|message| semantic(path, field.span, 11, message, None))?;
+            let default_value = if type_params.is_empty() {
+                match &field.default_value {
+                    Some(expr) => Some(checker.check_expr(expr, Some(&ty))?),
+                    None => None,
+                }
+            } else {
+                None
+            };
+            field_indices.insert(field.ident.clone(), idx as u32);
+            fields.push(hir::StructField {
+                name: field.ident.clone(),
+                ty,
+                default_value,
+                span: field.span,
+            });
+        }
+        if let Some(info) = checker.structs.get_mut(&s.ident) {
+            info.fields = fields.clone();
+            info.field_indices = field_indices;
+        }
+        hir_structs.push(hir::Struct {
+            id: hir::StructId {
+                module: module_name.to_string(),
+                name: s.ident.clone(),
+            },
+            name: s.ident.clone(),
+            type_params,
+            fields,
+            is_public: s.is_public,
+            span: s.span,
+        });
+    }
+
+    for item in items {
         if let Item::FunctionItem(func) = item {
+            let (type_params, when_rules) = match &func.build_ref {
+                Some(name) => function_build_contracts
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_default(),
+                None => (Vec::new(), Vec::new()),
+            };
+            checker.current_type_params = type_params.iter().cloned().collect();
+            let allow_type_params = !type_params.is_empty();
             let mut params = Vec::new();
             for p in &func.params {
                 let mut annot = p.ty.clone();
                 if let Some(a) = &mut annot {
-                    resolve_type(&mut a.ty, &known_structs, &known_closed, None).map_err(|message| {
-                        semantic(path, p.span, 11, message, None)
-                    })?;
+                    checker.resolve_annotation_type(&mut a.ty, p.span, allow_type_params)?;
                     reject_payloadless_label_type(&a.ty).map_err(|message| {
                         semantic(path, p.span, 11, message, None)
                     })?;
@@ -315,20 +417,12 @@ pub fn check_module(
             }
             let mut ret_ty = func.ret_ty.clone();
             if let Some(ty) = &mut ret_ty {
-                resolve_type(ty, &known_structs, &known_closed, None).map_err(|message| {
-                    semantic(path, func.span, 11, message, None)
-                })?;
+                checker.resolve_annotation_type(ty, func.span, allow_type_params)?;
                 reject_payloadless_label_type(ty).map_err(|message| {
                     semantic(path, func.span, 11, message, None)
                 })?;
             }
-            let (type_params, when_rules) = match &func.build_ref {
-                Some(name) => function_build_contracts
-                    .get(name)
-                    .cloned()
-                    .unwrap_or_default(),
-                None => (Vec::new(), Vec::new()),
-            };
+            checker.current_type_params.clear();
             let llvm_name = if func.ident == "main" {
                 crate::naming::INTERNAL_MAIN_FN.to_string()
             } else {
@@ -364,9 +458,7 @@ pub fn check_module(
         if let Item::VarItem(var) = item {
             let mut annot = var.ty.clone();
             if let Some(a) = &mut annot {
-                resolve_type(&mut a.ty, &known_structs, &known_closed, None).map_err(|message| {
-                    semantic(path, var.span, 11, message, None)
-                })?;
+                checker.resolve_annotation_type(&mut a.ty, var.span, false)?;
                 reject_payloadless_label_type(&a.ty).map_err(|message| {
                     semantic(path, var.span, 11, message, None)
                 })?;
@@ -421,15 +513,21 @@ pub fn check_module(
 
     for item in items {
         if let Item::FunctionItem(func) = item {
-            hir_fns.push(checker.check_function(func, &known_structs, &known_closed)?);
+            hir_fns.push(checker.check_function(func)?);
         }
     }
 
+    let struct_specializations = checker
+        .specialization_order
+        .iter()
+        .filter_map(|id| checker.struct_specializations.get(id).cloned())
+        .collect();
     Ok(hir::Module {
         name: module_name.to_string(),
         path: path.to_string(),
         functions: hir_fns,
         structs: hir_structs,
+        struct_specializations,
         globals: hir_globals,
         closed_label_sets: hir_sets,
         atoms: hir_atoms,
@@ -447,10 +545,347 @@ impl Checker<'_> {
         self.structs.insert(
             s.name.clone(),
             StructInfo {
+                id: s.id.clone(),
+                type_params: s.type_params.clone(),
                 fields: s.fields.clone(),
                 field_indices,
             },
         );
+    }
+
+
+    fn unresolved_name(ty: &Type) -> Option<String> {
+        match ty {
+            Type::Param(name) | Type::Named(name) => Some(name.clone()),
+            Type::SelfType => Some("Self".to_string()),
+            Type::App(_, args) => args.iter().find_map(Self::unresolved_name),
+            _ => None,
+        }
+    }
+
+    fn format_app(name: &str, args: &[Type]) -> String {
+        Type::App(name.to_string(), args.to_vec()).to_string()
+    }
+
+    fn specialization_display(id: &hir::StructInstanceId) -> String {
+        Self::format_app(&id.declaration.name, &id.args)
+    }
+
+    fn resolve_annotation_type(
+        &mut self,
+        ty: &mut Type,
+        span: Span,
+        allow_type_params: bool,
+    ) -> Result<Option<hir::StructRef>, SprsError> {
+        match ty.clone() {
+            Type::Named(name) => {
+                if allow_type_params && self.current_type_params.contains(&name) {
+                    *ty = Type::Param(name);
+                    return Ok(None);
+                }
+                if let Some(info) = self.structs.get(&name) {
+                    if !info.type_params.is_empty() {
+                        return Err(semantic(
+                            &self.file,
+                            span,
+                            11,
+                            format!(
+                                "generic struct `{name}` expects {} type argument(s), found 0",
+                                info.type_params.len()
+                            ),
+                            None,
+                        ));
+                    }
+                    *ty = Type::Struct(name.clone());
+                    return Ok(Some(hir::StructRef::Plain(name)));
+                }
+                if self.closed_label_sets.contains_key(&name) {
+                    *ty = Type::ClosedLabelSet(name);
+                    return Ok(None);
+                }
+                Err(semantic(
+                    &self.file,
+                    span,
+                    11,
+                    format!("Undefined type: {name}"),
+                    None,
+                ))
+            }
+            Type::SelfType => Err(semantic(
+                &self.file,
+                span,
+                11,
+                "`Self` is only valid in struct field type annotations".to_string(),
+                None,
+            )),
+            Type::Param(name) => {
+                if allow_type_params && self.current_type_params.contains(&name) {
+                    Ok(None)
+                } else {
+                    Err(semantic(
+                        &self.file,
+                        span,
+                        11,
+                        format!("unresolved type parameter `{name}`"),
+                        None,
+                    ))
+                }
+            }
+            Type::Struct(name) => {
+                if let Some(info) = self.structs.get(&name) {
+                    if !info.type_params.is_empty() {
+                        return Err(semantic(
+                            &self.file,
+                            span,
+                            11,
+                            format!(
+                                "generic struct `{name}` expects {} type argument(s), found 0",
+                                info.type_params.len()
+                            ),
+                            None,
+                        ));
+                    }
+                }
+                Ok(Some(hir::StructRef::Plain(name)))
+            }
+            Type::App(name, args) => {
+                let mut resolved_args = args;
+                for arg in &mut resolved_args {
+                    self.resolve_annotation_type(arg, span, allow_type_params)?;
+                }
+                if is_builtin_type_name(&name) {
+                    validate_type_app(&name, &resolved_args).map_err(|message| {
+                        semantic(&self.file, span, 11, message, None)
+                    })?;
+                    *ty = Type::App(name, resolved_args);
+                    return Ok(None);
+                }
+                if let Some(info) = self.structs.get(&name) {
+                    let expected = info.type_params.len();
+                    if expected != resolved_args.len() {
+                        return Err(semantic(
+                            &self.file,
+                            span,
+                            11,
+                            format!(
+                                "generic struct `{name}` expects {expected} type argument(s), found {}",
+                                resolved_args.len()
+                            ),
+                            None,
+                        ));
+                    }
+                    if expected == 0 {
+                        *ty = Type::Struct(name.clone());
+                        return Ok(Some(hir::StructRef::Plain(name)));
+                    }
+                    if allow_type_params && resolved_args.iter().any(contains_unresolved_type) {
+                        *ty = Type::App(name, resolved_args);
+                        return Ok(None);
+                    }
+                    let instance = self.instantiate_struct(&name, resolved_args, span)?;
+                    *ty = Type::App(name, instance.args.clone());
+                    return Ok(Some(hir::StructRef::Generic(instance)));
+                }
+                Err(semantic(
+                    &self.file,
+                    span,
+                    11,
+                    format!("Undefined type: {name}"),
+                    None,
+                ))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn instantiate_struct(
+        &mut self,
+        name: &str,
+        args: Vec<Type>,
+        span: Span,
+    ) -> Result<hir::StructInstanceId, SprsError> {
+        let mut resolved_args = args;
+        for arg in &mut resolved_args {
+            if contains_unresolved_type(arg) {
+                continue;
+            }
+            self.resolve_annotation_type(arg, span, false)?;
+        }
+        let (decl_id, type_params, template_fields) = {
+            let info = self.structs.get(name).ok_or_else(|| {
+                semantic(
+                    &self.file,
+                    span,
+                    11,
+                    format!("Undefined type: {name}"),
+                    None,
+                )
+            })?;
+            (
+                info.id.clone(),
+                info.type_params.clone(),
+                info.fields.clone(),
+            )
+        };
+        if type_params.len() != resolved_args.len() {
+            return Err(semantic(
+                &self.file,
+                span,
+                11,
+                format!(
+                    "generic struct `{name}` expects {} type argument(s), found {}",
+                    type_params.len(),
+                    resolved_args.len()
+                ),
+                None,
+            ));
+        }
+        let display = Self::format_app(name, &resolved_args);
+        if let Some(unresolved) = resolved_args.iter().find_map(Self::unresolved_name) {
+            return Err(semantic(
+                &self.file,
+                span,
+                11,
+                format!(
+                    "unresolved type parameter `{unresolved}` while specializing `{display}`"
+                ),
+                None,
+            ));
+        }
+        let id = hir::StructInstanceId {
+            declaration: decl_id,
+            args: resolved_args.clone(),
+        };
+        if self.struct_specializations.contains_key(&id) {
+            return Ok(id);
+        }
+        if self.specialization_stack.iter().any(|existing| existing == &id) {
+            return Ok(id);
+        }
+        if let Some(prev) = self
+            .specialization_stack
+            .iter()
+            .find(|existing| existing.declaration == id.declaration)
+        {
+            return Err(semantic(
+                &self.file,
+                span,
+                11,
+                format!(
+                    "generic specialization expands recursively: {} -> {}",
+                    Self::specialization_display(prev),
+                    Self::specialization_display(&id)
+                ),
+                None,
+            ));
+        }
+        let mut bindings = HashMap::new();
+        let mut type_bindings = Vec::new();
+        for (param, arg) in type_params.iter().zip(resolved_args.iter()) {
+            bindings.insert(param.clone(), arg.clone());
+            type_bindings.push((param.clone(), arg.clone()));
+        }
+        self.specialization_stack.push(id.clone());
+        let mut fields = Vec::new();
+        for field in template_fields {
+            let mut ty = crate::front::type_helper::substitute_type(&field.ty, &bindings)
+                .map_err(|reason| {
+                    semantic(
+                        &self.file,
+                        span,
+                        11,
+                        format!("cannot specialize `{display}`: {reason}"),
+                        None,
+                    )
+                })?;
+            self.resolve_annotation_type(&mut ty, field.span, false)?;
+            fields.push(hir::StructField {
+                name: field.name,
+                ty,
+                default_value: None,
+                span: field.span,
+            });
+        }
+        self.specialization_stack.pop();
+        self.struct_specializations.insert(
+            id.clone(),
+            hir::StructSpecialization {
+                id: id.clone(),
+                type_bindings,
+                fields,
+                span,
+            },
+        );
+        self.specialization_order.push(id.clone());
+        Ok(id)
+    }
+
+    fn fields_for_struct_ref(
+        &mut self,
+        struct_ref: &hir::StructRef,
+        span: Span,
+    ) -> Result<(Vec<hir::StructField>, HashMap<String, u32>, String), SprsError> {
+        match struct_ref {
+            hir::StructRef::Plain(name) => {
+                let info = self.structs.get(name).ok_or_else(|| SprsError::Semantic {
+                    code: ErrorCode {
+                        category: ErrorCategory::Semantic,
+                        number: 13,
+                    },
+                    location: Location::new(String::new(), Span::DUMMY),
+                    message: format!("Undefined struct : {name}"),
+                    help: None,
+                })?;
+                Ok((info.fields.clone(), info.field_indices.clone(), name.clone()))
+            }
+            hir::StructRef::Generic(id) => {
+                if !self.struct_specializations.contains_key(id) {
+                    self.instantiate_struct(&id.declaration.name, id.args.clone(), span)?;
+                }
+                let spec = self.struct_specializations.get(id).ok_or_else(|| {
+                    semantic(
+                        &self.file,
+                        span,
+                        11,
+                        format!(
+                            "unresolved type parameter `T` while specializing `{}`",
+                            Self::specialization_display(id)
+                        ),
+                        None,
+                    )
+                })?;
+                let mut indices = HashMap::new();
+                for (idx, field) in spec.fields.iter().enumerate() {
+                    indices.insert(field.name.clone(), idx as u32);
+                }
+                Ok((
+                    spec.fields.clone(),
+                    indices,
+                    Self::specialization_display(id),
+                ))
+            }
+        }
+    }
+
+    fn struct_ref_from_type(
+        &mut self,
+        ty: &Type,
+        span: Span,
+    ) -> Result<hir::StructRef, SprsError> {
+        match ty {
+            Type::Struct(name) => Ok(hir::StructRef::Plain(name.clone())),
+            Type::App(name, args) if self.structs.contains_key(name) => {
+                let instance = self.instantiate_struct(name, args.clone(), span)?;
+                Ok(hir::StructRef::Generic(instance))
+            }
+            _ => Err(semantic(
+                &self.file,
+                span,
+                2,
+                "Undefined variable: ".to_string(),
+                None,
+            )),
+        }
     }
 
     fn location_empty(span: Span) -> Location {
@@ -625,7 +1060,7 @@ impl Checker<'_> {
             }
             ast::Expr::Range(_, _) => Type::Range,
             ast::Expr::Try(inner) => self.infer_type(inner),
-            ast::Expr::StructInit(name, _) => Type::Struct(name.clone()),
+            ast::Expr::StructInit { ty, .. } => ty.clone(),
             ast::Expr::HeapAlloc(_) => Type::Buffer,
             ast::Expr::Destroy(_) => Type::Unit,
             ast::Expr::Exist(_) => Type::Bool,
@@ -659,12 +1094,30 @@ impl Checker<'_> {
             }
             ast::Expr::AttachSlot(_) => Type::Any,
             ast::Expr::FieldAccess(lhs, rhs) => {
-                if let Type::Struct(struct_name) = self.infer_type(lhs) {
-                    if let Some(def) = self.structs.get(&struct_name) {
-                        if let Some(field) = def.fields.iter().find(|f| f.name == *rhs) {
-                            return field.ty.clone();
+                match self.infer_type(lhs) {
+                    Type::Struct(struct_name) => {
+                        if let Some(def) = self.structs.get(&struct_name) {
+                            if let Some(field) = def.fields.iter().find(|f| f.name == *rhs) {
+                                return field.ty.clone();
+                            }
                         }
                     }
+                    Type::App(name, args) => {
+                        if let Some(info) = self.structs.get(&name) {
+                            let key = hir::StructInstanceId {
+                                declaration: info.id.clone(),
+                                args,
+                            };
+                            if let Some(spec) = self.struct_specializations.get(&key) {
+                                if let Some(field) = spec.fields.iter().find(|f| f.name == *rhs) {
+                                    return field.ty.clone();
+                                }
+                            } else if let Some(field) = info.fields.iter().find(|f| f.name == *rhs) {
+                                return field.ty.clone();
+                            }
+                        }
+                    }
+                    _ => {}
                 }
                 Type::Any
             }
@@ -980,8 +1433,10 @@ impl Checker<'_> {
             }
             ast::Expr::FieldAccess(lhs, field) => {
                 let lhs_h = self.check_expr(lhs, None)?;
-                let struct_name = match &lhs_h.ty {
-                    Type::Struct(name) => name.clone(),
+                let struct_ref = match &lhs_h.ty {
+                    Type::Struct(_) | Type::App(_, _) => {
+                        self.struct_ref_from_type(&lhs_h.ty, lhs.span)?
+                    }
                     _ => {
                         return Err(semantic(
                             &self.file,
@@ -998,18 +1453,8 @@ impl Checker<'_> {
                         ));
                     }
                 };
-                let def = self.structs.get(&struct_name).ok_or_else(|| {
-                    SprsError::Semantic {
-                        code: ErrorCode {
-                            category: ErrorCategory::Semantic,
-                            number: 13,
-                        },
-                        location: Location::new(String::new(), Span::DUMMY),
-                        message: format!("Undefined struct : {}", struct_name),
-                        help: None,
-                    }
-                })?;
-                let field_index = *def.field_indices.get(field).ok_or_else(|| {
+                let (fields_meta, indices, _) = self.fields_for_struct_ref(&struct_ref, span)?;
+                let field_index = *indices.get(field).ok_or_else(|| {
                     semantic(
                         &self.file,
                         span,
@@ -1018,25 +1463,39 @@ impl Checker<'_> {
                         None,
                     )
                 })?;
-                let field_ty = def.fields[field_index as usize].ty.clone();
+                let field_ty = fields_meta[field_index as usize].ty.clone();
                 (
                     hir::ExprKind::FieldAccess {
                         receiver: Box::new(lhs_h),
                         field_name: field.clone(),
-                        struct_name,
+                        struct_ref,
                         field_index,
                     },
                     field_ty,
                 )
             }
-            ast::Expr::StructInit(struct_name, fields) => {
-                let fields_h = self.check_struct_init(struct_name, fields)?;
+            ast::Expr::StructInit { ty, fields } => {
+                let mut target = ty.clone();
+                let struct_ref = self
+                    .resolve_annotation_type(&mut target, span, false)?
+                    .ok_or_else(|| {
+                        semantic(
+                            &self.file,
+                            span,
+                            11,
+                            format!("Undefined type: {target}"),
+                            None,
+                        )
+                    })?;
+                let (fields_meta, indices, display) =
+                    self.fields_for_struct_ref(&struct_ref, span)?;
+                let fields_h = self.check_struct_init(&display, &fields_meta, &indices, fields)?;
                 (
                     hir::ExprKind::StructInit {
-                        struct_name: struct_name.clone(),
+                        struct_ref,
                         fields: fields_h,
                     },
-                    Type::Struct(struct_name.clone()),
+                    target,
                 )
             }
             ast::Expr::Atom(name) => {
@@ -1190,26 +1649,19 @@ impl Checker<'_> {
     fn check_struct_init(
         &mut self,
         struct_name: &str,
+        fields_meta: &[hir::StructField],
+        indices: &HashMap<String, u32>,
         field_exprs: &[(String, Spanned<ast::Expr>)],
     ) -> Result<Vec<(u32, hir::Expr)>, SprsError> {
-        let def = self.structs.get(struct_name).ok_or_else(|| SprsError::Semantic {
-            code: ErrorCode {
-                category: ErrorCategory::Semantic,
-                number: 13,
-            },
-            location: Location::new(String::new(), Span::DUMMY),
-            message: format!("Undefined struct : {}", struct_name),
-            help: None,
-        })?;
         for (field_name, field_expr) in field_exprs {
-            if !def.field_indices.contains_key(field_name) {
+            if !indices.contains_key(field_name) {
                 return Err(SprsError::Semantic {
                     code: ErrorCode {
                         category: ErrorCategory::Semantic,
                         number: 13,
                     },
                     location: Location::new(String::new(), field_expr.span),
-                    message: format!("unknown field `{}` in init {}", field_name, struct_name),
+                    message: format!("unknown field `{field_name}` in init {struct_name}"),
                     help: Some("fields must match the struct declaration".to_string()),
                 });
             }
@@ -1222,12 +1674,12 @@ impl Checker<'_> {
                         number: 13,
                     },
                     location: Location::new(String::new(), field_expr.span),
-                    message: format!("duplicate field `{}` in init {}", field_name, struct_name),
+                    message: format!("duplicate field `{field_name}` in init {struct_name}"),
                     help: Some("each field may be initialized at most once".to_string()),
                 });
             }
         }
-        for field in &def.fields {
+        for field in fields_meta {
             let has_explicit = field_exprs.iter().any(|(name, _)| name == &field.name);
             if !has_explicit && field.default_value.is_none() {
                 return Err(SprsError::Semantic {
@@ -1237,8 +1689,8 @@ impl Checker<'_> {
                     },
                     location: Location::new(String::new(), field.span),
                     message: format!(
-                        "missing required field `{}` in init {}",
-                        field.name, struct_name
+                        "missing required field `{}` in init {struct_name}",
+                        field.name
                     ),
                     help: Some(
                         "provide a value or add a default to the field declaration".to_string(),
@@ -1246,10 +1698,8 @@ impl Checker<'_> {
                 });
             }
         }
-        let fields_meta = def.fields.clone();
-        let indices = def.field_indices.clone();
         let mut out = Vec::new();
-        for field in &fields_meta {
+        for field in fields_meta {
             let index = indices[&field.name];
             let expr = if let Some((_, e)) = field_exprs.iter().find(|(n, _)| n == &field.name) {
                 self.check_expr(e, Some(&field.ty))?
@@ -1467,8 +1917,6 @@ impl Checker<'_> {
     fn check_function(
         &mut self,
         func: &ast::Function,
-        known_structs: &HashSet<String>,
-        known_closed: &HashSet<String>,
     ) -> Result<hir::Function, SprsError> {
         self.attachments.clear();
         self.scopes.push(HashMap::new());
@@ -1477,20 +1925,26 @@ impl Checker<'_> {
                 semantic(&self.file, func.span, 11, msg, None)
             })?;
         }
+        let (type_params_early, _) = match &func.build_ref {
+            Some(name) => self
+                .function_build_contracts
+                .get(name)
+                .cloned()
+                .unwrap_or_default(),
+            None => (Vec::new(), Vec::new()),
+        };
+        self.current_type_params = type_params_early.iter().cloned().collect();
+        let allow_type_params = !type_params_early.is_empty();
         let mut ret_ty = func.ret_ty.clone();
         if let Some(ty) = &mut ret_ty {
-            resolve_type(ty, known_structs, known_closed, None).map_err(|message| {
-                semantic(&self.file, func.span, 11, message, None)
-            })?;
+            self.resolve_annotation_type(ty, func.span, allow_type_params)?;
         }
         self.current_fn_ret_ty = ret_ty;
         let mut params = Vec::new();
         for p in &func.params {
             let mut annot = p.ty.clone();
             if let Some(a) = &mut annot {
-                resolve_type(&mut a.ty, known_structs, known_closed, None).map_err(|message| {
-                    semantic(&self.file, p.span, 11, message, None)
-                })?;
+                self.resolve_annotation_type(&mut a.ty, p.span, allow_type_params)?;
                 reject_payloadless_label_type(&a.ty).map_err(|message| {
                     semantic(&self.file, p.span, 11, message, None)
                 })?;
@@ -1527,6 +1981,7 @@ impl Checker<'_> {
             None => (Vec::new(), Vec::new()),
         };
         let ret_ty = self.current_fn_ret_ty.take();
+        self.current_type_params.clear();
         Ok(hir::Function {
             name: func.ident.clone(),
             params,
@@ -1555,11 +2010,8 @@ impl Checker<'_> {
             ast::Stmt::Var(var) => {
                 let mut annot = var.ty.clone();
                 if let Some(a) = &mut annot {
-                    let known_structs: HashSet<String> = self.structs.keys().cloned().collect();
-                    let known_closed: HashSet<String> = self.closed_label_sets.keys().cloned().collect();
-                    resolve_type(&mut a.ty, &known_structs, &known_closed, None).map_err(|message| {
-                        semantic(&self.file, var.span, 11, message, None)
-                    })?;
+                    let allow_type_params = self.current_type_params.len() != 0;
+                    self.resolve_annotation_type(&mut a.ty, var.span, allow_type_params)?;
                     reject_payloadless_label_type(&a.ty).map_err(|message| {
                         semantic(&self.file, var.span, 11, message, None)
                     })?;
@@ -1779,8 +2231,42 @@ mod tests {
     use crate::front::parser::parse_only;
 
     fn check(src: &str) -> Result<hir::Module, SprsError> {
-        let items = parse_only(src, "test.sprs").expect("parse");
-        check_module(&items, "test", "test.sprs", &HashMap::new(), &HashMap::new())
+        let mut items = parse_only(src, "test.sprs").expect("parse");
+        let known_structs = crate::front::function_build::known_structs_from_items(&items);
+        let known_closed = HashSet::new();
+        crate::front::function_build::resolve_function_build_types(
+            &mut items,
+            &known_structs,
+            &known_closed,
+            "test.sprs",
+        )?;
+        let mut registry = crate::front::function_build::FunctionBuildRegistry::default();
+        let local =
+            crate::front::function_build::collect_local_function_builds(&items, "test.sprs", false)?;
+        crate::front::function_build::insert_builds(&mut registry, local)?;
+        crate::front::function_build::lower_functions_with_builds(&mut items, &registry, "test.sprs")?;
+        let mut contracts = HashMap::new();
+        for (name, build) in &registry.builds {
+            contracts.insert(
+                name.clone(),
+                (
+                    build.signature.type_params.clone(),
+                    build.signature.when_rules.clone(),
+                ),
+            );
+        }
+        check_module(&items, "test", "test.sprs", &HashMap::new(), &contracts)
+    }
+
+    fn err_message(err: &SprsError) -> String {
+        match err {
+            SprsError::Semantic { message, .. } | SprsError::Type { message, .. } => message.clone(),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    fn pair_src(body: &str) -> String {
+        format!("struct Pair(T) {{ a >> T, b >> T }}\n{body}\n")
     }
 
     fn first_fn(module: &hir::Module) -> &hir::Function {
@@ -1926,5 +2412,186 @@ fn f() {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    fn pair_fields<'a>(module: &'a hir::Module, args: &[Type]) -> &'a [hir::StructField] {
+        let spec = module
+            .struct_specializations
+            .iter()
+            .find(|s| s.id.args == args)
+            .unwrap_or_else(|| panic!("missing spec {args:?}"));
+        &spec.fields
+    }
+
+    #[test]
+    fn monomorphizes_pair_i64_fields() {
+        let src = pair_src(
+            r#"fn f() {
+    var p = init Pair(i64) { a = 1, b = 2 };
+}"#,
+        );
+        let module = check(&src).expect("check");
+        assert_eq!(module.struct_specializations.len(), 1);
+        let fields = pair_fields(&module, &[Type::TypeI64]);
+        assert_eq!(fields.len(), 2);
+        assert_eq!(fields[0].ty, Type::TypeI64);
+        assert_eq!(fields[1].ty, Type::TypeI64);
+        assert!(!fields.iter().any(|f| crate::front::type_helper::contains_unresolved_type(&f.ty)));
+    }
+
+    #[test]
+    fn monomorphizes_distinct_i64_and_f64() {
+        let src = pair_src(
+            r#"fn f() {
+    var p = init Pair(i64) { a = 1, b = 2 };
+    var q = init Pair(f64) { a = 1.0, b = 2.0 };
+}"#,
+        );
+        let module = check(&src).expect("check");
+        assert_eq!(module.struct_specializations.len(), 2);
+        assert_ne!(
+            module.struct_specializations[0].id,
+            module.struct_specializations[1].id
+        );
+        assert_eq!(pair_fields(&module, &[Type::TypeI64])[0].ty, Type::TypeI64);
+        assert_eq!(pair_fields(&module, &[Type::TypeF64])[0].ty, Type::TypeF64);
+    }
+
+    #[test]
+    fn monomorphizes_owned_str_fields() {
+        let src = pair_src(
+            r#"fn f() {
+    var p = init Pair(str) { a = "x", b = "y" };
+}"#,
+        );
+        let module = check(&src).expect("check");
+        let fields = pair_fields(&module, &[Type::Str]);
+        assert_eq!(fields[0].ty, Type::Str);
+        assert_eq!(fields[1].ty, Type::Str);
+    }
+
+    #[test]
+    fn monomorphizes_nested_pair() {
+        let src = pair_src(
+            r#"fn f() {
+    var inner_a = init Pair(i64) { a = 1, b = 2 };
+    var inner_b = init Pair(i64) { a = 3, b = 4 };
+    var outer = init Pair(Pair(i64)) { a = inner_a, b = inner_b };
+}"#,
+        );
+        let module = check(&src).expect("check");
+        assert_eq!(module.struct_specializations.len(), 2);
+        let inner = Type::App("Pair".into(), vec![Type::TypeI64]);
+        assert!(module.struct_specializations.iter().any(|s| s.id.args == vec![Type::TypeI64]));
+        assert!(module.struct_specializations.iter().any(|s| s.id.args == vec![inner.clone()]));
+        let outer_fields = pair_fields(&module, &[inner]);
+        assert_eq!(outer_fields[0].ty, Type::App("Pair".into(), vec![Type::TypeI64]));
+    }
+
+    #[test]
+    fn deduplicates_same_pair_i64() {
+        let src = pair_src(
+            r#"fn f() {
+    var p = init Pair(i64) { a = 1, b = 2 };
+    var q = init Pair(i64) { a = 3, b = 4 };
+}"#,
+        );
+        let module = check(&src).expect("check");
+        assert_eq!(module.struct_specializations.len(), 1);
+    }
+
+    #[test]
+    fn allows_same_key_self_recursive_generic() {
+        let src = r#"
+struct Node(T) { value >> T, next >> Node(T) }
+fn f(x >> Node(i64)) {}
+"#;
+        let module = check(src).expect("check");
+        assert_eq!(module.struct_specializations.len(), 1);
+        assert_eq!(
+            module.struct_specializations[0].fields[1].ty,
+            Type::App("Node".into(), vec![Type::TypeI64])
+        );
+    }
+
+    #[test]
+    fn rejects_wrong_arity() {
+        let err = check(&pair_src("fn f(x >> Pair(i64, str)) {}")).expect_err("arity");
+        assert_eq!(err_code(&err), (ErrorCategory::Semantic, 11));
+        assert_eq!(
+            err_message(&err),
+            "generic struct `Pair` expects 1 type argument(s), found 2"
+        );
+        let err = check(&pair_src("fn f(x >> Pair) {}")).expect_err("bare");
+        assert_eq!(
+            err_message(&err),
+            "generic struct `Pair` expects 1 type argument(s), found 0"
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_type_parameter_in_field() {
+        let err = check("struct Pair(T) { a >> U }").expect_err("U");
+        assert_eq!(err_code(&err), (ErrorCategory::Semantic, 11));
+        assert_eq!(err_message(&err), "Undefined type: U");
+    }
+
+    #[test]
+    fn rejects_unresolved_specialization_from_type_param() {
+        let src = r#"
+struct Pair(T) { a >> T, b >> T }
+function_build Take {
+    type_param T;
+    params(x >> Pair(T));
+    return_type(i64);
+}
+fn f use Take {
+    return x.a;
+}
+"#;
+        let err = check(src).expect_err("unresolved");
+        assert_eq!(err_code(&err), (ErrorCategory::Semantic, 11));
+        assert_eq!(
+            err_message(&err),
+            "unresolved type parameter `T` while specializing `Pair(T)`"
+        );
+    }
+
+    #[test]
+    fn rejects_expanding_recursive_specialization() {
+        let src = r#"
+struct Grow(T) { next >> Grow(List(T)) }
+fn f(x >> Grow(i64)) {}
+"#;
+        let err = check(src).expect_err("expand");
+        assert_eq!(err_code(&err), (ErrorCategory::Semantic, 11));
+        assert_eq!(
+            err_message(&err),
+            "generic specialization expands recursively: Grow(i64) -> Grow(List(i64))"
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_and_builtin_type_params() {
+        let err = check("struct Pair(T, T) { a >> T }").expect_err("dup");
+        assert_eq!(
+            err_message(&err),
+            "duplicate type parameter `T` in struct `Pair`"
+        );
+        let err = check("struct Pair(List) { a >> i64 }").expect_err("builtin");
+        assert_eq!(
+            err_message(&err),
+            "builtin type name `List` cannot be used as a type parameter"
+        );
+    }
+
+    #[test]
+    fn rejects_generic_field_defaults() {
+        let err = check("struct Pair(T) { a >> T = 1, b >> T }").expect_err("default");
+        assert_eq!(err_code(&err), (ErrorCategory::Semantic, 11));
+        assert_eq!(
+            err_message(&err),
+            "generic struct field defaults are not supported in Phase 1; initialize the field explicitly"
+        );
     }
 }

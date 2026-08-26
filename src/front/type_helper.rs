@@ -7,7 +7,7 @@
 /// Surface annotations use `List(T)` / `List(Any)`, represented as
 /// `Type::App("List", ...)`. `App` / `Param` / `Atom` are compile-time only.
 /// Runtime tag 9 is `Atom`: an interned, immutable symbol with no payload.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Type {
     Any,
     Int,
@@ -343,7 +343,11 @@ pub fn resolve_type(
             for arg in &mut *args {
                 resolve_type(arg, known_structs, known_closed_sets, self_struct)?;
             }
-            validate_type_app(name, args)
+            if is_builtin_type_name(name) {
+                validate_type_app(name, args)
+            } else {
+                Ok(())
+            }
         }
         _ => Ok(()),
     }
@@ -379,9 +383,93 @@ pub fn validate_type_app(name: &str, args: &[Type]) -> Result<(), String> {
                 Err(format!("{name} does not take type arguments"))
             }
         }
-        _ => Err(format!(
-            "unknown type constructor `{name}`; builtin constructors are List(T), Process(T), Label(:name, T)"
-        )),
+        _ => Ok(()),
+    }
+}
+
+/// Builtin type constructor names that cannot be shadowed by a type parameter.
+pub fn is_builtin_type_name(name: &str) -> bool {
+    matches!(
+        name,
+        "Any" | "List" | "Label" | "Process" | "Range" | "Buffer" | "RawPtr" | "Self"
+    )
+}
+
+/// Rewrite declared type-parameter names to `Type::Param`, resolve other
+/// `Named` / `Self` / nested `App` annotations, and leave user generic
+/// constructors for the semantic checker.
+pub fn resolve_declared_type_params(
+    ty: &mut Type,
+    declared: &std::collections::HashSet<String>,
+    known_structs: &std::collections::HashSet<String>,
+    known_closed_sets: &std::collections::HashSet<String>,
+    self_type: Option<&Type>,
+) -> Result<(), String> {
+    match ty {
+        Type::Named(name) => {
+            let name = name.clone();
+            if declared.contains(&name) {
+                *ty = Type::Param(name);
+                Ok(())
+            } else {
+                resolve_type(ty, known_structs, known_closed_sets, None)
+            }
+        }
+        Type::SelfType => match self_type {
+            Some(resolved) => {
+                *ty = resolved.clone();
+                Ok(())
+            }
+            None => Err("`Self` is only valid in struct field type annotations".to_string()),
+        },
+        Type::App(_, args) => {
+            for arg in args {
+                resolve_declared_type_params(
+                    arg,
+                    declared,
+                    known_structs,
+                    known_closed_sets,
+                    self_type,
+                )?;
+            }
+            match ty {
+                Type::App(name, args) if is_builtin_type_name(name) => {
+                    validate_type_app(name, args)
+                }
+                _ => Ok(()),
+            }
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Substitute concrete bindings into `Type::Param` and nested `Type::App`.
+pub fn substitute_type(
+    ty: &Type,
+    bindings: &std::collections::HashMap<String, Type>,
+) -> Result<Type, String> {
+    match ty {
+        Type::Param(name) => bindings
+            .get(name)
+            .cloned()
+            .ok_or_else(|| format!("unresolved type parameter `{name}`")),
+        Type::App(name, args) => {
+            let mut substituted = Vec::with_capacity(args.len());
+            for arg in args {
+                substituted.push(substitute_type(arg, bindings)?);
+            }
+            Ok(Type::App(name.clone(), substituted))
+        }
+        other => Ok(other.clone()),
+    }
+}
+
+/// True when a type still contains `Param` / `Named` / `SelfType`.
+pub fn contains_unresolved_type(ty: &Type) -> bool {
+    match ty {
+        Type::Param(_) | Type::Named(_) | Type::SelfType => true,
+        Type::App(_, args) => args.iter().any(contains_unresolved_type),
+        _ => false,
     }
 }
 
@@ -681,7 +769,7 @@ mod tests {
         assert!(validate_type_app("List", &[Type::Int, Type::Str]).is_err());
         assert!(validate_type_app("Process", &[Type::Int]).is_ok());
         assert!(validate_type_app("Range", &[Type::Int]).is_err());
-        assert!(validate_type_app("Result", &[Type::Int]).is_err());
+        assert!(validate_type_app("Result", &[Type::Int]).is_ok());
     }
 
     #[test]

@@ -51,12 +51,17 @@ impl<'ctx> Compiler<'ctx> {
         let mut private_struct_fields: Vec<String> = Vec::new();
         let mut private_atom_defs: Vec<String> = Vec::new();
         for s in &hir_mod.structs {
-            self.register_hir_struct(s)?;
+            if s.type_params.is_empty() {
+                self.register_hir_struct(s)?;
+            }
             if !s.is_public {
                 for field in &s.fields {
                     private_struct_fields.push(format!("{}.{}", s.name, field.name));
                 }
             }
+        }
+        for specialization in &hir_mod.struct_specializations {
+            self.ensure_struct_specialization(specialization)?;
         }
         for set in &hir_mod.closed_label_sets {
             self.register_closed_label_set_hir(set)?;
@@ -383,7 +388,12 @@ impl<'ctx> Compiler<'ctx> {
         let mut fb_structs = Vec::new();
         for (name, def) in &self.struct_defs {
             fb_structs.push(crate::front::hir::Struct {
+                id: crate::front::hir::StructId {
+                    module: String::from("%function_build_structs"),
+                    name: name.clone(),
+                },
                 name: name.clone(),
+                type_params: Vec::new(),
                 fields: def
                     .fields
                     .iter()
