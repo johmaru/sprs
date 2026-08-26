@@ -36,6 +36,7 @@ pub enum Expr {
     Increment(Box<Spanned<Expr>>),                                  // Ident
     Decrement(Box<Spanned<Expr>>),                                  // Ident
     Neg(Box<Spanned<Expr>>),                                        // Unary minus, e.g. -x
+    Deref(Box<Spanned<Expr>>),                                      // Prefix *, e.g. *p
     List(Vec<Spanned<Expr>>),                                       // Elements
     Range(Box<Spanned<Expr>>, Box<Spanned<Expr>>),                  // Start, End
     Index(Box<Spanned<Expr>>, Box<Spanned<Expr>>),                  // Collection, Index
@@ -275,6 +276,11 @@ pub enum Stmt {
     IndexAssign {
         collection: Spanned<Expr>,
         index: Spanned<Expr>,
+        expr: Spanned<Expr>,
+        span: Span,
+    },
+    DerefAssign {
+        pointer: Spanned<Expr>,
         expr: Spanned<Expr>,
         span: Span,
     },

@@ -61,6 +61,14 @@ fn main() {
 }
 ```
 
+**型付きポインタの間接参照（`Ptr(T)`）:**
+
+所有しない読み取り `*p` では pointee はその場に残ります。所有権を受け取る文脈 — 変数初期化（`var x = *p`）、引数、`return`、list / label / 構造体への格納 — では既存の `__clone` 経路で pointee を clone します。
+
+置換代入 `*p = value` は右辺の所有値を先に用意し、古い pointee を drop してから格納します。そのため `*p = *p` は drop の前に clone します。ポインタ値そのものは所有しないアドレスであり、追加の drop 対象にはしません。
+
+`@move(*p)` は未実装です（`@move` は引き続き変数だけを受けます）。未初期化領域への初期化も未実装です。
+
 Buffer は他のヒープ値と同じ自動 drop 経路に参加します。
 明示的な寿命切断が必要なときは `destroy` / `defer destroy(...)` を使ってください。
 Buffer の生存、`unsafe`、RawPtr、`defer` の順序の詳細は [Buffer と unsafe](../language/buffers-and-unsafe.md) にあります。

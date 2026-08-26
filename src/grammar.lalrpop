@@ -566,6 +566,8 @@ Stmt: Spanned<Stmt> = {
                     Ok(Spanned::new(Stmt::Assign(AssignStmt { name: id, expr: val, span: Span::new(start, end) }), Span::new(start, end)))
                 } else if let Expr::Index(collection, index) = e.node {
                     Ok(Spanned::new(Stmt::IndexAssign { collection: *collection, index: *index, expr: val, span: Span::new(start, end) }, Span::new(start, end)))
+                } else if let Expr::Deref(pointer) = e.node {
+                    Ok(Spanned::new(Stmt::DerefAssign { pointer: *pointer, expr: val, span: Span::new(start, end) }, Span::new(start, end)))
                 } else {
                     Err(type_surface::syn(
                         5,
@@ -808,6 +810,7 @@ MulAndDivAndMod: Spanned<Expr> = {
 
 Unary: Spanned<Expr> = {
     <start:@L> Minus <p:Unary> <end:@R> => Spanned::new(Expr::Neg(Box::new(p)), Span::new(start, end)),
+    <start:@L> Star <p:Unary> <end:@R> => Spanned::new(Expr::Deref(Box::new(p)), Span::new(start, end)),
     <p: Postfix> => p,
 }
 

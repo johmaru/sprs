@@ -106,6 +106,13 @@ pub fn named_type(
             "List requires exactly one type argument",
             Some("use List(T) or List(Any)".to_string()),
         )),
+        ("Ptr", [_]) => Ok(Type::App("Ptr".into(), args)),
+        ("Ptr", _) => Err(sem(
+            11,
+            span,
+            "Ptr requires exactly one type argument",
+            Some("use Ptr(T)".to_string()),
+        )),
         ("Process", [_]) => Ok(Type::App("Process".into(), args)),
         ("Process", _) => Err(sem(
             11,

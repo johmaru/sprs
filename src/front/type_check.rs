@@ -6,7 +6,7 @@ use crate::front::label_name::{LabelName, LabelNamePart};
 use crate::front::span::{Span, Spanned};
 use crate::front::type_helper::{
     Type, TypeAnnot, contains_unresolved_type, is_builtin_type_name, is_error_label_type,
-    join_list_element_types, list_element, list_type, reject_payloadless_label_type,
+    join_list_element_types, list_element, list_type, ptr_element, reject_payloadless_label_type,
     resolve_declared_type_params, types_assignable, types_compatible,
     validate_type_app,
 };
@@ -668,6 +668,10 @@ fn substitute_stmt(stmt: &mut ast::Stmt, bindings: &HashMap<String, Type>) -> Re
             substitute_expr(&mut index.node, bindings)?;
             substitute_expr(&mut expr.node, bindings)?;
         }
+        ast::Stmt::DerefAssign { pointer, expr, .. } => {
+            substitute_expr(&mut pointer.node, bindings)?;
+            substitute_expr(&mut expr.node, bindings)?;
+        }
         ast::Stmt::Expr(expr) | ast::Stmt::Defer { expr, .. } => {
             substitute_expr(&mut expr.node, bindings)?;
         }
@@ -721,6 +725,7 @@ fn substitute_expr(expr: &mut ast::Expr, bindings: &HashMap<String, Type>) -> Re
         | ast::Expr::Increment(inner)
         | ast::Expr::Decrement(inner)
         | ast::Expr::Neg(inner)
+        | ast::Expr::Deref(inner)
         | ast::Expr::Try(inner)
         | ast::Expr::HeapAlloc(inner)
         | ast::Expr::Destroy(inner)
@@ -2234,6 +2239,9 @@ impl Checker<'_> {
             ast::Expr::Index(collection, _) => list_element(&self.infer_type(collection))
                 .cloned()
                 .unwrap_or(Type::Any),
+            ast::Expr::Deref(inner) => ptr_element(&self.infer_type(inner))
+                .cloned()
+                .unwrap_or(Type::Any),
         }
     }
 
@@ -2439,6 +2447,22 @@ impl Checker<'_> {
                 let h = self.check_expr(inner, None)?;
                 let ty = h.ty.clone();
                 (hir::ExprKind::Neg(Box::new(h)), ty)
+            }
+            ast::Expr::Deref(inner) => {
+                let h = self.check_expr(inner, None)?;
+                let Some(pointee) = ptr_element(&h.ty) else {
+                    return Err(type_err(
+                        &self.file,
+                        span,
+                        1,
+                        format!("Type mismatch: dereference expects Ptr(T), got {}", h.ty),
+                        Some("Ptr(T)".to_string()),
+                        Some(format!("{}", h.ty)),
+                        None,
+                    ));
+                };
+                let ty = pointee.clone();
+                (hir::ExprKind::Deref(Box::new(h)), ty)
             }
             ast::Expr::Call { name, type_args, args } => {
                 let (callee, ret_ty) = self.resolve_checked_call(name, type_args, args, span)?;
@@ -3283,6 +3307,44 @@ impl Checker<'_> {
                     expr,
                 }
             }
+            ast::Stmt::DerefAssign {
+                pointer,
+                expr,
+                span: da_span,
+            } => {
+                let pointer_h = self.check_expr(pointer, None)?;
+                let Some(pointee) = ptr_element(&pointer_h.ty) else {
+                    return Err(type_err(
+                        &self.file,
+                        *da_span,
+                        1,
+                        format!(
+                            "Type mismatch: dereference expects Ptr(T), got {}",
+                            pointer_h.ty
+                        ),
+                        Some("Ptr(T)".to_string()),
+                        Some(format!("{}", pointer_h.ty)),
+                        None,
+                    ));
+                };
+                let pointee = pointee.clone();
+                let rhs = self.check_expr_in(expr, Some(&pointee))?;
+                if !types_assignable(&pointee, &rhs.ty) {
+                    return Err(self.type_mismatch_assign(
+                        *da_span,
+                        format!(
+                            "Type mismatch: cannot assign {} to dereference of type {}",
+                            rhs.ty, pointee
+                        ),
+                        &pointee,
+                        &rhs.ty,
+                    ));
+                }
+                hir::StmtKind::DerefAssign {
+                    pointer: pointer_h,
+                    expr: rhs,
+                }
+            }
         };
         Ok(hir::Stmt { kind, span })
     }
@@ -3891,5 +3953,65 @@ fn f(x >> Grow(i64)) {}
             err_message(&err),
             "generic struct field defaults are not supported in Phase 1; initialize the field explicitly"
         );
+    }
+
+    #[test]
+    fn ptr_deref_preserves_pointee_type() {
+        let src = r#"
+fn read(p >> Ptr(i64)) >> i64 { return *p; }
+"#;
+        let module = check(src).expect("check");
+        let body = &first_fn(&module).body;
+        let hir::StmtKind::Return(Some(ret)) = &body[0].kind else {
+            panic!("expected return");
+        };
+        assert_eq!(ret.ty, Type::TypeI64);
+        assert!(matches!(ret.kind, hir::ExprKind::Deref(_)));
+
+        let err = check("fn bad(p >> Ptr(i64), q >> Ptr(str)) { p = q; }").expect_err("ptr mismatch");
+        assert_eq!(err_code(&err), (ErrorCategory::Type, 6));
+    }
+
+    #[test]
+    fn rejects_non_pointer_deref() {
+        let src = r#"
+fn bad(x >> i64) { @println(*x); }
+"#;
+        let err = check(src).expect_err("non-ptr");
+        assert_eq!(err_code(&err), (ErrorCategory::Type, 1));
+        assert_eq!(
+            err_message(&err),
+            "Type mismatch: dereference expects Ptr(T), got i64"
+        );
+    }
+
+    #[test]
+    fn rejects_deref_assignment_type_mismatch() {
+        let src = r#"
+fn bad(p >> Ptr(i64)) { *p = "x"; }
+"#;
+        let err = check(src).expect_err("deref assign");
+        assert_eq!(err_code(&err), (ErrorCategory::Type, 6));
+        assert_eq!(
+            err_message(&err),
+            "Type mismatch: cannot assign str to dereference of type i64"
+        );
+    }
+
+    #[test]
+    fn substitutes_generic_ptr_pointee() {
+        let src = r#"
+fn read<T>(p >> Ptr(T)) >> T { return *p; }
+fn main(p >> Ptr(i64)) >> i64 { return read(p); }
+"#;
+        let module = check(src).expect("check");
+        assert_eq!(module.function_specializations.len(), 1);
+        let spec = &module.function_specializations[0];
+        assert_eq!(spec.function.ret_ty.as_ref(), Some(&Type::TypeI64));
+        let hir::StmtKind::Return(Some(ret)) = &spec.function.body[0].kind else {
+            panic!("expected specialized return");
+        };
+        assert_eq!(ret.ty, Type::TypeI64);
+        assert!(matches!(ret.kind, hir::ExprKind::Deref(_)));
     }
 }

@@ -36,6 +36,7 @@ pub enum ExprKind {
     Increment(Box<Expr>),
     Decrement(Box<Expr>),
     Neg(Box<Expr>),
+    Deref(Box<Expr>),
     List(Vec<Expr>),
     Range(Box<Expr>, Box<Expr>),
     Index(Box<Expr>, Box<Expr>),
@@ -106,6 +107,10 @@ pub enum StmtKind {
     IndexAssign {
         collection: Expr,
         index: Expr,
+        expr: Expr,
+    },
+    DerefAssign {
+        pointer: Expr,
         expr: Expr,
     },
     Expr(Expr),
@@ -185,6 +190,9 @@ fn stmt_unresolved(stmt: &Stmt) -> bool {
         StmtKind::IndexAssign { collection, index, expr } => {
             expr_unresolved(collection) || expr_unresolved(index) || expr_unresolved(expr)
         }
+        StmtKind::DerefAssign { pointer, expr } => {
+            expr_unresolved(pointer) || expr_unresolved(expr)
+        }
         StmtKind::Expr(expr) | StmtKind::Defer { expr } | StmtKind::Return(Some(expr)) => {
             expr_unresolved(expr)
         }
@@ -216,6 +224,7 @@ fn expr_unresolved(expr: &Expr) -> bool {
         | ExprKind::Increment(inner)
         | ExprKind::Decrement(inner)
         | ExprKind::Neg(inner)
+        | ExprKind::Deref(inner)
         | ExprKind::Try(inner)
         | ExprKind::HeapAlloc(inner)
         | ExprKind::Destroy(inner)

@@ -1349,4 +1349,125 @@ fn f() {
         let msg = format!("{err:?}");
         assert!(msg.contains("Range does not take type arguments"), "{msg}");
     }
+
+    #[test]
+    fn parses_ptr_type_and_deref_place() {
+        let src = r#"
+fn read(p >> Ptr(i64)) >> i64 { return *p; }
+fn nest(pp >> Ptr(Ptr(str))) >> str { return **pp; }
+fn write(p >> Ptr(i64)) { *p = 7; }
+"#;
+        let items = parse_only(src, "ptr.sprs").expect("parse");
+        let ptr_i64 = Type::App("Ptr".into(), vec![Type::TypeI64]);
+        let ptr_ptr_str = Type::App(
+            "Ptr".into(),
+            vec![Type::App("Ptr".into(), vec![Type::Str])],
+        );
+        let Item::FunctionItem(read) = &items[0] else {
+            panic!("expected read");
+        };
+        assert_eq!(read.ret_ty.as_ref(), Some(&Type::TypeI64));
+        assert_eq!(
+            read.params[0].ty.as_ref().map(|a| &a.ty),
+            Some(&ptr_i64)
+        );
+        let Stmt::Return(Some(ret)) = &read.blk[0].node else {
+            panic!("expected return *p");
+        };
+        match &ret.node {
+            Expr::Deref(inner) => match &inner.node {
+                Expr::Var(name) => assert_eq!(name, "p"),
+                other => panic!("expected *p, got {other:?}"),
+            },
+            other => panic!("expected deref, got {other:?}"),
+        }
+
+        let Item::FunctionItem(nest) = &items[1] else {
+            panic!("expected nest");
+        };
+        assert_eq!(nest.params[0].ty.as_ref().map(|a| &a.ty), Some(&ptr_ptr_str));
+        let Stmt::Return(Some(ret)) = &nest.blk[0].node else {
+            panic!("expected return **pp");
+        };
+        match &ret.node {
+            Expr::Deref(outer) => match &outer.node {
+                Expr::Deref(inner) => match &inner.node {
+                    Expr::Var(name) => assert_eq!(name, "pp"),
+                    other => panic!("expected **pp, got {other:?}"),
+                },
+                other => panic!("expected nested deref, got {other:?}"),
+            },
+            other => panic!("expected deref, got {other:?}"),
+        }
+
+        let Item::FunctionItem(write) = &items[2] else {
+            panic!("expected write");
+        };
+        match &write.blk[0].node {
+            Stmt::DerefAssign { pointer, expr, .. } => {
+                assert!(matches!(&pointer.node, Expr::Var(name) if name == "p"));
+                assert!(matches!(&expr.node, Expr::Number(7)));
+            }
+            other => panic!("expected *p = 7, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_ptr_arity() {
+        for src in [
+            "fn f(x >> Ptr) { return; }
+",
+            "fn f(x >> Ptr()) { return; }
+",
+            "fn f(x >> Ptr(i64, str)) { return; }
+",
+        ] {
+            let err = parse_only(src, "ptr_arity.sprs").unwrap_err();
+            let msg = format!("{err:?}");
+            assert!(
+                msg.contains("Ptr requires exactly one type argument"),
+                "{src} => {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn preserves_star_precedence() {
+        let src = r#"
+fn mul(a >> i64, b >> i64) >> i64 { return a * b; }
+fn mul_deref(a >> i64, p >> Ptr(i64)) >> i64 { return a * *p; }
+"#;
+        let items = parse_only(src, "star.sprs").expect("parse");
+        let Item::FunctionItem(mul) = &items[0] else {
+            panic!("expected mul");
+        };
+        let Stmt::Return(Some(ret)) = &mul.blk[0].node else {
+            panic!("expected return");
+        };
+        match &ret.node {
+            Expr::Mul(lhs, rhs) => {
+                assert!(matches!(&lhs.node, Expr::Var(name) if name == "a"));
+                assert!(matches!(&rhs.node, Expr::Var(name) if name == "b"));
+            }
+            other => panic!("expected a * b, got {other:?}"),
+        }
+        let Item::FunctionItem(mul_deref) = &items[1] else {
+            panic!("expected mul_deref");
+        };
+        let Stmt::Return(Some(ret)) = &mul_deref.blk[0].node else {
+            panic!("expected return");
+        };
+        match &ret.node {
+            Expr::Mul(lhs, rhs) => {
+                assert!(matches!(&lhs.node, Expr::Var(name) if name == "a"));
+                match &rhs.node {
+                    Expr::Deref(inner) => {
+                        assert!(matches!(&inner.node, Expr::Var(name) if name == "p"));
+                    }
+                    other => panic!("expected *p rhs, got {other:?}"),
+                }
+            }
+            other => panic!("expected a * *p, got {other:?}"),
+        }
+    }
 }

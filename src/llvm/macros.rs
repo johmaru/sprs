@@ -55,18 +55,7 @@ pub fn call_builtin_macro_list_push<'ctx>(
     let list_ptr = self_compiler
         .compile_expr(&args[0], module)?
         .into_pointer_value();
-    let compiled_val_ptr = self_compiler
-        .compile_expr(&args[1], module)?
-        .into_pointer_value();
-    let (val_ptr, source_var) = if let hir::ExprKind::Var(name) = &args[1].kind {
-        if self_compiler.get_variables(name).is_some() {
-            (compiled_val_ptr, Some((compiled_val_ptr.into(), name)))
-        } else {
-            (compiled_val_ptr, None)
-        }
-    } else {
-        (compiled_val_ptr, None)
-    };
+    let val_ptr = self_compiler.compile_owned_expr(&args[1], module, "list_push_owned")?;
 
     let list_data_ptr = self_compiler
         .builder
@@ -119,10 +108,6 @@ pub fn call_builtin_macro_list_push<'ctx>(
             "list_push_call",
         )
         .unwrap();
-
-    if let Some((source_ptr, source_name)) = source_var {
-        move_variable(self_compiler, &source_ptr, source_name);
-    }
 
     let res_ptr = create_entry_block_alloca(self_compiler, "list_push_res_alloc")?;
     self_compiler.tag_only_runtime_value_store(res_ptr, Tag::Unit as u64, "unit_res");

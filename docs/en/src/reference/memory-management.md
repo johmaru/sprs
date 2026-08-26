@@ -62,4 +62,12 @@ fn main() {
 }
 ```
 
+**Typed pointer dereference (`Ptr(T)`):**
+
+A non-owning read of `*p` keeps the pointee in place. Contexts that take ownership — variable initialization (`var x = *p`), arguments, `return`, and storing into a list, label, or struct — clone the pointee with the existing `__clone` path.
+
+Replacement assignment `*p = value` prepares the owned right-hand side first, drops the old pointee, then stores the new value. `*p = *p` therefore clones before drop. The pointer value itself is a non-owning address and is not an extra drop target.
+
+`@move(*p)` is not implemented (`@move` still requires a variable). Initialization of uninitialized pointee storage is not implemented.
+
 Buffers participate in the same auto-drop path as other heap values. Prefer `destroy` / `defer destroy(...)` when you need an explicit lifetime cut. Details of Buffer liveness, `unsafe`, RawPtr, and `defer` order are in [Buffers and Unsafe](../language/buffers-and-unsafe.md).

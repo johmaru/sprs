@@ -6,7 +6,6 @@ use inkwell::{
     values::{BasicValueEnum, IntValue, PointerValue, ValueKind},
 };
 
-use crate::llvm::variable::move_variable;
 use crate::{
     front::hir,
     front::label_name::{LabelName, LabelNamePart},
@@ -197,18 +196,7 @@ pub fn create_list_from_expr<'ctx>(
 
     let list_push_fn = self_compiler.get_runtime_fn(module, "__list_push")?;
     for elem in elements {
-        let compiled_val_ptr = self_compiler
-            .compile_expr(elem, module)?
-            .into_pointer_value();
-        let (val_ptr, source_var) = if let hir::ExprKind::Var(name) = &elem.kind {
-            if self_compiler.get_variables(name).is_some() {
-                (compiled_val_ptr, Some((compiled_val_ptr.into(), name)))
-            } else {
-                (compiled_val_ptr, None)
-            }
-        } else {
-            (compiled_val_ptr, None)
-        };
+        let val_ptr = self_compiler.compile_owned_expr(elem, module, "list_elem_owned")?;
 
         // `__list_push(list_handle: i64, tag: i32, data: i64)` — pass the
         // handle as the first arg, with tag/data extracted from the value.
@@ -219,10 +207,6 @@ pub fn create_list_from_expr<'ctx>(
             &[list_handle.into()],
             true,
         );
-
-        if let Some((source_ptr, source_name)) = source_var {
-            move_variable(self_compiler, &source_ptr, source_name);
-        }
     }
     Ok(list_handle)
 }
@@ -362,21 +346,8 @@ pub fn create_label<'ctx>(
     payload: &hir::Expr,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
-    let initial_payload_ptr = self_compiler
-        .compile_expr(payload, module)?
-        .into_pointer_value();
-
-    let mut source_to_move: Option<(BasicValueEnum<'ctx>, String)> = None;
-    let final_payload_ptr = if let hir::ExprKind::Var(source_name) = &payload.kind {
-        if self_compiler.get_variables(source_name).is_some() {
-            source_to_move = Some((initial_payload_ptr.into(), source_name.clone()));
-            initial_payload_ptr
-        } else {
-            initial_payload_ptr
-        }
-    } else {
-        initial_payload_ptr
-    };
+    let final_payload_ptr =
+        self_compiler.compile_owned_expr(payload, module, "label_payload_owned")?;
 
     let tag_ptr = self_compiler
         .builder
@@ -466,9 +437,6 @@ pub fn create_label<'ctx>(
         "label_res_store",
     );
 
-    if let Some((source_ptr, source_name)) = source_to_move {
-        move_variable(self_compiler, &source_ptr, &source_name);
-    }
     Ok(result_ptr.into())
 }
 
@@ -1036,68 +1004,8 @@ pub fn prepare_call_args<'ctx>(
 ) -> Result<Vec<inkwell::values::BasicMetadataValueEnum<'ctx>>, SprsError> {
     let mut compiled_args = Vec::with_capacity(args.len());
     for arg in args {
-        let compiled_arg_ptr = self_compiler
-            .compile_expr(arg, module)?
-            .into_pointer_value();
-        let (arg_ptr, source_var) = if let hir::ExprKind::Var(name) = &arg.kind {
-            if self_compiler.get_variables(name).is_some() {
-                (compiled_arg_ptr, Some((compiled_arg_ptr.into(), name)))
-            } else {
-                (compiled_arg_ptr, None)
-            }
-        } else {
-            (compiled_arg_ptr, None)
-        };
-
-        let temp_arg_ptr = create_entry_block_alloca(self_compiler, "compile_expr_arg_alloc")?;
-        let val_tag_ptr = self_compiler
-            .builder
-            .build_struct_gep(self_compiler.runtime_value_type, arg_ptr, 0, "val_tag_ptr")
-            .unwrap();
-        let val_data_ptr = self_compiler
-            .builder
-            .build_struct_gep(self_compiler.runtime_value_type, arg_ptr, 1, "val_data_ptr")
-            .unwrap();
-        let val_tag = self_compiler
-            .builder
-            .build_load(self_compiler.context.i32_type(), val_tag_ptr, "val_tag")
-            .unwrap();
-        let val_data = self_compiler
-            .builder
-            .build_load(self_compiler.context.i64_type(), val_data_ptr, "val_data")
-            .unwrap();
-
-        let temp_tag_ptr = self_compiler
-            .builder
-            .build_struct_gep(
-                self_compiler.runtime_value_type,
-                temp_arg_ptr,
-                0,
-                "temp_tag_ptr",
-            )
-            .unwrap();
-        let temp_data_ptr = self_compiler
-            .builder
-            .build_struct_gep(
-                self_compiler.runtime_value_type,
-                temp_arg_ptr,
-                1,
-                "temp_data_ptr",
-            )
-            .unwrap();
-        self_compiler
-            .builder
-            .build_store(temp_tag_ptr, val_tag)
-            .unwrap();
-        self_compiler
-            .builder
-            .build_store(temp_data_ptr, val_data)
-            .unwrap();
-        compiled_args.push(temp_arg_ptr.into());
-
-        if let Some((source_ptr, source_name)) = source_var {
-            move_variable(self_compiler, &source_ptr, source_name);
-        }
+        let arg_ptr = self_compiler.compile_owned_expr(arg, module, "compile_expr_arg_alloc")?;
+        compiled_args.push(arg_ptr.into());
     }
     Ok(compiled_args)
 }

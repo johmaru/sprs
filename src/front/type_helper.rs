@@ -201,6 +201,17 @@ pub fn list_element(ty: &Type) -> Option<&Type> {
     }
 }
 
+/// Pointee type of `Ptr(T)`.
+pub fn ptr_element(ty: &Type) -> Option<&Type> {
+    match ty {
+        Type::App(name, args) if name == "Ptr" => match args.as_slice() {
+            [elem] => Some(elem),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// Result type tracked by `Process(T)`, if this is a process constructor app.
 #[allow(dead_code)]
 pub fn process_result_type(ty: &Type) -> Option<&Type> {
@@ -363,6 +374,13 @@ pub fn validate_type_app(name: &str, args: &[Type]) -> Result<(), String> {
                 Err("List requires exactly one type argument".to_string())
             }
         }
+        "Ptr" => {
+            if args.len() == 1 {
+                Ok(())
+            } else {
+                Err("Ptr requires exactly one type argument".to_string())
+            }
+        }
         "Process" => {
             if args.len() == 1 {
                 Ok(())
@@ -391,7 +409,7 @@ pub fn validate_type_app(name: &str, args: &[Type]) -> Result<(), String> {
 pub fn is_builtin_type_name(name: &str) -> bool {
     matches!(
         name,
-        "Any" | "List" | "Label" | "Process" | "Range" | "Buffer" | "RawPtr" | "Self"
+        "Any" | "List" | "Ptr" | "Label" | "Process" | "Range" | "Buffer" | "RawPtr" | "Self"
     )
 }
 

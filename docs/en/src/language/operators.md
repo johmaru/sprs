@@ -6,6 +6,7 @@
 - Range creation: `..` (e.g., `1..10`)
 - indexing: `list[index]` / `buf[index]` (Buffer uses byte get/set). `List(T)[i] = v` type-checks `v` against `T`.
 - Unary minus: `-x` (`Expr::Neg`).
+- Prefix dereference: `*p` (`Expr::Deref`). Same unary precedence as `-x`. `*p` reads the pointee; `*p = value` is an assignment target (`Stmt::DerefAssign`). Nested `**pp` is allowed. Pointer arithmetic (`Ptr(T) + usize`) is not implemented.
 - String concatenation: `str + str` calls `__string_concat`. It is not integer addition.
 - There are no bitwise operator tokens. Shifts and logical not are macros: [`@lshift`](../reference/built-in-macros.md), [`@rshift`](../reference/built-in-macros.md), [`@not`](../reference/built-in-macros.md).
 

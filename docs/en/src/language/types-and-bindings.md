@@ -17,6 +17,7 @@ Surface types have one spelling. Old aliases (`int`, `fp`, `fp16`/`fp32`/`fp64`,
 | `Range` | Range |
 | `Buffer` | Fixed-size zero-initialized byte array |
 | `RawPtr` | Bare address from `@raw(buf)` |
+| `Ptr(T)` | Typed pointer. Always one argument. The pointee type is compile-time only; runtime still uses `{ tag, data }` with `Tag::RawPtr` as a bare address. There is no implicit conversion with `RawPtr`. |
 | `Label` | Broad label: payloadless atoms and payload labels |
 | `:name` | Exact payloadless atom (`:ready`) |
 | `Label(:name, T)` | Exact payload label. First argument must be `:name`. |
@@ -30,7 +31,7 @@ Broad `Label` accepts exact atoms, payload labels, closed label sets, and the ru
 
 `Self` is valid in struct field types (including `List(Self)`) and in method signatures and bodies. See [Structs](structs.md).
 
-Type application is compile-time only: `List(i64)`, `Process(str)`, `Label(:ok, i64)`, `Label(:error, Any)`, and visible generic structs such as `Pair(i64)`. Builtin constructors keep their arity rules (`List(i64, str)`, `Process()`, `Range(i64)` are `SPRS-SEM-011`). A visible generic struct used with the wrong number of arguments is also `SPRS-SEM-011`. An unknown constructor name is an undefined type. `Type::Param` exists only during compile-time substitution; it is not a runtime tag.
+Type application is compile-time only: `List(i64)`, `Ptr(i64)`, `Process(str)`, `Label(:ok, i64)`, `Label(:error, Any)`, and visible generic structs such as `Pair(i64)`. Builtin constructors keep their arity rules (`List(i64, str)`, `Ptr()`, `Ptr(i64, str)`, `Process()`, `Range(i64)` are `SPRS-SEM-011`). `Ptr(i64)` and `Ptr(str)` are distinct types. A visible generic struct used with the wrong number of arguments is also `SPRS-SEM-011`. An unknown constructor name is an undefined type. `Type::Param` exists only during compile-time substitution; it is not a runtime tag.
 
 `List(T)` keeps its current runtime representation (`Tag::List`) in this phase. `Process(T)` is not a runtime tag yet. Element / result types of builtins remain compile-time only. Generic struct applications are monomorphized to concrete layouts before codegen.
 Generic functions and methods are monomorphized the same way: each distinct

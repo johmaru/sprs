@@ -106,6 +106,10 @@ impl<'ctx> Compiler<'ctx> {
         module: &Module<'ctx>,
         temp_name: &str,
     ) -> Result<PointerValue<'ctx>, SprsError> {
+        if matches!(&expr.kind, hir::ExprKind::Deref(_)) {
+            let place = self.compile_expr(expr, module)?.into_pointer_value();
+            return builder_helper::clone_runtime_value(self, place, module);
+        }
         let compiled = self.compile_expr(expr, module)?.into_pointer_value();
         let owned_name = match &expr.kind {
             hir::ExprKind::Var(name) | hir::ExprKind::Assign(name, _) => Some(name.clone()),
@@ -121,6 +125,28 @@ impl<'ctx> Compiler<'ctx> {
         let copied = builder_helper::var_load_at_init_variable(self, val_ptr, temp_name)?;
         builder_helper::move_variable(self, &val_ptr.into(), &name);
         Ok(copied)
+    }
+
+    fn compile_deref_place(
+        &mut self,
+        pointer: &hir::Expr,
+        module: &Module<'ctx>,
+    ) -> Result<PointerValue<'ctx>, SprsError> {
+        let ptr_val = self.compile_expr(pointer, module)?.into_pointer_value();
+        let data_ptr = self
+            .builder
+            .build_struct_gep(self.runtime_value_type, ptr_val, 1, "deref_data_ptr")
+            .unwrap();
+        let data = self
+            .builder
+            .build_load(self.context.i64_type(), data_ptr, "deref_addr")
+            .unwrap()
+            .into_int_value();
+        let pointee_ptr_ty = self.context.ptr_type(AddressSpace::default());
+        Ok(self
+            .builder
+            .build_int_to_ptr(data, pointee_ptr_ty, "deref_place")
+            .unwrap())
     }
 
     /// Process a `return` statement: type-check the expression, convert it
@@ -238,31 +264,7 @@ impl<'ctx> Compiler<'ctx> {
 
             match &stmt.kind {
                 hir::StmtKind::Var { name, binding_ty: _, is_ambi: _, is_annotated: _, init } => {
-                    let compiled_init_val =
-                        self.compile_expr(init, module)?.into_pointer_value();
-                    let init_val = if let hir::ExprKind::Var(src_val_name) = &init.kind {
-                        if let Some(src) = self.get_variables(src_val_name) {
-                            let copied_val = builder_helper::var_load_at_init_variable(
-                                self,
-                                compiled_init_val,
-                                name,
-                            )?;
-                            builder_helper::move_variable(self, &src.value, name);
-                            copied_val
-                        } else {
-                            builder_helper::var_load_at_init_variable(
-                                self,
-                                compiled_init_val,
-                                name,
-                            )?
-                        }
-                    } else {
-                        builder_helper::var_load_at_init_variable(
-                            self,
-                            compiled_init_val,
-                            name,
-                        )?
-                    };
+                    let init_val = self.compile_owned_expr(init, module, name)?;
                     self.add_variable(
                         name.clone(),
                         init_val.into(),
@@ -387,6 +389,17 @@ impl<'ctx> Compiler<'ctx> {
                         )
                         .unwrap();
                     }
+                }
+                hir::StmtKind::DerefAssign { pointer, expr } => {
+                    let dest = self.compile_deref_place(pointer, module)?;
+                    let val_ptr = self.compile_owned_expr(expr, module, "deref_assign_owned")?;
+                    let drop_fn = self.get_runtime_fn(module, "__drop")?;
+                    builder_helper::drop_var(self, dest, drop_fn, "deref_dest");
+                    let new_val = self
+                        .builder
+                        .build_load(self.runtime_value_type, val_ptr, "deref_assign_load")
+                        .unwrap();
+                    self.builder.build_store(dest, new_val).unwrap();
                 }
             }
         }
@@ -551,6 +564,9 @@ impl<'ctx> Compiler<'ctx> {
                     expr,
                     module,
                 )?)
+            }
+            hir::ExprKind::Deref(pointer) => {
+                Ok(self.compile_deref_place(pointer, module)?.into())
             }
             hir::ExprKind::Eq(lhs, rhs) => {
                 Ok(builder_helper::create_eq_or_neq(
@@ -929,5 +945,177 @@ impl<'ctx> Compiler<'ctx> {
                 Ok(res_ptr.into())
             }
         }
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::front::hir;
+    use crate::front::span::Span;
+    use crate::front::type_helper::Type;
+    use crate::llvm::compiler::{StoreTag, StoreValue};
+    use crate::llvm::value::create_entry_block_alloca;
+    use crate::runtime::runtime::{self as sprs_runtime, SprsValue};
+    use inkwell::context::Context;
+    use inkwell::OptimizationLevel;
+    use inkwell::targets::{InitializationConfig, Target};
+
+    fn ptr_i64() -> Type {
+        Type::App("Ptr".into(), vec![Type::Int])
+    }
+
+    fn dummy_span() -> Span {
+        Span::DUMMY
+    }
+
+    fn expr(kind: hir::ExprKind, ty: Type) -> hir::Expr {
+        hir::Expr {
+            kind,
+            ty,
+            span: dummy_span(),
+        }
+    }
+
+    fn stmt(kind: hir::StmtKind) -> hir::Stmt {
+        hir::Stmt {
+            kind,
+            span: dummy_span(),
+        }
+    }
+
+    fn var_p() -> hir::Expr {
+        expr(hir::ExprKind::Var("p".into()), ptr_i64())
+    }
+
+    fn compile_deref_fixture<'ctx>(
+        compiler: &mut Compiler<'ctx>,
+        context: &'ctx Context,
+        module: &Module<'ctx>,
+        body: Vec<hir::Stmt>,
+        name: &str,
+    ) {
+        let func = hir::Function {
+            name: name.to_string(),
+            params: Vec::new(),
+            body,
+            ret_ty: Some(Type::Int),
+            is_public: true,
+            type_params: Vec::new(),
+            when_rules: Vec::new(),
+            span: dummy_span(),
+        };
+        compiler.declare_fn_prototype(&func, module);
+        let fn_val = module.get_function(name).expect("prototype");
+        let entry = context.append_basic_block(fn_val, "entry");
+        compiler.builder.position_at_end(entry);
+        compiler.function_signatures = Some(fn_val);
+        compiler.enter_scope();
+
+        let pointee = create_entry_block_alloca(compiler, "pointee").expect("pointee");
+        compiler.build_runtime_value_store(
+            pointee,
+            StoreTag::Int(Tag::Integer as u64),
+            StoreValue::Int(context.i64_type().const_int(41, true)),
+            "cell",
+        );
+        let p = create_entry_block_alloca(compiler, "p").expect("p");
+        let addr = compiler
+            .builder
+            .build_ptr_to_int(pointee, context.i64_type(), "pointee_addr")
+            .unwrap();
+        compiler.build_runtime_value_store(
+            p,
+            StoreTag::Int(Tag::RawPtr as u64),
+            StoreValue::Int(addr),
+            "ptr",
+        );
+        compiler.add_variable("p".into(), p.into());
+
+        let _ = compiler.get_runtime_fn(module, "__drop").expect("declare drop");
+        let _ = compiler.get_runtime_fn(module, "__clone").expect("declare clone");
+
+        compiler.compile_block(&func.body, module).expect("compile body");
+        if compiler
+            .builder
+            .get_insert_block()
+            .unwrap()
+            .get_terminator()
+            .is_none()
+        {
+            compiler.exit_scope(module).expect("exit");
+        } else if !compiler.scopes.is_empty() {
+            compiler.scopes.pop();
+        }
+        assert!(fn_val.verify(true), "invalid generated function {name}");
+    }
+
+    fn map_runtime(engine: &inkwell::execution_engine::ExecutionEngine, module: &Module) {
+        if let Some(drop_fn) = module.get_function("__drop") {
+            engine.add_global_mapping(&drop_fn, sprs_runtime::__drop as *const () as usize);
+        }
+        if let Some(clone_fn) = module.get_function("__clone") {
+            engine.add_global_mapping(&clone_fn, sprs_runtime::__clone as *const () as usize);
+        }
+    }
+
+    #[test]
+    fn deref_place_reads_and_replaces_runtime_value() {
+        let context = Context::create();
+        let builder = context.create_builder();
+        let mut compiler = Compiler::new(&context, builder, "deref_test.sprs".into());
+        let module = context.create_module("deref_place_test");
+        let body = vec![
+            stmt(hir::StmtKind::DerefAssign {
+                pointer: var_p(),
+                expr: expr(hir::ExprKind::Number(42), Type::Int),
+            }),
+            stmt(hir::StmtKind::Return(Some(expr(
+                hir::ExprKind::Deref(Box::new(var_p())),
+                Type::Int,
+            )))),
+        ];
+        compile_deref_fixture(&mut compiler, &context, &module, body, "deref_place");
+
+        Target::initialize_native(&InitializationConfig::default()).expect("native target");
+        let engine = module
+            .create_jit_execution_engine(OptimizationLevel::None)
+            .expect("jit");
+        map_runtime(&engine, &module);
+
+        type TestFn = unsafe extern "C" fn() -> SprsValue;
+        let f = unsafe { engine.get_function::<TestFn>("deref_place") }.expect("lookup");
+        let result = unsafe { f.call() };
+        assert_eq!(result.tag, Tag::Integer as i32);
+        assert_eq!(result.data, 42);
+    }
+
+    #[test]
+    fn deref_self_replace_clones_before_drop() {
+        let context = Context::create();
+        let builder = context.create_builder();
+        let mut compiler = Compiler::new(&context, builder, "deref_self.sprs".into());
+        let module = context.create_module("deref_self_test");
+        let body = vec![
+            stmt(hir::StmtKind::DerefAssign {
+                pointer: var_p(),
+                expr: expr(hir::ExprKind::Deref(Box::new(var_p())), Type::Int),
+            }),
+            stmt(hir::StmtKind::Return(Some(expr(
+                hir::ExprKind::Deref(Box::new(var_p())),
+                Type::Int,
+            )))),
+        ];
+        compile_deref_fixture(&mut compiler, &context, &module, body, "deref_self");
+        let ir = module.print_to_string().to_string();
+        let clone_at = ir.find("call {{ i32, i64 }} @__clone").or_else(|| ir.find("@__clone"));
+        let drop_at = ir.find("call void @__drop").or_else(|| ir.find("@__drop"));
+        let clone_at = clone_at.expect("expected __clone in IR");
+        let drop_at = drop_at.expect("expected __drop in IR");
+        assert!(
+            clone_at < drop_at,
+            "__clone should be emitted before __drop for *p = *p\n{ir}"
+        );
     }
 }
