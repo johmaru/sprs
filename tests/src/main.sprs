@@ -92,8 +92,13 @@ fn main() {
     @println(fn_builds.echo_a(9));
     @println(fn_builds.echo_b(11));
     @println(fn_builds.forward_value());
-    @println(fn_builds.identity_i64(42));
-    @println(fn_builds.identity_str("id"));
+    @println(fn_builds.identity<i64>(42));
+    @println(fn_builds.identity("id"));
+    @println(fn_builds.same(1, 2));
+    @println(fn_builds.method_box_i64());
+    @println(fn_builds.method_box_str());
+    @println(fn_builds.method_box_nested());
+    @println(fn_builds.rec_generic_done());
 
     @println("=== Lists ===");
     @println(data_structures.list_push_and_print());

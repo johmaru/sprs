@@ -493,7 +493,10 @@ impl<'ctx> Compiler<'ctx> {
                     })
                 }
             }
-            hir::ExprKind::Call(ident, args) => Ok(builder_helper::create_call_expr(self, ident, args, module)?),
+            hir::ExprKind::Call { callee, args } => {
+                let ident = self.resolve_callable_backend_name(callee, module)?;
+                Ok(builder_helper::create_call_expr(self, &ident, args, module)?)
+            }
             hir::ExprKind::Macro(ident, args) => {
                 match ident.as_str() {
                     "println" => Ok(builder_helper::call_builtin_macro_println(self, args, module)?),

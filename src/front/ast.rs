@@ -21,7 +21,17 @@ pub enum Expr {
     Gt(Box<Spanned<Expr>>, Box<Spanned<Expr>>),                     // Lhs, Rhs
     Le(Box<Spanned<Expr>>, Box<Spanned<Expr>>),                     // Lhs, Rhs
     Ge(Box<Spanned<Expr>>, Box<Spanned<Expr>>),                     // Lhs, Rhs
-    Call(String, Vec<Spanned<Expr>>),                               // Ident, Args
+    Call {
+        name: String,
+        type_args: Vec<Type>,
+        args: Vec<Spanned<Expr>>,
+    }, // Ident, optional `<T, U>`, Args
+    MemberCall {
+        receiver: Box<Spanned<Expr>>,
+        name: String,
+        type_args: Vec<Type>,
+        args: Vec<Spanned<Expr>>,
+    }, // receiver.name`<T>`(args) — module vs method is resolved later
     Var(String),                                                    // Ident
     Increment(Box<Spanned<Expr>>),                                  // Ident
     Decrement(Box<Spanned<Expr>>),                                  // Ident
@@ -29,6 +39,7 @@ pub enum Expr {
     List(Vec<Spanned<Expr>>),                                       // Elements
     Range(Box<Spanned<Expr>>, Box<Spanned<Expr>>),                  // Start, End
     Index(Box<Spanned<Expr>>, Box<Spanned<Expr>>),                  // Collection, Index
+    #[allow(dead_code)]
     ModuleAccess(String, String, Vec<Spanned<Expr>>), // Module, functionName, args e.g. module.ident
     FieldAccess(Box<Spanned<Expr>>, String),          // e.g. struct.field
     Unit(),
@@ -71,7 +82,7 @@ pub struct FunctionParam {
     pub span: Span,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum Item {
     Import(String),
     Package(String),
@@ -148,9 +159,10 @@ pub struct FunctionBuild {
     pub span: Span,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct Function {
     pub ident: String,
+    pub type_params: Vec<TypeParam>,
     pub params: Vec<FunctionParam>,
     pub blk: Vec<Spanned<Stmt>>,
     pub is_public: bool,
@@ -163,7 +175,7 @@ pub struct Function {
     pub span: Span,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct VarDecl {
     pub ident: String,
     pub expr: Option<Spanned<Expr>>,
@@ -171,13 +183,13 @@ pub struct VarDecl {
     pub span: Span,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct AssignStmt {
     pub name: String,
     pub expr: Spanned<Expr>,
     pub span: Span,
 }
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct ClosedLabelSet {
     pub ident: String,
     pub members: Vec<String>,
@@ -185,7 +197,7 @@ pub struct ClosedLabelSet {
     pub span: Span,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct AtomDef {
     pub ident: String,
     pub is_public: bool,
@@ -198,12 +210,12 @@ pub struct TypeParam {
     pub span: Span,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct Struct {
     pub ident: String,
     pub type_params: Vec<TypeParam>,
     pub fields: Vec<StructField>,
-    pub _methods: Vec<Function>, // currently not implemented
+    pub methods: Vec<Function>,
     pub is_public: bool,
     pub span: Span,
 }
@@ -232,7 +244,7 @@ pub enum MatchPat {
 }
 
 /// Body of one `match` arm.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum MatchArmBody {
     /// Bind form: `=> expr break;` — value is stored into the `?(var name)` binding.
     ExprBreak(Spanned<Expr>),
@@ -241,7 +253,7 @@ pub enum MatchArmBody {
 }
 
 /// One `case` arm of a `match` statement.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct MatchArm {
     pub pat: MatchPat,
     pub body: MatchArmBody,
@@ -256,7 +268,7 @@ pub struct ExprMatchArm {
     pub span: Span,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum Stmt {
     Var(VarDecl),
     Assign(AssignStmt),

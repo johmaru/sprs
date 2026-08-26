@@ -45,6 +45,8 @@ pub struct Compiler<'ctx> {
     pub struct_defs: HashMap<String, StructDef<'ctx>>, // struct name -> struct definition
     pub struct_specialization_names: HashMap<hir::StructInstanceId, String>,
     pub next_struct_specialization_id: usize,
+    pub function_specialization_names: HashMap<hir::FunctionInstanceId, String>,
+    pub next_function_specialization_id: usize,
     pub closed_label_sets: HashSet<String>,
     /// FunctionBuild type parameters and `when` rules, keyed by build name.
     /// Filled from the registry during module loading so prototype declaration
@@ -324,6 +326,8 @@ impl<'ctx> Compiler<'ctx> {
             struct_defs: HashMap::new(),
             struct_specialization_names: HashMap::new(),
             next_struct_specialization_id: 0,
+            function_specialization_names: HashMap::new(),
+            next_function_specialization_id: 0,
             closed_label_sets: HashSet::new(),
             function_build_contracts: HashMap::new(),
             private_closed_label_members: HashSet::new(),
@@ -454,6 +458,37 @@ impl<'ctx> Compiler<'ctx> {
             builder_helper::drop_var(self, ptr, drop_fn, &format!("attach_{}", name));
         }
         Ok(())
+    }
+
+    pub fn ensure_function_specialization_name(
+        &mut self,
+        id: &hir::FunctionInstanceId,
+    ) -> String {
+        if let Some(name) = self.function_specialization_names.get(id) {
+            return name.clone();
+        }
+        let name = format!("__sprs_mono_fn_{}", self.next_function_specialization_id);
+        self.next_function_specialization_id += 1;
+        self.function_specialization_names.insert(id.clone(), name.clone());
+        name
+    }
+
+    pub fn resolve_callable_backend_name(
+        &mut self,
+        callee: &hir::CallableRef,
+        module: &Module<'ctx>,
+    ) -> Result<String, SprsError> {
+        match callee {
+            hir::CallableRef::Plain { name, .. } => {
+                if name == "main" {
+                    Ok(crate::naming::INTERNAL_MAIN_FN.to_string())
+                } else {
+                    let _ = module;
+                    Ok(name.clone())
+                }
+            }
+            hir::CallableRef::Instance(id) => Ok(self.ensure_function_specialization_name(id)),
+        }
     }
 
     pub fn register_struct(
@@ -869,5 +904,35 @@ mod tests {
                 assert!(!contains_unresolved_type(ty), "{ty}");
             }
         }
+    }
+
+    fn fn_id(owner_args: Vec<Type>, function_args: Vec<Type>) -> hir::FunctionInstanceId {
+        hir::FunctionInstanceId {
+            declaration: hir::FunctionDeclId {
+                module: "test".into(),
+                owner: None,
+                name: "same".into(),
+            },
+            owner_args,
+            function_args,
+        }
+    }
+
+    #[test]
+    fn function_specialization_cache_reuses_backend_name() {
+        let context = Context::create();
+        let builder = context.create_builder();
+        let mut compiler = Compiler::new(&context, builder, "test.sprs".into());
+        let i64_id = fn_id(vec![], vec![Type::TypeI64]);
+        let first = compiler.ensure_function_specialization_name(&i64_id);
+        let second = compiler.ensure_function_specialization_name(&i64_id);
+        assert_eq!(first, second);
+        let str_id = fn_id(vec![], vec![Type::Str]);
+        let other = compiler.ensure_function_specialization_name(&str_id);
+        assert_ne!(first, other);
+        let owner_id = fn_id(vec![Type::TypeI64], vec![]);
+        let owner_name = compiler.ensure_function_specialization_name(&owner_id);
+        assert_ne!(first, owner_name);
+        assert_eq!(compiler.function_specialization_names.len(), 3);
     }
 }

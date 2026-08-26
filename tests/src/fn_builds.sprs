@@ -63,10 +63,44 @@ fn job_id use JobFn {
     return job.id;
 }
 
-fn identity_i64 use Identity {
+fn identity use Identity {
     return value;
 }
 
-fn identity_str use Identity {
-    return value;
+pub fn same<T>(left >> T, right >> T) >> T {
+    return left;
+}
+
+pub struct MethodBox(T) {
+    value >> T,
+    pub fn get(self) >> T {
+        return self.value;
+    }
+}
+
+pub fn method_box_i64() >> i64 {
+    var box = init MethodBox(i64) { value = 42 };
+    return box.get();
+}
+
+pub fn method_box_str() >> str {
+    var box = init MethodBox(str) { value = "owned" };
+    return box.get();
+}
+
+pub fn method_box_nested() >> i64 {
+    var inner = init MethodBox(i64) { value = 7 };
+    var outer = init MethodBox(MethodBox(i64)) { value = inner };
+    return outer.get().get();
+}
+
+pub fn rec_generic<T>(n >> i64, value >> T) >> T {
+    if n == 0 {
+        return value;
+    }
+    return rec_generic(n - 1, value);
+}
+
+pub fn rec_generic_done() >> i64 {
+    return rec_generic(2, 9);
 }

@@ -1,10 +1,9 @@
 # 構造体
 
 裸の構造体名は、フィールド、関数引数、戻り値の型注釈で使えます。
-`Self` は宣言中の構造体へ解決され、その構造体のフィールド型の内側でのみ有効です。
-`List(Self)` のような入れ子の型適用も含みます。
+`Self` は宣言中の構造体へ解決されます。その構造体のフィールド型（`List(Self)` のような入れ子の型適用を含む）、および method のパラメータ / 戻り値注釈と本体で有効です。
 同一モジュール内の構造体型は、宣言順に関係なく参照できます。
-未定義の裸の型名、または構造体フィールドの外の `Self` は `SPRS-SEM-011` として報告されます。
+未定義の裸の型名、または構造体フィールドと method の外の `Self` は `SPRS-SEM-011` として報告されます。
 
 ```sprs
 struct Tree {
@@ -70,8 +69,8 @@ fn main() {
 `Pair(Pair(i64))` のような入れ子は内側を先に特殊化します。
 
 所有文字列の特殊化は `str` です（`init Pair(str) { a = "owned", b = "x" }`）。
-`String` は型名ではありません。ジェネリックフィールドの default、期待型だけによる
-型引数なしの `init Pair { ... }`、ジェネリックメソッドは現在使えません。
+`String` は型名ではありません。ジェネリックフィールドの default と、期待型だけによる
+型引数なしの `init Pair { ... }` は現在使えません。
 
 ```sprs
 struct Pair(T) {
@@ -88,3 +87,31 @@ fn use_pair() {
   };
 }
 ```
+
+## メソッド
+
+メソッドは構造体の内側、フィールドの後に宣言します。メソッドがある場合は最後のフィールドにもカンマが必要です。最初のパラメータは注釈なしの `self` でなければなりません。レシーバは通常の関数引数と同じく move されます。暗黙の借用や clone はありません。
+
+```sprs
+struct Pair(T) {
+  a >> T,
+  b >> T,
+  pub fn get(self) >> T {
+    return self.a;
+  }
+}
+
+fn main() {
+  var pair = init Pair(i64) { a = 1, b = 2 };
+  pair.get();
+  make_pair().get();
+}
+```
+
+`Self` と owner の型パラメータは具象 owner（`init Pair(i64) { ... }` なら `Pair(i64)`）へ置換されます。
+入れ子の method では FunctionBuild、static method、overload、method 固有の型パラメータは使えません。
+struct でないレシーバへの method 呼び出しは `SPRS-TYP-007`（`method call requires a struct receiver, found X`）です。
+
+公開されるのは public 構造体の public method だけです。
+private method は宣言モジュール内でのみ呼び出せます。
+import 先から private method を呼ぶと `SPRS-SEM-015`（`Undefined function: {name}`）になります。

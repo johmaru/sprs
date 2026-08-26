@@ -1108,15 +1108,16 @@ pub fn create_call_expr<'ctx>(
     args: &Vec<hir::Expr>,
     module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
-    let func = module
-        .get_function(ident)
-        .or_else(|| {
-            self_compiler
-                .modules
-                .values()
-                .find_map(|module_value| module_value.get_function(ident))
-        })
-        .ok_or(SprsError::Semantic {
+    let func = if let Some(func) = module.get_function(ident) {
+        func
+    } else if let Some(target) = self_compiler
+        .modules
+        .values()
+        .find_map(|module_value| module_value.get_function(ident))
+    {
+        module.add_function(ident, target.get_type(), None)
+    } else {
+        return Err(SprsError::Semantic {
             code: ErrorCode {
                 category: ErrorCategory::Semantic,
                 number: 15,
@@ -1124,7 +1125,8 @@ pub fn create_call_expr<'ctx>(
             location: Location::new(String::new(), Span::DUMMY),
             message: format!("Undefined function: {}", ident),
             help: None,
-        })?;
+        });
+    };
 
 
     let compiled_args = prepare_call_args(self_compiler, args, module)?;

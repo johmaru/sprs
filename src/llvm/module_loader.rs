@@ -23,6 +23,10 @@ impl<'ctx> Compiler<'ctx> {
             return Ok(());
         }
         self.ensure_typed_module(module_name, main_path)?;
+        crate::front::type_check::drain_program_function_specializations(
+            &mut self.hir_modules,
+            &self.function_build_contracts,
+        )?;
         let hir_mod = self
             .hir_modules
             .get(module_name)
@@ -46,6 +50,17 @@ impl<'ctx> Compiler<'ctx> {
 
         for func in &hir_mod.functions {
             self.declare_fn_prototype(func, &module);
+        }
+        for spec in &hir_mod.function_specializations {
+            let mut func = spec.function.clone();
+            func.name = self.ensure_function_specialization_name(&spec.id);
+            if func.contains_unresolved_type() {
+                return Err(SprsError::Internal {
+                    message: format!("unresolved type in function specialization {}", func.name),
+                    location: None,
+                });
+            }
+            self.declare_fn_prototype(&func, &module);
         }
         let mut private_closed_label_members: Vec<String> = Vec::new();
         let mut private_struct_fields: Vec<String> = Vec::new();
@@ -79,6 +94,11 @@ impl<'ctx> Compiler<'ctx> {
         }
         for func in &hir_mod.functions {
             self.compile_fn(func, &module)?;
+        }
+        for spec in &hir_mod.function_specializations {
+            let mut func = spec.function.clone();
+            func.name = self.ensure_function_specialization_name(&spec.id);
+            self.compile_fn(&func, &module)?;
         }
         if llvm_module_name == "main" {
             if let Some(sprs_main_fn) = module.get_function(naming::INTERNAL_MAIN_FN) {

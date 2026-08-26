@@ -28,6 +28,35 @@ fn add(a >> i64, b >> i64) >> i64 {
 See [Types and Bindings](types-and-bindings.md) for `ambi` and applied types in signatures.
 Function, parameter, and local names use `snake_case` (`SPRS-SEM-025`).
 
+## Generic functions
+
+A function may declare PascalCase type parameters after its name:
+
+```sprs
+fn same<T>(left >> T, right >> T) >> T {
+  return left;
+}
+
+fn main() {
+  same<i64>(1, 2);
+  same("a", "b");
+}
+```
+
+Explicit type arguments are bound first, in declaration order. Remaining
+parameters are inferred left to right from actual argument types. The expected
+return type is not used to infer a parameter. A call that cannot bind every
+parameter is `SPRS-TYP-007` (`cannot infer generic type \`T\` in call to \`foo\``).
+A conflicting argument is also `SPRS-TYP-007`. The wrong number of explicit type
+arguments is `SPRS-SEM-011` (`generic function \`foo\` expects N type argument(s), found M`).
+
+Each distinct concrete argument list is compiled once (demand-driven
+monomorphization) and lowered through the ordinary function pipeline. When
+several importers request the same public generic callable, the declaring
+module owns that one specialization; the program does not emit a second copy
+of the same `FunctionInstanceId`. There is no runtime generic dispatch and no
+extra runtime tag.
+
 ## FunctionBuild
 
 Function contracts are declared with `function_build` and attached with `fn name use Build`.
@@ -115,15 +144,18 @@ Source rules:
 
 ### Call-contract solver
 
-Call sites (`check_call_arguments` and return-type inference) share one resolver:
+Call sites share one resolver (`resolve_generic_call`):
 
-1. Arity (`SPRS-SEM-016` on mismatch).
-2. Unify each parameter pattern with the actual type. `Type::Param` binds;
-   `Any` is weak and a later concrete type overwrites it; a conflicting concrete
-   type is `SPRS-TYP-007`.
-3. Every used type parameter must be concrete (not left as `Any`).
-4. Evaluate `when` conditions.
-5. Substitute into the chosen return type.
+1. Explicit type arguments, if present: count and concreteness, then pre-bind
+   in declaration order.
+2. Arity (`SPRS-SEM-016` on mismatch).
+3. Unify each parameter pattern with the actual type, left to right.
+   `Type::Param` binds; `Any` is weak and a later concrete type overwrites it;
+   a conflicting concrete type is `SPRS-TYP-007`.
+4. Every declared type parameter must be concrete (not left as `Any`).
+5. Evaluate `when` conditions.
+6. Substitute into the chosen return type. The expected return type is not used
+   to bind parameters.
 
 Conditions: `is` is canonical type compatibility after substitution; `neq` is
 negation only when both sides are concrete; `and` / `or` / `not` short-circuit;
@@ -131,8 +163,9 @@ operands are types (including type parameters). Zero matching `when` rules fall
 back to the unconditional `return_type`, or unannotated/`Any` if that is absent.
 Two or more matches are `SPRS-TYP-007` (`multiple \`when\` rules matched`) even
 when the result types are equal. A body that only has conditional returns is
-checked as `Any`; the call-site type is the resolver result. There is no
-monomorphization and no extra runtime tag.
+checked as `Any`; the call-site type is the resolver result. A generic
+FunctionBuild is monomorphized the same way as an inline generic `fn`: each
+distinct concrete argument list becomes one specialized function.
 
 ```sprs
 function_build Identity {
@@ -142,12 +175,13 @@ function_build Identity {
     visibility(pub);
 }
 
-fn identity_i64 use Identity {
+fn identity use Identity {
     return value;
 }
 
-fn identity_str use Identity {
-    return value;
+fn main() {
+  identity<i64>(42);
+  identity("id");
 }
 ```
 

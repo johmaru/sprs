@@ -52,6 +52,7 @@ extern {
         EqEq   => Token::EqEq,
         Neq    => Token::Neq,
         Lt     => Token::Lt,
+        GenericLt => Token::GenericLt,
         LtColon => Token::LtColon,
         Gt     => Token::Gt,
         GtGt   => Token::GtGt,
@@ -203,15 +204,65 @@ ClosedLabelMemberTail: Vec<String> = {
 };
 
 StructDef: Struct =
-    <start:@L> <is_pub:PublicKw> Struct <name:PascalName> <params:TypeParamDecl?> LBrace <fields:StructFieldList> RBrace <end:@R> => {
+    <start:@L> <is_pub:PublicKw> Struct <name:PascalName> <params:TypeParamDecl?> LBrace <body:StructBody> RBrace <end:@R> => {
         Struct {
             ident: name,
             type_params: params.unwrap_or_default(),
-            fields,
+            fields: body.0,
+            methods: body.1,
             is_public: is_pub,
-            _methods: vec![],
             span: Span::new(start, end),
         }
+};
+
+StructBody: (Vec<StructField>, Vec<Function>) = {
+    => (vec![], vec![]),
+    <fields:StructFieldList> => (fields, vec![]),
+    <fields:StructFieldListTrail> <methods:StructMethodList> => (fields, methods),
+    <methods:StructMethodList> => (vec![], methods),
+};
+
+StructFieldListTrail: Vec<StructField> = {
+    <first:StructFieldNode> <rest:(Comma <StructFieldNode>)*> Comma => {
+        let mut v = vec![first];
+        v.extend(rest);
+        v
+    }
+};
+
+StructMethodList: Vec<Function> = {
+    <first:MethodDef> <rest:MethodDef*> => {
+        let mut v = vec![first];
+        v.extend(rest);
+        v
+    }
+};
+
+MethodDef: Function = {
+    <start:@L> Public FnKw <name:FnName> LParen <params:ParamList> RParen <ret:ReturnType> <body:Block> <end:@R> =>
+        Function {
+            ident: name,
+            type_params: vec![],
+            params,
+            ret_ty: ret,
+            blk: body,
+            is_public: true,
+            build_ref: None,
+            build_ref_span: Span::DUMMY,
+            span: Span::new(start, end),
+        },
+    <start:@L> FnKw <name:FnName> LParen <params:ParamList> RParen <ret:ReturnType> <body:Block> <end:@R> =>
+        Function {
+            ident: name,
+            type_params: vec![],
+            params,
+            ret_ty: ret,
+            blk: body,
+            is_public: false,
+            build_ref: None,
+            build_ref_span: Span::DUMMY,
+            span: Span::new(start, end),
+        },
 };
 
 TypeParamDecl: Vec<TypeParam> = {
@@ -230,7 +281,6 @@ TypeParamBind: TypeParam = {
 };
 
 StructFieldList: Vec<StructField> = {
-    => vec![],
     <first:StructFieldNode> <rest:(Comma <StructFieldNode>)*> => {
         let mut v = vec![first];
         v.extend(rest);
@@ -262,10 +312,27 @@ PublicKw: bool = {
     => false,
 };
 
+FnTypeParamList: Vec<TypeParam> = {
+    GenericLt <first:TypeParamBind> <rest:(Comma <TypeParamBind>)*> Gt => {
+        let mut params = vec![first];
+        params.extend(rest);
+        params
+    }
+};
+
+CallTypeArgs: Vec<Type> = {
+    GenericLt <first:Type> <rest:(Comma <Type>)*> Gt => {
+        let mut args = vec![first];
+        args.extend(rest);
+        args
+    }
+};
+
 FunctionDef: Item =
-   <start:@L> FnKw <name:FnName> LParen <params:ParamList> RParen <ret:ReturnType> <body:Block> <end:@R> => {
+   <start:@L> FnKw <name:FnName> <tparams:FnTypeParamList?> LParen <params:ParamList> RParen <ret:ReturnType> <body:Block> <end:@R> => {
         Item::FunctionItem(Function {
             ident: name,
+            type_params: tparams.unwrap_or_default(),
             params,
             ret_ty: ret,
             blk: body,
@@ -277,9 +344,10 @@ FunctionDef: Item =
     };
 
 PubFunctionDef: Item =
-   <start:@L> Public FnKw <name:FnName> LParen <params:ParamList> RParen <ret:ReturnType> <body:Block> <end:@R> => {
+   <start:@L> Public FnKw <name:FnName> <tparams:FnTypeParamList?> LParen <params:ParamList> RParen <ret:ReturnType> <body:Block> <end:@R> => {
         Item::FunctionItem(Function {
             ident: name,
+            type_params: tparams.unwrap_or_default(),
             params,
             ret_ty: ret,
             blk: body,
@@ -294,6 +362,7 @@ FunctionBuildFnDef: Item =
    <start:@L> FnKw <name:FnName> Use <build:PascalName> <body:Block> <end:@R> => {
         Item::FunctionItem(Function {
             ident: name,
+            type_params: vec![],
             params: vec![],
             ret_ty: None,
             blk: body,
@@ -746,33 +815,25 @@ Postfix: Spanned<Expr> = {
     <start:@L> <base:Postfix> LBracket <index:Expr> RBracket <end:@R> => Spanned::new(Expr::Index(Box::new(base), Box::new(index)), Span::new(start, end)),
     <start:@L> <e:Postfix> PlusPlus <end:@R> => Spanned::new(Expr::Increment(Box::new(e)), Span::new(start, end)),
     <start:@L> <e:Postfix> MinusMinus <end:@R> => Spanned::new(Expr::Decrement(Box::new(e)), Span::new(start, end)),
-    <start:@L> <base:Postfix> Dot <id:Ident> LParen RParen <end:@R> =>? {
+    <start:@L> <base:Postfix> Dot <id:Ident> <targs:CallTypeArgs?> LParen RParen <end:@R> =>? {
         let field = ident::finish(id, IdentCategory::Function)?;
-        if let Expr::Var(mod_name) = base.node {
-            Ok(Spanned::new(Expr::ModuleAccess(mod_name, field, vec![]), Span::new(start, end)))
-        } else {
-            Err(type_surface::syn(
-                6,
-                Span::new(start, end),
-                "method call on non-module expression is not supported",
-                None,
-            ))
-        }
+        Ok(Spanned::new(Expr::MemberCall {
+            receiver: Box::new(base),
+            name: field,
+            type_args: targs.unwrap_or_default(),
+            args: vec![],
+        }, Span::new(start, end)))
     },
-    <start:@L> <base:Postfix> Dot <id:Ident> LParen <first:Expr> <rest:(Comma <Expr>)*> RParen <end:@R> =>? {
+    <start:@L> <base:Postfix> Dot <id:Ident> <targs:CallTypeArgs?> LParen <first:Expr> <rest:(Comma <Expr>)*> RParen <end:@R> =>? {
         let field = ident::finish(id, IdentCategory::Function)?;
         let mut args = vec![first];
         args.extend(rest);
-        if let Expr::Var(mod_name) = base.node {
-            Ok(Spanned::new(Expr::ModuleAccess(mod_name, field, args), Span::new(start, end)))
-        } else {
-            Err(type_surface::syn(
-                6,
-                Span::new(start, end),
-                "method call on non-module expression is not supported",
-                None,
-            ))
-        }
+        Ok(Spanned::new(Expr::MemberCall {
+            receiver: Box::new(base),
+            name: field,
+            type_args: targs.unwrap_or_default(),
+            args,
+        }, Span::new(start, end)))
     },
     <start:@L> <base:Postfix> Dot <id:Ident> <end:@R> =>? {
         let field = ident::finish(id, IdentCategory::Field)?;
@@ -801,15 +862,23 @@ Atom: Spanned<Expr> = {
         Spanned::new(Expr::Destroy(Box::new(e)), Span::new(start, end)),
     <start:@L> Exist LParen <e:Expr> RParen <end:@R> =>
         Spanned::new(Expr::Exist(Box::new(e)), Span::new(start, end)),
-    <start:@L> <id:Ident> LParen RParen <end:@R> =>? {
+    <start:@L> <id:Ident> <targs:CallTypeArgs?> LParen RParen <end:@R> =>? {
         let name = ident::finish(id, IdentCategory::Function)?;
-        Ok(Spanned::new(Expr::Call(name, vec![]), Span::new(start, end)))
+        Ok(Spanned::new(Expr::Call {
+            name,
+            type_args: targs.unwrap_or_default(),
+            args: vec![],
+        }, Span::new(start, end)))
     },
-    <start:@L> <id:Ident> LParen <first:Expr> <rest:(Comma <Expr>)*> RParen <end:@R> =>? {
+    <start:@L> <id:Ident> <targs:CallTypeArgs?> LParen <first:Expr> <rest:(Comma <Expr>)*> RParen <end:@R> =>? {
         let name = ident::finish(id, IdentCategory::Function)?;
         let mut args = vec![first];
         args.extend(rest);
-        Ok(Spanned::new(Expr::Call(name, args), Span::new(start, end)))
+        Ok(Spanned::new(Expr::Call {
+            name,
+            type_args: targs.unwrap_or_default(),
+            args,
+        }, Span::new(start, end)))
     },
     <start:@L> <q:QualifiedAtomName> <end:@R> => Spanned::new(Expr::Atom(q), Span::new(start, end)),
     <start:@L> Colon <id:OpenLabelName> <end:@R> => Spanned::new(Expr::Atom(LabelName::Static(id)), Span::new(start, end)),

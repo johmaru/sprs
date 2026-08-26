@@ -453,6 +453,11 @@ pub fn substitute_type(
             .get(name)
             .cloned()
             .ok_or_else(|| format!("unresolved type parameter `{name}`")),
+        Type::Named(name) => Ok(bindings.get(name).cloned().unwrap_or_else(|| ty.clone())),
+        Type::SelfType => bindings
+            .get("Self")
+            .cloned()
+            .ok_or_else(|| "unresolved type parameter `Self`".to_string()),
         Type::App(name, args) => {
             let mut substituted = Vec::with_capacity(args.len());
             for arg in args {
@@ -783,5 +788,31 @@ mod tests {
         assert!(reject_payloadless_label_type(&ok).is_ok());
         assert!(reject_payloadless_label_type(&Type::Label).is_ok());
         assert!(reject_payloadless_label_type(&Type::Atom("ok".into())).is_ok());
+    }
+
+    #[test]
+    fn substitute_type_replaces_named_and_param() {
+        let mut bindings = std::collections::HashMap::new();
+        bindings.insert("T".into(), Type::TypeI64);
+        assert_eq!(
+            substitute_type(&Type::Named("T".into()), &bindings).unwrap(),
+            Type::TypeI64
+        );
+        assert_eq!(
+            substitute_type(&Type::Param("T".into()), &bindings).unwrap(),
+            Type::TypeI64
+        );
+        assert_eq!(
+            substitute_type(
+                &Type::App("List".into(), vec![Type::Named("T".into())]),
+                &bindings
+            )
+            .unwrap(),
+            Type::App("List".into(), vec![Type::TypeI64])
+        );
+        assert_eq!(
+            substitute_type(&Type::Named("U".into()), &bindings).unwrap(),
+            Type::Named("U".into())
+        );
     }
 }

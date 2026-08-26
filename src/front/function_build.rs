@@ -362,6 +362,10 @@ pub fn lower_functions_with_builds(
             func.params = build.signature.params.clone();
             func.ret_ty = build.signature.ret_ty.clone();
             func.is_public = build.signature.is_public;
+            func.type_params = build.signature.type_params.iter().map(|ident| crate::front::ast::TypeParam {
+                ident: ident.clone(),
+                span: build.span,
+            }).collect();
             continue;
         }
         if registry.external_private.contains_key(&build_name) {
@@ -392,6 +396,7 @@ pub fn lower_functions_with_builds(
 #[derive(Debug, Clone, PartialEq)]
 pub enum CallContractError {
     Arity { expected: usize, actual: usize },
+    TypeArgCount { expected: usize, actual: usize },
     /// Type unification conflict on a type parameter or a param pattern.
     TypeConflict { message: String },
     /// A `Type::Param` stayed unbound or bound to `Any` after unification.
@@ -541,31 +546,68 @@ fn resolve_cond_type(
     }
 }
 
-/// Resolve a FunctionBuild call contract against actual argument types.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResolvedCall {
+    pub bindings: HashMap<String, Type>,
+    pub ret_ty: Option<Type>,
+}
+
+fn type_is_concrete(ty: &Type) -> bool {
+    !type_helper::contains_unresolved_type(ty) && *ty != Type::Any
+}
+
+/// Resolve explicit type arguments and actuals into a single binding set.
 ///
-/// Steps: (1) arity, (2) recursive unification of parameter patterns with
-/// actual types (weak `Any` bindings), (3) every bound type parameter is
-/// concrete, (4) `when` condition evaluation, (5) return type substitution.
-///
-/// Returns the substituted return type: `Ok(None)` means unannotated / `Any`.
-pub fn resolve_call_contract(
-    sig: &ResolvedFunctionSignature,
+/// Order: (1) explicit args — count and concreteness, pre-bind in declaration
+/// order, (2) unify actuals left to right, (3) pre-bound names are consistency
+/// checks, (4) `Type::App` recurses via `unify`, (5) every declared type
+/// parameter must be bound to a concrete type, (6) `when`, (7) substitute the
+/// return type. Expected return types are not used to infer bindings.
+pub fn resolve_generic_call(
+    signature: &ResolvedFunctionSignature,
+    explicit_args: &[Type],
     actuals: &[Type],
-) -> Result<Option<Type>, CallContractError> {
-    if sig.params.len() != actuals.len() {
+) -> Result<ResolvedCall, CallContractError> {
+    if signature.params.len() != actuals.len() {
         return Err(CallContractError::Arity {
-            expected: sig.params.len(),
+            expected: signature.params.len(),
             actual: actuals.len(),
         });
     }
 
+    if !explicit_args.is_empty() && explicit_args.len() != signature.type_params.len() {
+        return Err(CallContractError::TypeArgCount {
+            expected: signature.type_params.len(),
+            actual: explicit_args.len(),
+        });
+    }
+
     let mut bindings: HashMap<String, Type> = HashMap::new();
-    for (param, actual) in sig.params.iter().zip(actuals.iter()) {
+    if !explicit_args.is_empty() {
+        for (name, explicit) in signature.type_params.iter().zip(explicit_args.iter()) {
+            if !type_is_concrete(explicit) {
+                return Err(CallContractError::UnresolvedTypeParam {
+                    name: name.clone(),
+                });
+            }
+            bindings.insert(name.clone(), explicit.clone());
+        }
+    }
+
+    for (param, actual) in signature.params.iter().zip(actuals.iter()) {
         if let Some(annot) = &param.ty {
             unify(&annot.ty, actual, &mut bindings)?;
         }
     }
-    // A type parameter bound only to `Any` was never concretely resolved.
+
+    for name in &signature.type_params {
+        match bindings.get(name) {
+            None | Some(Type::Any) => {
+                return Err(CallContractError::UnresolvedTypeParam { name: name.clone() });
+            }
+            Some(_) => {}
+        }
+    }
     for (name, bound) in &bindings {
         if *bound == Type::Any {
             return Err(CallContractError::UnresolvedTypeParam {
@@ -575,7 +617,7 @@ pub fn resolve_call_contract(
     }
 
     let mut matched: Option<Type> = None;
-    for (cond, ret_ty) in &sig.when_rules {
+    for (cond, ret_ty) in &signature.when_rules {
         if eval_condition(cond, &bindings)? {
             if matched.is_some() {
                 return Err(CallContractError::MultipleMatches);
@@ -583,14 +625,25 @@ pub fn resolve_call_contract(
             matched = Some(substitute_type(ret_ty, &bindings)?);
         }
     }
-    if let Some(ty) = matched {
-        return Ok(Some(ty));
-    }
+    let ret_ty = if let Some(ty) = matched {
+        Some(ty)
+    } else {
+        match &signature.ret_ty {
+            Some(ty) => Some(substitute_type(ty, &bindings)?),
+            None => None,
+        }
+    };
+    Ok(ResolvedCall { bindings, ret_ty })
+}
 
-    match &sig.ret_ty {
-        Some(ty) => Ok(Some(substitute_type(ty, &bindings)?)),
-        None => Ok(None),
-    }
+/// Resolve a FunctionBuild call contract against actual argument types.
+///
+/// Wrapper around `resolve_generic_call` with no explicit type arguments.
+pub fn resolve_call_contract(
+    sig: &ResolvedFunctionSignature,
+    actuals: &[Type],
+) -> Result<Option<Type>, CallContractError> {
+    resolve_generic_call(sig, &[], actuals).map(|resolved| resolved.ret_ty)
 }
 
 /// Load a FunctionBuild declaration source (not a runtime module).
@@ -668,6 +721,7 @@ pub fn import_public_builds_from_source(
 mod tests {
     use super::*;
     use crate::front::parser::parse_only;
+    use crate::front::type_helper::TypeAnnot;
 
     fn parse(src: &str) -> Vec<Item> {
         parse_only(src, "test.sprs").expect("parse")
@@ -1328,5 +1382,163 @@ function_build Bad {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+
+    fn identity_sig() -> ResolvedFunctionSignature {
+        ResolvedFunctionSignature {
+            params: vec![FunctionParam {
+                ident: "value".into(),
+                ty: Some(TypeAnnot {
+                    ty: Type::Param("T".into()),
+                    ambi: false,
+                }),
+                span: Span::DUMMY,
+            }],
+            ret_ty: Some(Type::Param("T".into())),
+            is_public: true,
+            type_params: vec!["T".into()],
+            when_rules: vec![],
+        }
+    }
+
+    fn pair_sig() -> ResolvedFunctionSignature {
+        ResolvedFunctionSignature {
+            params: vec![FunctionParam {
+                ident: "value".into(),
+                ty: Some(TypeAnnot {
+                    ty: Type::App("Pair".into(), vec![Type::Param("T".into())]),
+                    ambi: false,
+                }),
+                span: Span::DUMMY,
+            }],
+            ret_ty: Some(Type::Param("T".into())),
+            is_public: true,
+            type_params: vec!["T".into()],
+            when_rules: vec![],
+        }
+    }
+
+    #[test]
+    fn explicit_prebind_wins_for_generic_call() {
+        let resolved = resolve_generic_call(&identity_sig(), &[Type::TypeI64], &[Type::TypeI64]).unwrap();
+        assert_eq!(resolved.bindings.get("T"), Some(&Type::TypeI64));
+        assert_eq!(resolved.ret_ty, Some(Type::TypeI64));
+    }
+
+    #[test]
+    fn argument_first_bind_infers_type_param() {
+        let resolved = resolve_generic_call(&identity_sig(), &[], &[Type::Str]).unwrap();
+        assert_eq!(resolved.bindings.get("T"), Some(&Type::Str));
+        assert_eq!(resolved.ret_ty, Some(Type::Str));
+    }
+
+    #[test]
+    fn consistent_reuse_of_same_binding() {
+        let sig = ResolvedFunctionSignature {
+            params: vec![
+                FunctionParam {
+                    ident: "left".into(),
+                    ty: Some(TypeAnnot {
+                        ty: Type::Param("T".into()),
+                        ambi: false,
+                    }),
+                    span: Span::DUMMY,
+                },
+                FunctionParam {
+                    ident: "right".into(),
+                    ty: Some(TypeAnnot {
+                        ty: Type::Param("T".into()),
+                        ambi: false,
+                    }),
+                    span: Span::DUMMY,
+                },
+            ],
+            ret_ty: Some(Type::Param("T".into())),
+            is_public: true,
+            type_params: vec!["T".into()],
+            when_rules: vec![],
+        };
+        let resolved = resolve_generic_call(&sig, &[], &[Type::TypeI64, Type::Int]).unwrap();
+        assert_eq!(resolved.bindings.get("T"), Some(&Type::TypeI64));
+    }
+
+    #[test]
+    fn nested_app_unifies_type_param() {
+        let resolved = resolve_generic_call(
+            &pair_sig(),
+            &[],
+            &[Type::App("Pair".into(), vec![Type::Str])],
+        )
+        .unwrap();
+        assert_eq!(resolved.bindings.get("T"), Some(&Type::Str));
+        assert_eq!(resolved.ret_ty, Some(Type::Str));
+    }
+
+    #[test]
+    fn explicit_and_actual_conflict() {
+        let err = resolve_generic_call(&identity_sig(), &[Type::TypeI64], &[Type::Str]).unwrap_err();
+        match err {
+            CallContractError::TypeConflict { message } => {
+                assert!(message.contains("i64"));
+                assert!(message.contains("str"));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn unused_unspecified_type_param_cannot_infer() {
+        let sig = ResolvedFunctionSignature {
+            params: vec![],
+            ret_ty: Some(Type::Param("T".into())),
+            is_public: true,
+            type_params: vec!["T".into()],
+            when_rules: vec![],
+        };
+        let err = resolve_generic_call(&sig, &[], &[]).unwrap_err();
+        assert_eq!(
+            err,
+            CallContractError::UnresolvedTypeParam { name: "T".into() }
+        );
+    }
+
+    #[test]
+    fn when_after_concrete_binding_selects_return() {
+        let sig = ResolvedFunctionSignature {
+            params: vec![FunctionParam {
+                ident: "value".into(),
+                ty: Some(TypeAnnot {
+                    ty: Type::Param("T".into()),
+                    ambi: false,
+                }),
+                span: Span::DUMMY,
+            }],
+            ret_ty: Some(Type::Param("T".into())),
+            is_public: true,
+            type_params: vec!["T".into()],
+            when_rules: vec![(
+                FbCondition::Is {
+                    lhs: Box::new(FbCondition::Type(Type::Param("T".into()))),
+                    rhs: Box::new(FbCondition::Type(Type::TypeI64)),
+                },
+                Type::TypeI64,
+            )],
+        };
+        let resolved = resolve_generic_call(&sig, &[], &[Type::TypeI64]).unwrap();
+        assert_eq!(resolved.ret_ty, Some(Type::TypeI64));
+    }
+
+    #[test]
+    fn explicit_type_arg_count_mismatch() {
+        let err = resolve_generic_call(&identity_sig(), &[Type::TypeI64, Type::Str], &[Type::TypeI64])
+            .unwrap_err();
+        assert_eq!(
+            err,
+            CallContractError::TypeArgCount {
+                expected: 1,
+                actual: 2
+            }
+        );
     }
 }

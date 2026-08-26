@@ -21,6 +21,7 @@ pub enum Token {
     EqEq,
     Neq,
     Lt,
+    GenericLt,
     LtColon,
     Gt,
     GtGt,
@@ -354,6 +355,7 @@ enum RawTok {
 pub struct Lexer<'input> {
     input: &'input str,
     inner: logos::Lexer<'input, RawTok>,
+    last_was_callable_ident: bool,
 }
 
 impl<'input> Lexer<'input> {
@@ -361,6 +363,7 @@ impl<'input> Lexer<'input> {
         Self {
             input,
             inner: RawTok::lexer(input),
+            last_was_callable_ident: false,
         }
     }
 }
@@ -404,7 +407,15 @@ impl<'input> Iterator for Lexer<'input> {
             RawTok::EqEq => Token::EqEq,
             RawTok::Neq => Token::Neq,
             RawTok::LtColon => Token::LtColon,
-            RawTok::Lt => Token::Lt,
+            RawTok::Lt => {
+                if self.last_was_callable_ident
+                    && looks_like_generic_call(self.inner.remainder())
+                {
+                    Token::GenericLt
+                } else {
+                    Token::Lt
+                }
+            }
             RawTok::Gt => Token::Gt,
             RawTok::GtGt => Token::GtGt,
             RawTok::Question => Token::Question,
@@ -503,7 +514,102 @@ impl<'input> Iterator for Lexer<'input> {
             RawTok::TypeF32 => Token::TypeF32,
             RawTok::TypeF64 => Token::TypeF64,
         };
+        self.last_was_callable_ident = matches!(
+            token_value,
+            Token::Ident(_) | Token::EscapedIdent(_)
+        );
         Some(Ok((span_start, token_value, span_end)))
+    }
+}
+
+fn looks_like_generic_call(remainder: &str) -> bool {
+    let tokens: Vec<Token> = Lexer::new(remainder)
+        .map_while(Result::ok)
+        .map(|(_, token, _)| token)
+        .take_while(|token| !matches!(token, Token::Semi | Token::RBrace))
+        .take(64)
+        .collect();
+    let mut index = 0;
+    if !consume_type(&tokens, &mut index) {
+        return false;
+    }
+    loop {
+        if index >= tokens.len() {
+            return false;
+        }
+        match &tokens[index] {
+            Token::Comma => {
+                index += 1;
+                if !consume_type(&tokens, &mut index) {
+                    return false;
+                }
+            }
+            Token::Gt => {
+                return tokens.get(index + 1) == Some(&Token::LParen);
+            }
+            _ => return false,
+        }
+    }
+}
+
+fn consume_type(tokens: &[Token], index: &mut usize) -> bool {
+    if *index >= tokens.len() {
+        return false;
+    }
+    match &tokens[*index] {
+        Token::TypeBool
+        | Token::TypeStr
+        | Token::TypeUnit
+        | Token::TypeLabel
+        | Token::TypeI8
+        | Token::TypeU8
+        | Token::TypeI16
+        | Token::TypeU16
+        | Token::TypeI32
+        | Token::TypeU32
+        | Token::TypeI64
+        | Token::TypeU64
+        | Token::TypeF16
+        | Token::TypeF32
+        | Token::TypeF64 => {
+            *index += 1;
+            true
+        }
+        Token::Colon => {
+            *index += 1;
+            if matches!(tokens.get(*index), Some(Token::Ident(_))) {
+                *index += 1;
+                true
+            } else {
+                false
+            }
+        }
+        Token::Ident(_) => {
+            *index += 1;
+            if tokens.get(*index) == Some(&Token::LParen) {
+                *index += 1;
+                if tokens.get(*index) != Some(&Token::RParen) {
+                    if !consume_type(tokens, index) {
+                        return false;
+                    }
+                    while tokens.get(*index) == Some(&Token::Comma) {
+                        *index += 1;
+                        if !consume_type(tokens, index) {
+                            return false;
+                        }
+                    }
+                }
+                if tokens.get(*index) == Some(&Token::RParen) {
+                    *index += 1;
+                    true
+                } else {
+                    false
+                }
+            } else {
+                true
+            }
+        }
+        _ => false,
     }
 }
 
@@ -563,4 +669,52 @@ fn unescape_sprs_string(raw: &str) -> String {
         }
     }
     out
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::{Lexer, Token};
+
+    fn tokens(src: &str) -> Vec<Token> {
+        Lexer::new(src)
+            .map(|item| item.expect("token").1)
+            .collect()
+    }
+
+    #[test]
+    fn generic_call_lookahead_emits_generic_lt() {
+        let got = tokens("same<i64>(1, 2)");
+        assert!(
+            matches!(got.as_slice(), [Token::Ident(name), Token::GenericLt, Token::TypeI64, Token::Gt, Token::LParen, ..] if name == "same"),
+            "{got:?}"
+        );
+        let nested = tokens("same<Pair(i64, str)>(x)");
+        assert_eq!(nested[1], Token::GenericLt);
+        let multi = tokens("same<i64, str>(x)");
+        assert_eq!(multi[1], Token::GenericLt);
+        let module_call = tokens("pkg.foo<i64>(x)");
+        assert_eq!(module_call[3], Token::GenericLt);
+    }
+
+    #[test]
+    fn comparison_lt_is_not_generic_lt() {
+        let spaced = tokens("a < b");
+        assert_eq!(
+            spaced,
+            vec![Token::Ident("a".into()), Token::Lt, Token::Ident("b".into())]
+        );
+        let typed = tokens("a < i64");
+        assert_eq!(
+            typed,
+            vec![Token::Ident("a".into()), Token::Lt, Token::TypeI64]
+        );
+        let jammed = tokens("a<i64");
+        assert_eq!(
+            jammed,
+            vec![Token::Ident("a".into()), Token::Lt, Token::TypeI64]
+        );
+        let incomplete = tokens("a<i64");
+        assert!(!incomplete.contains(&Token::GenericLt));
+    }
 }

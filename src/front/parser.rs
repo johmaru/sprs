@@ -168,7 +168,10 @@ fn third_function(xs >> List(Any)) >> List(Any) { return xs; }
                 match &stmt.node {
                     crate::front::ast::Stmt::Var(variable_statement) => {
                         let init = variable_statement.expr.as_ref().unwrap();
-                        assert!(matches!(init.node, crate::front::ast::Expr::Call(_, _)));
+                        assert!(matches!(
+                            init.node,
+                            crate::front::ast::Expr::Call { .. }
+                        ));
                     }
                     other => panic!("expected var, got {:?}", other),
                 }
@@ -434,7 +437,7 @@ fn f() >> i64 {
             panic!("expected match statement");
         };
         assert_eq!(bind.as_deref(), Some("r"));
-        assert!(matches!(&scrutinee.node, Expr::Call(name, _) if name == "foo"));
+        assert!(matches!(&scrutinee.node, Expr::Call { name, .. } if name == "foo"));
         assert_eq!(arms.len(), 1);
     }
 
@@ -816,19 +819,169 @@ fn enum(enum >> i64) {
     }
 
     #[test]
-    fn rejects_method_calls_on_non_module_expressions() {
-        for source in [
-            "fn main() { get_obj().method(); }\n",
-            "fn main() { get_obj().method(1); }\n",
-        ] {
-            let error = parse_only(source, "method_call.sprs")
-                .expect_err("non-module method call must be rejected");
-            assert!(
-                error
-                    .to_string()
-                    .contains("method call on non-module expression is not supported"),
-                "unexpected error: {error}"
-            );
+    fn parses_value_and_expression_method_calls() {
+        let items = parse_only(
+            "fn main() { box.get(); factory().get(); }\n",
+            "method_call.sprs",
+        )
+        .expect("parse");
+        let Item::FunctionItem(function_item) = &items[0] else {
+            panic!("expected function");
+        };
+        match &function_item.blk[0].node {
+            Stmt::Expr(expr) => match &expr.node {
+                Expr::MemberCall {
+                    receiver,
+                    name,
+                    type_args,
+                    args,
+                } => {
+                    assert!(matches!(receiver.node, Expr::Var(ref ident) if ident == "box"));
+                    assert_eq!(name, "get");
+                    assert!(type_args.is_empty());
+                    assert!(args.is_empty());
+                }
+                other => panic!("unexpected {other:?}"),
+            },
+            other => panic!("unexpected {other:?}"),
+        }
+        match &function_item.blk[1].node {
+            Stmt::Expr(expr) => match &expr.node {
+                Expr::MemberCall {
+                    receiver,
+                    name,
+                    args,
+                    ..
+                } => {
+                    assert!(matches!(
+                        receiver.node,
+                        Expr::Call { ref name, .. } if name == "factory"
+                    ));
+                    assert_eq!(name, "get");
+                    assert!(args.is_empty());
+                }
+                other => panic!("unexpected {other:?}"),
+            },
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_inline_generic_function_and_calls() {
+        let items = parse_only(
+            r#"
+fn same<T>(left >> T, right >> T) >> T { return left; }
+fn main() {
+    same<i64>(1, 2);
+    same<Pair(i64)>(p);
+    fn_builds.fb_add(3, 4);
+    a < b;
+    a < i64;
+}
+"#,
+            "generic_fn.sprs",
+        )
+        .expect("parse");
+        let Item::FunctionItem(same) = &items[0] else {
+            panic!("expected same");
+        };
+        assert_eq!(same.ident, "same");
+        assert_eq!(same.type_params.len(), 1);
+        assert_eq!(same.type_params[0].ident, "T");
+        let Item::FunctionItem(main_fn) = &items[1] else {
+            panic!("expected main");
+        };
+        match &main_fn.blk[0].node {
+            Stmt::Expr(expr) => match &expr.node {
+                Expr::Call { name, type_args, args } => {
+                    assert_eq!(name, "same");
+                    assert_eq!(type_args, &vec![Type::TypeI64]);
+                    assert_eq!(args.len(), 2);
+                }
+                other => panic!("unexpected {other:?}"),
+            },
+            other => panic!("unexpected {other:?}"),
+        }
+        match &main_fn.blk[1].node {
+            Stmt::Expr(expr) => match &expr.node {
+                Expr::Call { type_args, .. } => {
+                    assert_eq!(
+                        type_args,
+                        &vec![Type::App("Pair".into(), vec![Type::TypeI64])]
+                    );
+                }
+                other => panic!("unexpected {other:?}"),
+            },
+            other => panic!("unexpected {other:?}"),
+        }
+        match &main_fn.blk[2].node {
+            Stmt::Expr(expr) => match &expr.node {
+                Expr::MemberCall { receiver, name, args, type_args } => {
+                    assert!(matches!(receiver.node, Expr::Var(ref ident) if ident == "fn_builds"));
+                    assert_eq!(name, "fb_add");
+                    assert!(type_args.is_empty());
+                    assert_eq!(args.len(), 2);
+                }
+                other => panic!("unexpected {other:?}"),
+            },
+            other => panic!("unexpected {other:?}"),
+        }
+        match &main_fn.blk[3].node {
+            Stmt::Expr(expr) => assert!(matches!(expr.node, Expr::Lt(_, _))),
+            other => panic!("unexpected {other:?}"),
+        }
+        match &main_fn.blk[4].node {
+            Stmt::Expr(expr) => assert!(matches!(expr.node, Expr::Lt(_, _))),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_nested_struct_methods() {
+        let items = parse_only(
+            r#"
+struct MethodBox(T) {
+    value >> T,
+    pub fn get(self) >> T { return self.value; }
+    fn set(self, next >> T) { }
+}
+"#,
+            "methods.sprs",
+        )
+        .expect("parse");
+        let Item::StructItem(st) = &items[0] else {
+            panic!("expected struct");
+        };
+        assert_eq!(st.fields.len(), 1);
+        assert_eq!(st.methods.len(), 2);
+        assert_eq!(st.methods[0].ident, "get");
+        assert!(st.methods[0].is_public);
+        assert_eq!(st.methods[0].params[0].ident, "self");
+        assert!(st.methods[0].params[0].ty.is_none());
+        assert_eq!(st.methods[1].ident, "set");
+        assert!(!st.methods[1].is_public);
+    }
+
+    #[test]
+    fn parses_module_generic_call() {
+        let items = parse_only(
+            "fn main() { fn_builds.foo<i64>(x); }\n",
+            "mod_generic.sprs",
+        )
+        .expect("parse");
+        let Item::FunctionItem(function_item) = &items[0] else {
+            panic!("expected function");
+        };
+        match &function_item.blk[0].node {
+            Stmt::Expr(expr) => match &expr.node {
+                Expr::MemberCall { name, type_args, args, .. } => {
+                    assert_eq!(name, "foo");
+                    assert_eq!(type_args, &vec![Type::TypeI64]);
+                    assert_eq!(args.len(), 1);
+                }
+                other => panic!("unexpected {other:?}"),
+            },
+            other => panic!("unexpected {other:?}"),
         }
     }
 

@@ -2,10 +2,11 @@
 
 A bare struct name can be used in type annotations for fields, function
 arguments, and return values. `Self` resolves to the struct currently being
-declared and is valid only inside that struct's field types, including
-nested type applications such as `List(Self)`. Struct types in the same
-module can be referenced regardless of declaration order. An undefined bare
-type name, or `Self` outside a struct field, is reported as `SPRS-SEM-011`.
+declared. It is valid in that struct's field types, including nested type
+applications such as `List(Self)`, and in method parameter / return
+annotations and bodies. Struct types in the same module can be referenced
+regardless of declaration order. An undefined bare type name, or `Self`
+outside a struct field or method, is reported as `SPRS-SEM-011`.
 
 ```sprs
 struct Tree {
@@ -73,8 +74,8 @@ layout for each distinct argument list (`Pair(i64)` is not `Pair(f64)`).
 Nested applications such as `Pair(Pair(i64))` specialize the inner type first.
 
 Owned string specializations use `str` (`init Pair(str) { a = "owned", b = "x" }`).
-`String` is not a type name. Generic field defaults, `init Pair { ... }` without
-type arguments (including inference from an expected type), and generic methods cannot be used.
+`String` is not a type name. Generic field defaults and `init Pair { ... }` without
+type arguments (including inference from an expected type) cannot be used.
 
 ```sprs
 struct Pair(T) {
@@ -91,3 +92,36 @@ fn use_pair() {
   };
 }
 ```
+
+## Methods
+
+Methods are declared inside the struct, after the fields. If the struct has
+any method, the last field must have a trailing comma. The first parameter
+must be unannotated `self`. The receiver is moved like a normal argument;
+there is no implicit borrow or clone.
+
+```sprs
+struct Pair(T) {
+  a >> T,
+  b >> T,
+  pub fn get(self) >> T {
+    return self.a;
+  }
+}
+
+fn main() {
+  var pair = init Pair(i64) { a = 1, b = 2 };
+  pair.get();
+  make_pair().get();
+}
+```
+
+`Self` and the owner's type parameters are substituted with the concrete owner
+(`Pair(i64)` for `init Pair(i64) { ... }`). Nested methods cannot use
+FunctionBuild, static methods, overloads, or method-specific type parameters.
+A method call on a non-struct receiver is `SPRS-TYP-007`
+(`method call requires a struct receiver, found X`).
+
+Only a public method on a public struct is visible to importers. A private
+method can be called only in the declaring module. Calling a private method
+from an importer is `SPRS-SEM-015` (`Undefined function: {name}`).

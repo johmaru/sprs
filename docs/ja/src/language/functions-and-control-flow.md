@@ -29,6 +29,33 @@ fn add(a >> i64, b >> i64) >> i64 {
 シグネチャでの `ambi` と適用型は [型と束縛](types-and-bindings.md) を参照してください。
 関数名、パラメータ、ローカルは `snake_case` です（`SPRS-SEM-025`）。
 
+## ジェネリック関数
+
+関数名の直後に PascalCase の型パラメータを置けます。
+
+```sprs
+fn same<T>(left >> T, right >> T) >> T {
+  return left;
+}
+
+fn main() {
+  same<i64>(1, 2);
+  same("a", "b");
+}
+```
+
+明示した型引数が先に、宣言順で束縛されます。残りは実引数型から左から推論します。
+期待する戻り値型からは推論しません。すべてのパラメータを束縛できない呼び出しは
+`SPRS-TYP-007`（`cannot infer generic type \`T\` in call to \`foo\``）です。
+衝突する実引数も `SPRS-TYP-007` です。明示型引数の個数誤りは `SPRS-SEM-011`
+（`generic function \`foo\` expects N type argument(s), found M`）です。
+
+具象引数リストごとに 1 回だけコンパイルします（demand-driven な単相化）。
+通常の関数経路へ流します。
+複数の importer が同じ public なジェネリック callable を要求しても、宣言モジュールがその specialization を 1 つ所有します。
+プログラム全体で同一の `FunctionInstanceId` を重複生成しません。
+実行時の generic ディスパッチも追加のランタイムタグもありません。
+
 ## FunctionBuild
 
 関数契約は `function_build` で宣言し、`fn name use Build` で結び付けます。
@@ -111,19 +138,20 @@ fn add use AddBuild {
 
 ### 呼び出し契約の solver
 
-呼び出し側（`check_call_arguments` と戻り値型の推論）は 1 つの resolver を共有します。
+呼び出し側は 1 つの resolver（`resolve_generic_call`）を共有します。
 
-1. 引数個数（不一致は `SPRS-SEM-016`）。
-2. 各パラメータパターンと実引数型を unify。`Type::Param` は束縛、`Any` は弱く後続の具体型で上書き、具体型同士の衝突は `SPRS-TYP-007`。
-3. 使った型パラメータはすべて具体型（`Any` のまま禁止）。
-4. `when` 条件を評価。
-5. 選んだ戻り値型へ代入。
+1. 明示型引数があれば個数と具象性を検査し、宣言順に先束縛する。
+2. 引数個数（不一致は `SPRS-SEM-016`）。
+3. 各パラメータパターンと実引数型を左から unify。`Type::Param` は束縛、`Any` は弱く後続の具体型で上書き、具体型同士の衝突は `SPRS-TYP-007`。
+4. 宣言した型パラメータはすべて具体型（`Any` のまま禁止）。
+5. `when` 条件を評価。
+6. 選んだ戻り値型へ代入。期待する戻り値型からはパラメータを束縛しない。
 
 条件: `is` は代入後の正規型互換、`neq` は両辺が具体型のときだけ否定、`and` / `or` / `not` は短絡、オペランドは型（型パラメータを含む）。
 成立する `when` が 0 件なら無条件の `return_type`、それもなければ注釈なし / `Any`。
 2 件以上成立すると結果型が同じでも `SPRS-TYP-007`（`multiple \`when\` rules matched`）。
 条件付き戻り値だけの本体は `Any` で検査し、呼び出し側の型は resolver 結果を使います。
-単相化も新しいランタイムタグもありません。
+ジェネリックな FunctionBuild はインラインのジェネリック `fn` と同じく、具象引数リストごとに 1 つの特殊化関数へ単相化されます。
 
 ```sprs
 function_build Identity {
@@ -133,12 +161,13 @@ function_build Identity {
     visibility(pub);
 }
 
-fn identity_i64 use Identity {
+fn identity use Identity {
     return value;
 }
 
-fn identity_str use Identity {
-    return value;
+fn main() {
+  identity<i64>(42);
+  identity("id");
 }
 ```
 

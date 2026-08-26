@@ -19,6 +19,7 @@ struct Binding {
     is_annotated: bool,
 }
 
+#[derive(Clone)]
 struct FnSig {
     params: Vec<Option<TypeAnnot>>,
     ret_ty: Option<Type>,
@@ -35,6 +36,8 @@ struct StructInfo {
 
 struct Checker<'a> {
     file: String,
+    module_name: String,
+    imports: HashSet<String>,
     scopes: Vec<HashMap<String, Binding>>,
     fns: HashMap<String, FnSig>,
     structs: HashMap<String, StructInfo>,
@@ -46,9 +49,19 @@ struct Checker<'a> {
     unsafe_depth: u32,
     current_fn_ret_ty: Option<Type>,
     current_type_params: HashSet<String>,
+    current_self_type: Option<Type>,
     struct_specializations: HashMap<hir::StructInstanceId, hir::StructSpecialization>,
     specialization_order: Vec<hir::StructInstanceId>,
     specialization_stack: Vec<hir::StructInstanceId>,
+    templates: HashMap<hir::FunctionDeclId, hir::FunctionTemplate>,
+    template_order: Vec<hir::FunctionDeclId>,
+    free_function_ids: HashMap<String, hir::FunctionDeclId>,
+    method_ids: HashMap<(String, String), hir::FunctionDeclId>,
+    function_specializations: HashMap<hir::FunctionInstanceId, hir::FunctionSpecialization>,
+    function_spec_order: Vec<hir::FunctionInstanceId>,
+    function_spec_stack: Vec<hir::FunctionInstanceId>,
+    function_requests: Vec<hir::FunctionInstanceId>,
+    requested_instances: HashSet<hir::FunctionInstanceId>,
     function_build_contracts: &'a HashMap<String, (Vec<String>, Vec<(FbCondition, Type)>)>,
 }
 
@@ -127,6 +140,8 @@ pub fn check_module(
 ) -> Result<hir::Module, SprsError> {
     let mut checker = Checker {
         file: path.to_string(),
+        module_name: module_name.to_string(),
+        imports: HashSet::new(),
         scopes: vec![HashMap::new()],
         fns: HashMap::new(),
         structs: HashMap::new(),
@@ -138,9 +153,19 @@ pub fn check_module(
         unsafe_depth: 0,
         current_fn_ret_ty: None,
         current_type_params: HashSet::new(),
+        current_self_type: None,
         struct_specializations: HashMap::new(),
         specialization_order: Vec::new(),
         specialization_stack: Vec::new(),
+        templates: HashMap::new(),
+        template_order: Vec::new(),
+        free_function_ids: HashMap::new(),
+        method_ids: HashMap::new(),
+        function_specializations: HashMap::new(),
+        function_spec_order: Vec::new(),
+        function_spec_stack: Vec::new(),
+        function_requests: Vec::new(),
+        requested_instances: HashSet::new(),
         function_build_contracts,
     };
 
@@ -180,6 +205,36 @@ pub fn check_module(
                     when_rules: f.when_rules.clone(),
                 },
             );
+            let decl = hir::FunctionDeclId {
+                module: iface.name.clone(),
+                owner: None,
+                name: f.name.clone(),
+            };
+            checker.free_function_ids.entry(f.name.clone()).or_insert(decl);
+        }
+        for template in &iface.function_templates {
+            checker.templates.insert(template.id.clone(), template.clone());
+            if template.id.owner.is_none() {
+                checker.free_function_ids.insert(template.id.name.clone(), template.id.clone());
+                checker.fns.insert(
+                    template.id.name.clone(),
+                    FnSig {
+                        params: template
+                            .params
+                            .iter()
+                            .map(|p| p.ty.clone())
+                            .collect(),
+                        ret_ty: template.ret_ty.clone(),
+                        type_params: template.function_params.clone(),
+                        when_rules: template.when_rules.clone(),
+                    },
+                );
+            } else if let Some(owner) = &template.id.owner {
+                checker.method_ids.insert(
+                    (owner.name.clone(), template.id.name.clone()),
+                    template.id.clone(),
+                );
+            }
         }
         for g in &iface.globals {
             if let Some(scope) = checker.scopes.first_mut() {
@@ -225,6 +280,7 @@ pub fn check_module(
         }
         if let Item::Import(name) = item {
             imports.push(name.clone());
+            checker.imports.insert(name.clone());
         }
     }
 
@@ -386,11 +442,12 @@ pub fn check_module(
                 name: s.ident.clone(),
             },
             name: s.ident.clone(),
-            type_params,
+            type_params: type_params.clone(),
             fields,
             is_public: s.is_public,
             span: s.span,
         });
+        checker.register_struct_methods(s, &type_params)?;
     }
 
     for item in items {
@@ -400,8 +457,12 @@ pub fn check_module(
                     .get(name)
                     .cloned()
                     .unwrap_or_default(),
-                None => (Vec::new(), Vec::new()),
+                None => (
+                    func.type_params.iter().map(|tp| tp.ident.clone()).collect(),
+                    Vec::new(),
+                ),
             };
+            checker.register_free_function(func, type_params.clone(), when_rules.clone())?;
             checker.current_type_params = type_params.iter().cloned().collect();
             let allow_type_params = !type_params.is_empty();
             let mut params = Vec::new();
@@ -513,9 +574,19 @@ pub fn check_module(
 
     for item in items {
         if let Item::FunctionItem(func) = item {
-            hir_fns.push(checker.check_function(func)?);
+            let type_params = match &func.build_ref {
+                Some(name) => function_build_contracts
+                    .get(name)
+                    .map(|c| c.0.clone())
+                    .unwrap_or_default(),
+                None => func.type_params.iter().map(|tp| tp.ident.clone()).collect(),
+            };
+            if type_params.is_empty() {
+                hir_fns.push(checker.check_function(func)?);
+            }
         }
     }
+    checker.drain_local_function_specializations()?;
 
     let struct_specializations = checker
         .specialization_order
@@ -528,6 +599,9 @@ pub fn check_module(
         functions: hir_fns,
         structs: hir_structs,
         struct_specializations,
+        function_templates: checker.function_templates_in_order(),
+        function_specializations: checker.function_specializations_in_order(),
+        specialization_requests: checker.function_requests,
         globals: hir_globals,
         closed_label_sets: hir_sets,
         atoms: hir_atoms,
@@ -536,7 +610,1030 @@ pub fn check_module(
     })
 }
 
+
+fn function_instance_display(id: &hir::FunctionInstanceId) -> String {
+    let owner = match &id.declaration.owner {
+        Some(st) => format!("{}::", Type::App(st.name.clone(), id.owner_args.clone())),
+        None => String::new(),
+    };
+    format!(
+        "{owner}{}{}",
+        id.declaration.name,
+        if id.function_args.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "<{}>",
+                id.function_args
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        }
+    )
+}
+
+fn substitute_function_ast(
+    func: &mut ast::Function,
+    bindings: &HashMap<String, Type>,
+) -> Result<(), String> {
+    for param in &mut func.params {
+        if let Some(annot) = &mut param.ty {
+            annot.ty = crate::front::type_helper::substitute_type(&annot.ty, bindings)?;
+        }
+    }
+    if let Some(ret) = &mut func.ret_ty {
+        *ret = crate::front::type_helper::substitute_type(ret, bindings)?;
+    }
+    for stmt in &mut func.blk {
+        substitute_stmt(&mut stmt.node, bindings)?;
+    }
+    Ok(())
+}
+
+fn substitute_stmt(stmt: &mut ast::Stmt, bindings: &HashMap<String, Type>) -> Result<(), String> {
+    match stmt {
+        ast::Stmt::Var(var) => {
+            if let Some(annot) = &mut var.ty {
+                annot.ty = crate::front::type_helper::substitute_type(&annot.ty, bindings)?;
+            }
+            if let Some(expr) = &mut var.expr {
+                substitute_expr(&mut expr.node, bindings)?;
+            }
+        }
+        ast::Stmt::Assign(assign) => substitute_expr(&mut assign.expr.node, bindings)?,
+        ast::Stmt::IndexAssign { collection, index, expr, .. } => {
+            substitute_expr(&mut collection.node, bindings)?;
+            substitute_expr(&mut index.node, bindings)?;
+            substitute_expr(&mut expr.node, bindings)?;
+        }
+        ast::Stmt::Expr(expr) | ast::Stmt::Defer { expr, .. } => {
+            substitute_expr(&mut expr.node, bindings)?;
+        }
+        ast::Stmt::If { cond, then_blk, else_blk } => {
+            substitute_expr(&mut cond.node, bindings)?;
+            for stmt in then_blk {
+                substitute_stmt(&mut stmt.node, bindings)?;
+            }
+            if let Some(else_blk) = else_blk {
+                for stmt in else_blk {
+                    substitute_stmt(&mut stmt.node, bindings)?;
+                }
+            }
+        }
+        ast::Stmt::While { cond, body } => {
+            substitute_expr(&mut cond.node, bindings)?;
+            for stmt in body {
+                substitute_stmt(&mut stmt.node, bindings)?;
+            }
+        }
+        ast::Stmt::Unsafe { body, .. } => {
+            for stmt in body {
+                substitute_stmt(&mut stmt.node, bindings)?;
+            }
+        }
+        ast::Stmt::Return(expr) => {
+            if let Some(expr) = expr {
+                substitute_expr(&mut expr.node, bindings)?;
+            }
+        }
+        ast::Stmt::Match { scrutinee, arms, .. } => {
+            substitute_expr(&mut scrutinee.node, bindings)?;
+            for arm in arms {
+                match &mut arm.body {
+                    ast::MatchArmBody::ExprBreak(expr) => substitute_expr(&mut expr.node, bindings)?,
+                    ast::MatchArmBody::Block(stmts) => {
+                        for stmt in stmts {
+                            substitute_stmt(&mut stmt.node, bindings)?;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn substitute_expr(expr: &mut ast::Expr, bindings: &HashMap<String, Type>) -> Result<(), String> {
+    match expr {
+        ast::Expr::Assign(_, inner)
+        | ast::Expr::Increment(inner)
+        | ast::Expr::Decrement(inner)
+        | ast::Expr::Neg(inner)
+        | ast::Expr::Try(inner)
+        | ast::Expr::HeapAlloc(inner)
+        | ast::Expr::Destroy(inner)
+        | ast::Expr::Exist(inner)
+        | ast::Expr::Label(_, inner) => substitute_expr(&mut inner.node, bindings)?,
+        ast::Expr::Add(l, r)
+        | ast::Expr::Mul(l, r)
+        | ast::Expr::Minus(l, r)
+        | ast::Expr::Div(l, r)
+        | ast::Expr::Mod(l, r)
+        | ast::Expr::Eq(l, r)
+        | ast::Expr::Neq(l, r)
+        | ast::Expr::Lt(l, r)
+        | ast::Expr::Gt(l, r)
+        | ast::Expr::Le(l, r)
+        | ast::Expr::Ge(l, r)
+        | ast::Expr::Index(l, r)
+        | ast::Expr::Range(l, r) => {
+            substitute_expr(&mut l.node, bindings)?;
+            substitute_expr(&mut r.node, bindings)?;
+        }
+        ast::Expr::Call { type_args, args, .. } => {
+            for ty in type_args {
+                *ty = crate::front::type_helper::substitute_type(ty, bindings)?;
+            }
+            for arg in args {
+                substitute_expr(&mut arg.node, bindings)?;
+            }
+        }
+        ast::Expr::MemberCall { receiver, type_args, args, .. } => {
+            substitute_expr(&mut receiver.node, bindings)?;
+            for ty in type_args {
+                *ty = crate::front::type_helper::substitute_type(ty, bindings)?;
+            }
+            for arg in args {
+                substitute_expr(&mut arg.node, bindings)?;
+            }
+        }
+        ast::Expr::ModuleAccess(_, _, args) | ast::Expr::Macro(_, args) | ast::Expr::List(args) => {
+            for arg in args {
+                substitute_expr(&mut arg.node, bindings)?;
+            }
+        }
+        ast::Expr::FieldAccess(recv, _) => substitute_expr(&mut recv.node, bindings)?,
+        ast::Expr::StructInit { ty, fields } => {
+            *ty = crate::front::type_helper::substitute_type(ty, bindings)?;
+            for (_, expr) in fields {
+                substitute_expr(&mut expr.node, bindings)?;
+            }
+        }
+        ast::Expr::Match { scrutinee, arms } => {
+            substitute_expr(&mut scrutinee.node, bindings)?;
+            for arm in arms {
+                substitute_expr(&mut arm.value.node, bindings)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+
+pub fn drain_program_function_specializations(
+    modules: &mut HashMap<String, hir::Module>,
+    function_build_contracts: &HashMap<String, (Vec<String>, Vec<(FbCondition, Type)>)>,
+) -> Result<(), SprsError> {
+    loop {
+        let mut queue = Vec::new();
+        for module in modules.values() {
+            queue.extend(module.specialization_requests.iter().cloned());
+        }
+        for module in modules.values_mut() {
+            module.specialization_requests.clear();
+        }
+        if queue.is_empty() {
+            break;
+        }
+        for id in queue {
+            let owner = id.declaration.module.clone();
+            let Some(owner_mod) = modules.get(&owner).cloned() else {
+                continue;
+            };
+            if owner_mod
+                .function_specializations
+                .iter()
+                .any(|spec| spec.id == id)
+            {
+                continue;
+            }
+            let mut imported = HashMap::new();
+            for name in &owner_mod.imports {
+                if let Some(m) = modules.get(name) {
+                    imported.insert(name.clone(), m.interface());
+                }
+            }
+            let mut specialized = check_module_from_templates(
+                &owner_mod,
+                &imported,
+                function_build_contracts,
+                id,
+            )?;
+            if let Some(dest) = modules.get_mut(&owner) {
+                dest.function_specializations
+                    .extend(specialized.function_specializations.drain(..));
+                dest.specialization_requests
+                    .extend(specialized.specialization_requests.drain(..));
+                dest.struct_specializations
+                    .extend(specialized.struct_specializations.drain(..));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn check_module_from_templates(
+    module: &hir::Module,
+    imported: &HashMap<String, hir::ModuleInterface>,
+    function_build_contracts: &HashMap<String, (Vec<String>, Vec<(FbCondition, Type)>)>,
+    id: hir::FunctionInstanceId,
+) -> Result<hir::Module, SprsError> {
+    seed_checker_and_specialize(module, imported, function_build_contracts, id)
+}
+
+fn seed_checker_and_specialize(
+    module: &hir::Module,
+    imported: &HashMap<String, hir::ModuleInterface>,
+    function_build_contracts: &HashMap<String, (Vec<String>, Vec<(FbCondition, Type)>)>,
+    id: hir::FunctionInstanceId,
+) -> Result<hir::Module, SprsError> {
+    let mut checker = Checker {
+        file: module.path.clone(),
+        module_name: module.name.clone(),
+        imports: module.imports.iter().cloned().collect(),
+        scopes: vec![HashMap::new()],
+        fns: HashMap::new(),
+        structs: HashMap::new(),
+        closed_label_sets: HashMap::new(),
+        private_closed_label_members: HashSet::new(),
+        atom_defs: HashSet::new(),
+        private_atom_defs: HashSet::new(),
+        attachments: HashSet::new(),
+        unsafe_depth: 0,
+        current_fn_ret_ty: None,
+        current_type_params: HashSet::new(),
+        current_self_type: None,
+        struct_specializations: HashMap::new(),
+        specialization_order: Vec::new(),
+        specialization_stack: Vec::new(),
+        templates: HashMap::new(),
+        template_order: Vec::new(),
+        free_function_ids: HashMap::new(),
+        method_ids: HashMap::new(),
+        function_specializations: HashMap::new(),
+        function_spec_order: Vec::new(),
+        function_spec_stack: Vec::new(),
+        function_requests: Vec::new(),
+        requested_instances: HashSet::new(),
+        function_build_contracts,
+    };
+    for (_name, iface) in imported {
+        for s in &iface.structs {
+            checker.import_struct(s);
+        }
+        for f in &iface.functions {
+            checker.fns.insert(
+                f.name.clone(),
+                FnSig {
+                    params: f
+                        .params
+                        .iter()
+                        .map(|p| {
+                            if p.is_annotated {
+                                Some(TypeAnnot {
+                                    ty: p.ty.clone(),
+                                    ambi: p.is_ambi,
+                                })
+                            } else {
+                                None
+                            }
+                        })
+                        .collect(),
+                    ret_ty: f.ret_ty.clone(),
+                    type_params: f.type_params.clone(),
+                    when_rules: f.when_rules.clone(),
+                },
+            );
+        }
+        for template in &iface.function_templates {
+            checker.templates.insert(template.id.clone(), template.clone());
+            if template.id.owner.is_none() {
+                checker
+                    .free_function_ids
+                    .insert(template.id.name.clone(), template.id.clone());
+            } else if let Some(owner) = &template.id.owner {
+                checker
+                    .method_ids
+                    .insert((owner.name.clone(), template.id.name.clone()), template.id.clone());
+            }
+        }
+        for set in &iface.closed_label_sets {
+            checker
+                .closed_label_sets
+                .insert(set.name.clone(), (set.members.clone(), set.is_public));
+        }
+        for atom in &iface.atoms {
+            checker.atom_defs.insert(atom.name.clone());
+        }
+        for g in &iface.globals {
+            if let Some(scope) = checker.scopes.first_mut() {
+                scope.insert(
+                    g.name.clone(),
+                    Binding {
+                        ty: g.binding_ty.clone(),
+                        is_ambi: g.is_ambi,
+                        is_annotated: g.is_annotated,
+                    },
+                );
+            }
+        }
+    }
+    for s in &module.structs {
+        checker.import_struct(s);
+    }
+    for spec in &module.struct_specializations {
+        checker.struct_specializations.insert(spec.id.clone(), spec.clone());
+        checker.specialization_order.push(spec.id.clone());
+    }
+    for f in &module.functions {
+        checker.fns.insert(
+            f.name.clone(),
+            FnSig {
+                params: f
+                    .params
+                    .iter()
+                    .map(|p| {
+                        if p.is_annotated {
+                            Some(TypeAnnot {
+                                ty: p.ty.clone(),
+                                ambi: p.is_ambi,
+                            })
+                        } else {
+                            None
+                        }
+                    })
+                    .collect(),
+                ret_ty: f.ret_ty.clone(),
+                type_params: f.type_params.clone(),
+                when_rules: f.when_rules.clone(),
+            },
+        );
+        checker.free_function_ids.insert(
+            f.name.clone(),
+            hir::FunctionDeclId {
+                module: module.name.clone(),
+                owner: None,
+                name: f.name.clone(),
+            },
+        );
+    }
+    for template in &module.function_templates {
+        checker.templates.insert(template.id.clone(), template.clone());
+        checker.template_order.push(template.id.clone());
+        if template.id.owner.is_none() {
+            checker
+                .free_function_ids
+                .insert(template.id.name.clone(), template.id.clone());
+            checker.fns.insert(
+                template.id.name.clone(),
+                FnSig {
+                    params: template.params.iter().map(|p| p.ty.clone()).collect(),
+                    ret_ty: template.ret_ty.clone(),
+                    type_params: template.function_params.clone(),
+                    when_rules: template.when_rules.clone(),
+                },
+            );
+        } else if let Some(owner) = &template.id.owner {
+            checker
+                .method_ids
+                .insert((owner.name.clone(), template.id.name.clone()), template.id.clone());
+        }
+    }
+    for spec in &module.function_specializations {
+        checker
+            .function_specializations
+            .insert(spec.id.clone(), spec.clone());
+        checker.function_spec_order.push(spec.id.clone());
+    }
+    for g in &module.globals {
+        if let Some(scope) = checker.scopes.first_mut() {
+            scope.insert(
+                g.name.clone(),
+                Binding {
+                    ty: g.binding_ty.clone(),
+                    is_ambi: g.is_ambi,
+                    is_annotated: g.is_annotated,
+                },
+            );
+        }
+    }
+    for set in &module.closed_label_sets {
+        checker
+            .closed_label_sets
+            .insert(set.name.clone(), (set.members.clone(), set.is_public));
+    }
+    for atom in &module.atoms {
+        checker.atom_defs.insert(atom.name.clone());
+    }
+    checker.ensure_function_instance(id, Span::DUMMY)?;
+    checker.drain_local_function_specializations()?;
+    Ok(hir::Module {
+        name: module.name.clone(),
+        path: module.path.clone(),
+        functions: Vec::new(),
+        structs: Vec::new(),
+        struct_specializations: checker
+            .specialization_order
+            .iter()
+            .filter_map(|sid| checker.struct_specializations.get(sid).cloned())
+            .collect(),
+        function_templates: Vec::new(),
+        function_specializations: checker.function_specializations_in_order(),
+        specialization_requests: checker.function_requests,
+        globals: Vec::new(),
+        closed_label_sets: Vec::new(),
+        atoms: Vec::new(),
+        imports: Vec::new(),
+        is_main: module.is_main,
+    })
+}
+
 impl Checker<'_> {
+
+    fn function_templates_in_order(&self) -> Vec<hir::FunctionTemplate> {
+        self.template_order
+            .iter()
+            .filter_map(|id| self.templates.get(id).cloned())
+            .collect()
+    }
+
+    fn function_specializations_in_order(&self) -> Vec<hir::FunctionSpecialization> {
+        self.function_spec_order
+            .iter()
+            .filter_map(|id| self.function_specializations.get(id).cloned())
+            .collect()
+    }
+
+    fn register_free_function(
+        &mut self,
+        func: &ast::Function,
+        type_params: Vec<String>,
+        when_rules: Vec<(FbCondition, Type)>,
+    ) -> Result<(), SprsError> {
+        let mut seen = HashSet::new();
+        for name in &type_params {
+            if !seen.insert(name.clone()) {
+                return Err(semantic(
+                    &self.file,
+                    func.span,
+                    11,
+                    format!("duplicate type parameter `{name}` in function `{}`", func.ident),
+                    None,
+                ));
+            }
+            if is_builtin_type_name(name) {
+                return Err(semantic(
+                    &self.file,
+                    func.span,
+                    11,
+                    format!("builtin type name `{name}` cannot be used as a type parameter"),
+                    None,
+                ));
+            }
+        }
+        let decl = hir::FunctionDeclId {
+            module: self.module_name.clone(),
+            owner: None,
+            name: func.ident.clone(),
+        };
+        if self.free_function_ids.contains_key(&func.ident) && self.templates.contains_key(&decl) {
+            return Err(semantic(
+                &self.file,
+                func.span,
+                4,
+                format!("Duplicate function: {}", func.ident),
+                None,
+            ));
+        }
+        self.free_function_ids.insert(func.ident.clone(), decl.clone());
+        if !type_params.is_empty() {
+            let mut stored = func.clone();
+            let mut bindings = HashMap::new();
+            for name in &type_params {
+                bindings.insert(name.clone(), Type::Param(name.clone()));
+            }
+            substitute_function_ast(&mut stored, &bindings).map_err(|message| {
+                semantic(&self.file, func.span, 11, message, None)
+            })?;
+            let template = hir::FunctionTemplate {
+                id: decl.clone(),
+                params: stored.params,
+                ret_ty: stored.ret_ty,
+                body: stored.blk,
+                owner_params: Vec::new(),
+                function_params: type_params,
+                is_public: func.is_public,
+                when_rules,
+                span: func.span,
+            };
+            self.templates.insert(decl.clone(), template);
+            self.template_order.push(decl);
+        }
+        Ok(())
+    }
+
+    fn register_struct_methods(
+        &mut self,
+        st: &ast::Struct,
+        owner_params: &[String],
+    ) -> Result<(), SprsError> {
+        let mut seen_methods = HashSet::new();
+        let owner = hir::StructId {
+            module: self.module_name.clone(),
+            name: st.ident.clone(),
+        };
+        let self_type = if owner_params.is_empty() {
+            Type::Struct(st.ident.clone())
+        } else {
+            Type::App(
+                st.ident.clone(),
+                owner_params.iter().cloned().map(Type::Param).collect(),
+            )
+        };
+        for method in &st.methods {
+            if !seen_methods.insert(method.ident.clone()) {
+                return Err(semantic(
+                    &self.file,
+                    method.span,
+                    4,
+                    format!("Duplicate method `{}` in struct `{}`", method.ident, st.ident),
+                    None,
+                ));
+            }
+            if method.build_ref.is_some() {
+                return Err(semantic(
+                    &self.file,
+                    method.span,
+                    11,
+                    "nested methods cannot use FunctionBuild".to_string(),
+                    None,
+                ));
+            }
+            if !method.type_params.is_empty() {
+                return Err(semantic(
+                    &self.file,
+                    method.span,
+                    11,
+                    "method-specific type parameters are not supported".to_string(),
+                    None,
+                ));
+            }
+            if method.params.first().map(|p| p.ident.as_str()) != Some("self")
+                || method.params.first().and_then(|p| p.ty.as_ref()).is_some()
+            {
+                return Err(semantic(
+                    &self.file,
+                    method.span,
+                    11,
+                    format!(
+                        "method `{}` must take unannotated `self` as its first parameter",
+                        method.ident
+                    ),
+                    None,
+                ));
+            }
+            let declared: HashSet<String> = owner_params.iter().cloned().collect();
+            let mut params = method.params.clone();
+            for param in params.iter_mut().skip(1) {
+                if let Some(annot) = &mut param.ty {
+                    resolve_declared_type_params(
+                        &mut annot.ty,
+                        &declared,
+                        &self.structs.keys().cloned().collect(),
+                        &self.closed_label_sets.keys().cloned().collect(),
+                        Some(&self_type),
+                    )
+                    .map_err(|message| semantic(&self.file, param.span, 11, message, None))?;
+                }
+            }
+            let mut ret_ty = method.ret_ty.clone();
+            if let Some(ty) = &mut ret_ty {
+                resolve_declared_type_params(
+                    ty,
+                    &declared,
+                    &self.structs.keys().cloned().collect(),
+                    &self.closed_label_sets.keys().cloned().collect(),
+                    Some(&self_type),
+                )
+                .map_err(|message| semantic(&self.file, method.span, 11, message, None))?;
+            }
+            let decl = hir::FunctionDeclId {
+                module: self.module_name.clone(),
+                owner: Some(owner.clone()),
+                name: method.ident.clone(),
+            };
+            let mut body = method.blk.clone();
+            let mut body_bindings = HashMap::new();
+            for name in owner_params {
+                body_bindings.insert(name.clone(), Type::Param(name.clone()));
+            }
+            body_bindings.insert("Self".to_string(), self_type.clone());
+            for stmt in &mut body {
+                substitute_stmt(&mut stmt.node, &body_bindings).map_err(|message| {
+                    semantic(&self.file, method.span, 11, message, None)
+                })?;
+            }
+            let template = hir::FunctionTemplate {
+                id: decl.clone(),
+                params,
+                ret_ty,
+                body,
+                owner_params: owner_params.to_vec(),
+                function_params: Vec::new(),
+                is_public: method.is_public,
+                when_rules: Vec::new(),
+                span: method.span,
+            };
+            self.templates.insert(decl.clone(), template);
+            self.template_order.push(decl.clone());
+            self.method_ids
+                .insert((st.ident.clone(), method.ident.clone()), decl);
+        }
+        Ok(())
+    }
+
+    fn drain_local_function_specializations(&mut self) -> Result<(), SprsError> {
+        let pending: Vec<_> = self
+            .function_spec_order
+            .iter()
+            .cloned()
+            .filter(|id| !self.function_specializations.contains_key(id))
+            .collect();
+        for id in pending {
+            self.ensure_function_instance(id, Span::DUMMY)?;
+        }
+        Ok(())
+    }
+
+    fn ensure_function_instance(
+        &mut self,
+        id: hir::FunctionInstanceId,
+        span: Span,
+    ) -> Result<(), SprsError> {
+        if self.function_specializations.contains_key(&id) {
+            return Ok(());
+        }
+        if self.function_spec_stack.iter().any(|existing| existing == &id) {
+            return Ok(());
+        }
+        if let Some(prev) = self
+            .function_spec_stack
+            .iter()
+            .find(|existing| existing.declaration == id.declaration)
+        {
+            return Err(semantic(
+                &self.file,
+                span,
+                11,
+                format!(
+                    "generic specialization expands recursively: {} -> {}",
+                    function_instance_display(prev),
+                    function_instance_display(&id)
+                ),
+                None,
+            ));
+        }
+        if id.declaration.module != self.module_name {
+            if self.requested_instances.insert(id.clone()) {
+                self.function_requests.push(id);
+            }
+            return Ok(());
+        }
+        let template = self.templates.get(&id.declaration).cloned().ok_or_else(|| {
+            semantic(
+                &self.file,
+                span,
+                11,
+                format!("undefined function `{}`", id.declaration.name),
+                None,
+            )
+        })?;
+        let mut bindings = HashMap::new();
+        for (param, arg) in template.owner_params.iter().zip(id.owner_args.iter()) {
+            bindings.insert(param.clone(), arg.clone());
+        }
+        for (param, arg) in template.function_params.iter().zip(id.function_args.iter()) {
+            bindings.insert(param.clone(), arg.clone());
+        }
+        if let Some(owner) = &id.declaration.owner {
+            let self_ty = if id.owner_args.is_empty() {
+                Type::Struct(owner.name.clone())
+            } else {
+                Type::App(owner.name.clone(), id.owner_args.clone())
+            };
+            bindings.insert("Self".to_string(), self_ty.clone());
+            self.current_self_type = Some(self_ty);
+        } else {
+            self.current_self_type = None;
+        }
+        let mut func = ast::Function {
+            ident: template.id.name.clone(),
+            type_params: Vec::new(),
+            params: template.params.clone(),
+            blk: template.body.clone(),
+            is_public: template.is_public,
+            ret_ty: template.ret_ty.clone(),
+            build_ref: None,
+            build_ref_span: Span::DUMMY,
+            span: template.span,
+        };
+        substitute_function_ast(&mut func, &bindings).map_err(|message| {
+            semantic(&self.file, span, 11, message, None)
+        })?;
+        if let Some(self_ty) = &self.current_self_type {
+            if let Some(first) = func.params.first_mut() {
+                if first.ident == "self" && first.ty.is_none() {
+                    first.ty = Some(TypeAnnot {
+                        ty: self_ty.clone(),
+                        ambi: false,
+                    });
+                }
+            }
+        }
+        self.function_spec_stack.push(id.clone());
+        let mut hir_fn = self.check_function(&func)?;
+        hir_fn.type_params.clear();
+        hir_fn.when_rules.clear();
+        self.function_spec_stack.pop();
+        self.current_self_type = None;
+        self.function_specializations.insert(
+            id.clone(),
+            hir::FunctionSpecialization {
+                id: id.clone(),
+                function: hir_fn,
+            },
+        );
+        if !self.function_spec_order.iter().any(|existing| existing == &id) {
+            self.function_spec_order.push(id);
+        }
+        Ok(())
+    }
+
+    fn resolve_checked_call(
+        &mut self,
+        fn_name: &str,
+        type_args: &[Type],
+        args: &[Spanned<ast::Expr>],
+        span: Span,
+    ) -> Result<(hir::CallableRef, Type), SprsError> {
+        let Some(sig) = self.fns.get(fn_name).cloned() else {
+            return Err(semantic(
+                &self.file,
+                span,
+                15,
+                format!("Undefined function: {fn_name}"),
+                None,
+            ));
+        };
+        let mut resolved_args = type_args.to_vec();
+        for arg in &mut resolved_args {
+            self.resolve_annotation_type(arg, span, false)?;
+            if contains_unresolved_type(arg) {
+                return Err(semantic(
+                    &self.file,
+                    span,
+                    11,
+                    format!("unresolved type parameter `{}`", Self::unresolved_name(arg).unwrap_or_else(|| arg.to_string())),
+                    None,
+                ));
+            }
+        }
+        let actuals: Vec<Type> = args
+            .iter()
+            .enumerate()
+            .map(|(idx, arg)| {
+                let expected = sig.params.get(idx).and_then(|p| p.as_ref()).map(|a| &a.ty);
+                self.infer_type_in(arg, expected)
+            })
+            .collect();
+        for (idx, arg) in args.iter().enumerate() {
+            if let Some(expected) = sig.params.get(idx).and_then(|p| p.as_ref()).map(|a| &a.ty) {
+                self.check_list_literal_elements(arg, expected)?;
+            }
+        }
+        let contract = self.contract_from_sig(&sig);
+        let resolved = match crate::front::function_build::resolve_generic_call(
+            &contract,
+            &resolved_args,
+            &actuals,
+        ) {
+            Ok(resolved) => resolved,
+            Err(err) => return Err(self.map_call_error(fn_name, err, span, args)),
+        };
+        let ret_ty = resolved.ret_ty.clone().unwrap_or(Type::Any);
+        let decl = self
+            .free_function_ids
+            .get(fn_name)
+            .cloned()
+            .unwrap_or(hir::FunctionDeclId {
+                module: self.module_name.clone(),
+                owner: None,
+                name: fn_name.to_string(),
+            });
+        if sig.type_params.is_empty() {
+            return Ok((
+                hir::CallableRef::Plain {
+                    module: decl.module,
+                    name: fn_name.to_string(),
+                },
+                ret_ty,
+            ));
+        }
+        let function_args: Vec<Type> = sig
+            .type_params
+            .iter()
+            .map(|name| resolved.bindings[name].clone())
+            .collect();
+        let id = hir::FunctionInstanceId {
+            declaration: decl,
+            owner_args: Vec::new(),
+            function_args,
+        };
+        self.ensure_function_instance(id.clone(), span)?;
+        Ok((hir::CallableRef::Instance(id), ret_ty))
+    }
+
+    fn resolve_method_call(
+        &mut self,
+        receiver: &Spanned<ast::Expr>,
+        name: &str,
+        type_args: &[Type],
+        args: &[Spanned<ast::Expr>],
+        span: Span,
+    ) -> Result<(hir::CallableRef, Vec<hir::Expr>, Type), SprsError> {
+        if let ast::Expr::Var(module_name) = &receiver.node {
+            if self.get_binding(module_name).is_none() && self.imports.contains(module_name) {
+                let (callee, ret_ty) = self.resolve_checked_call(name, type_args, args, span)?;
+                let args_h = self.check_args(args)?;
+                let callee = match callee {
+                    hir::CallableRef::Plain { name, .. } => hir::CallableRef::Plain {
+                        module: module_name.clone(),
+                        name,
+                    },
+                    other => other,
+                };
+                return Ok((callee, args_h, ret_ty));
+            }
+        }
+        if !type_args.is_empty() {
+            return Err(semantic(
+                &self.file,
+                span,
+                11,
+                format!("generic function `{name}` expects 0 type argument(s), found {}", type_args.len()),
+                None,
+            ));
+        }
+        let recv = self.check_expr(receiver, None)?;
+        let struct_name = match &recv.ty {
+            Type::Struct(n) => n.clone(),
+            Type::App(n, _) if self.structs.contains_key(n) => n.clone(),
+            other => {
+                return Err(type_err(
+                    &self.file,
+                    span,
+                    7,
+                    format!("method call requires a struct receiver, found {other}"),
+                    None,
+                    Some(format!("{other}")),
+                    None,
+                ));
+            }
+        };
+        let Some(decl) = self.method_ids.get(&(struct_name.clone(), name.to_string())).cloned() else {
+            return Err(semantic(
+                &self.file,
+                span,
+                15,
+                format!("Undefined function: {name}"),
+                None,
+            ));
+        };
+        let template = self.templates.get(&decl).cloned().ok_or_else(|| {
+            semantic(&self.file, span, 15, format!("Undefined function: {name}"), None)
+        })?;
+        let owner_args = match &recv.ty {
+            Type::App(_, args) => args.clone(),
+            _ => Vec::new(),
+        };
+        let mut bindings = HashMap::new();
+        for (param, arg) in template.owner_params.iter().zip(owner_args.iter()) {
+            bindings.insert(param.clone(), arg.clone());
+        }
+        let self_ty = recv.ty.clone();
+        bindings.insert("Self".to_string(), self_ty.clone());
+        let mut method_sig_params = Vec::new();
+        for param in &template.params {
+            let mut annot = param.ty.clone();
+            if let Some(a) = &mut annot {
+                a.ty = crate::front::type_helper::substitute_type(&a.ty, &bindings)
+                    .map_err(|message| semantic(&self.file, span, 11, message, None))?;
+            }
+            method_sig_params.push(annot);
+        }
+        let mut ret_ty = template.ret_ty.clone();
+        if let Some(ty) = &mut ret_ty {
+            *ty = crate::front::type_helper::substitute_type(ty, &bindings)
+                .map_err(|message| semantic(&self.file, span, 11, message, None))?;
+        }
+        let sig = FnSig {
+            params: method_sig_params,
+            ret_ty: ret_ty.clone(),
+            type_params: template.function_params.clone(),
+            when_rules: template.when_rules.clone(),
+        };
+        let mut call_args = vec![receiver.clone()];
+        call_args.extend(args.iter().cloned());
+        let actuals: Vec<Type> = std::iter::once(self_ty.clone())
+            .chain(args.iter().enumerate().map(|(idx, arg)| {
+                let expected = sig.params.get(idx + 1).and_then(|p| p.as_ref()).map(|a| &a.ty);
+                self.infer_type_in(arg, expected)
+            }))
+            .collect();
+        let contract = self.contract_from_sig(&sig);
+        if let Err(err) = crate::front::function_build::resolve_generic_call(&contract, &[], &actuals)
+        {
+            return Err(self.map_call_error(name, err, span, args));
+        }
+        let mut args_h = vec![recv];
+        args_h.extend(self.check_args(args)?);
+        let id = hir::FunctionInstanceId {
+            declaration: decl,
+            owner_args,
+            function_args: Vec::new(),
+        };
+        self.ensure_function_instance(id.clone(), span)?;
+        let ret = ret_ty.unwrap_or(Type::Any);
+        Ok((hir::CallableRef::Instance(id), args_h, ret))
+    }
+
+    fn map_call_error(
+        &self,
+        fn_name: &str,
+        err: CallContractError,
+        span: Span,
+        args: &[Spanned<ast::Expr>],
+    ) -> SprsError {
+        let span = args.first().map(|a| a.span).unwrap_or(span);
+        match err {
+            CallContractError::Arity { expected, actual } => semantic(
+                &self.file,
+                span,
+                16,
+                format!(
+                    "Argument count mismatch: function `{fn_name}` expects {expected} argument(s), found {actual}"
+                ),
+                None,
+            ),
+            CallContractError::TypeArgCount { expected, actual } => semantic(
+                &self.file,
+                span,
+                11,
+                format!("generic function `{fn_name}` expects {expected} type argument(s), found {actual}"),
+                None,
+            ),
+            CallContractError::UnresolvedTypeParam { name } => type_err(
+                &self.file,
+                span,
+                7,
+                format!("cannot infer generic type `{name}` in call to `{fn_name}`"),
+                None,
+                None,
+                None,
+            ),
+            CallContractError::TypeConflict { message } => type_err(
+                &self.file,
+                span,
+                7,
+                message,
+                None,
+                None,
+                None,
+            ),
+            CallContractError::NotConcrete { message } => type_err(
+                &self.file,
+                span,
+                7,
+                format!("Type mismatch in call to `{fn_name}`: {message}"),
+                None,
+                None,
+                None,
+            ),
+            CallContractError::MultipleMatches => type_err(
+                &self.file,
+                span,
+                7,
+                format!("Type mismatch in call to `{fn_name}`: multiple `when` rules matched"),
+                None,
+                None,
+                None,
+            ),
+        }
+    }
+
     fn import_struct(&mut self, s: &hir::Struct) {
         let mut field_indices = HashMap::new();
         for (idx, f) in s.fields.iter().enumerate() {
@@ -611,13 +1708,19 @@ impl Checker<'_> {
                     None,
                 ))
             }
-            Type::SelfType => Err(semantic(
-                &self.file,
-                span,
-                11,
-                "`Self` is only valid in struct field type annotations".to_string(),
-                None,
-            )),
+            Type::SelfType => {
+                if let Some(self_ty) = &self.current_self_type {
+                    *ty = self_ty.clone();
+                    return Ok(self.struct_ref_from_type(ty, span).ok());
+                }
+                Err(semantic(
+                    &self.file,
+                    span,
+                    11,
+                    "`Self` is only valid in struct field type annotations".to_string(),
+                    None,
+                ))
+            }
             Type::Param(name) => {
                 if allow_type_params && self.current_type_params.contains(&name) {
                     Ok(None)
@@ -1049,7 +2152,14 @@ impl Checker<'_> {
                 }
                 result.unwrap_or(Type::Any)
             }
-            ast::Expr::Call(name, args) => self.infer_call_return_type(name, args),
+            ast::Expr::Call { name, args, .. } => self.infer_call_return_type(name, args),
+            ast::Expr::MemberCall { receiver, name, args, .. } => {
+                if let ast::Expr::Var(_) = &receiver.node {
+                    self.infer_call_return_type(name, args)
+                } else {
+                    Type::Any
+                }
+            }
             ast::Expr::ModuleAccess(_, function_name, args) => {
                 self.infer_call_return_type(function_name, args)
             }
@@ -1210,67 +2320,6 @@ impl Checker<'_> {
         }
     }
 
-    fn check_call_arguments(&self, fn_name: &str, args: &[Spanned<ast::Expr>]) -> Result<(), SprsError> {
-        let Some(sig) = self.fns.get(fn_name) else {
-            return Ok(());
-        };
-        let actuals: Vec<Type> = args
-            .iter()
-            .enumerate()
-            .map(|(idx, arg)| {
-                let expected = sig.params.get(idx).and_then(|p| p.as_ref()).map(|a| &a.ty);
-                self.infer_type_in(arg, expected)
-            })
-            .collect();
-        for (idx, arg) in args.iter().enumerate() {
-            if let Some(expected) = sig.params.get(idx).and_then(|p| p.as_ref()).map(|a| &a.ty) {
-                self.check_list_literal_elements(arg, expected)?;
-            }
-        }
-        let contract = self.contract_from_sig(sig);
-        match resolve_call_contract(&contract, &actuals) {
-            Ok(_) => Ok(()),
-            Err(CallContractError::Arity { expected, actual }) => {
-                let span = args.first().map(|a| a.span).unwrap_or(Span::DUMMY);
-                Err(semantic(
-                    &self.file,
-                    span,
-                    16,
-                    format!(
-                        "Argument count mismatch: function `{}` expects {} argument(s), found {}",
-                        fn_name, expected, actual
-                    ),
-                    None,
-                ))
-            }
-            Err(err) => {
-                let span = args.first().map(|a| a.span).unwrap_or(Span::DUMMY);
-                let message = match &err {
-                    CallContractError::TypeConflict { message } => {
-                        format!("Type mismatch in call to `{}`: {}", fn_name, message)
-                    }
-                    CallContractError::UnresolvedTypeParam { name } => {
-                        format!(
-                            "Type mismatch in call to `{}`: type parameter `{}` was not resolved to a concrete type",
-                            fn_name, name
-                        )
-                    }
-                    CallContractError::NotConcrete { message } => {
-                        format!("Type mismatch in call to `{}`: {}", fn_name, message)
-                    }
-                    CallContractError::MultipleMatches => {
-                        format!(
-                            "Type mismatch in call to `{}`: multiple `when` rules matched",
-                            fn_name
-                        )
-                    }
-                    CallContractError::Arity { .. } => unreachable!("handled above"),
-                };
-                Err(type_err(&self.file, span, 7, message, None, None, None))
-            }
-        }
-    }
-
     fn check_dynamic_label_parts(&self, parts: &[LabelNamePart]) -> Result<(), SprsError> {
         for part in parts {
             if let LabelNamePart::Ident(ident) = part {
@@ -1391,18 +2440,27 @@ impl Checker<'_> {
                 let ty = h.ty.clone();
                 (hir::ExprKind::Neg(Box::new(h)), ty)
             }
-            ast::Expr::Call(name, args) => {
-                self.check_call_arguments(name, args)?;
+            ast::Expr::Call { name, type_args, args } => {
+                let (callee, ret_ty) = self.resolve_checked_call(name, type_args, args, span)?;
                 let args_h = self.check_args(args)?;
-                (hir::ExprKind::Call(name.clone(), args_h), self.infer_call_return_type(name, args))
+                (hir::ExprKind::Call { callee, args: args_h }, ret_ty)
+            }
+            ast::Expr::MemberCall { receiver, name, type_args, args } => {
+                let (callee, args_h, ret_ty) =
+                    self.resolve_method_call(receiver, name, type_args, args, span)?;
+                (hir::ExprKind::Call { callee, args: args_h }, ret_ty)
             }
             ast::Expr::ModuleAccess(module_name, function_name, args) => {
-                self.check_call_arguments(function_name, args)?;
+                let (callee, ret_ty) = self.resolve_checked_call(function_name, &[], args, span)?;
                 let args_h = self.check_args(args)?;
-                (
-                    hir::ExprKind::ModuleAccess(module_name.clone(), function_name.clone(), args_h),
-                    self.infer_call_return_type(function_name, args),
-                )
+                let callee = match callee {
+                    hir::CallableRef::Plain { name, .. } => hir::CallableRef::Plain {
+                        module: module_name.clone(),
+                        name,
+                    },
+                    other => other,
+                };
+                (hir::ExprKind::Call { callee, args: args_h }, ret_ty)
             }
             ast::Expr::Macro(ident, args) => self.check_macro(ident, args, span)?,
             ast::Expr::List(elements) => {
@@ -1931,7 +2989,10 @@ impl Checker<'_> {
                 .get(name)
                 .cloned()
                 .unwrap_or_default(),
-            None => (Vec::new(), Vec::new()),
+            None => (
+                func.type_params.iter().map(|tp| tp.ident.clone()).collect(),
+                Vec::new(),
+            ),
         };
         self.current_type_params = type_params_early.iter().cloned().collect();
         let allow_type_params = !type_params_early.is_empty();
@@ -1978,7 +3039,10 @@ impl Checker<'_> {
                 .get(name)
                 .cloned()
                 .unwrap_or_default(),
-            None => (Vec::new(), Vec::new()),
+            None => (
+                func.type_params.iter().map(|tp| tp.ident.clone()).collect(),
+                Vec::new(),
+            ),
         };
         let ret_ty = self.current_fn_ret_ty.take();
         self.current_type_params.clear();
@@ -2231,20 +3295,29 @@ mod tests {
     use crate::front::parser::parse_only;
 
     fn check(src: &str) -> Result<hir::Module, SprsError> {
-        let mut items = parse_only(src, "test.sprs").expect("parse");
+        check_named("test", src, &HashMap::new())
+    }
+
+    fn check_named(
+        module_name: &str,
+        src: &str,
+        imported: &HashMap<String, hir::ModuleInterface>,
+    ) -> Result<hir::Module, SprsError> {
+        let path = format!("{module_name}.sprs");
+        let mut items = parse_only(src, &path).expect("parse");
         let known_structs = crate::front::function_build::known_structs_from_items(&items);
         let known_closed = HashSet::new();
         crate::front::function_build::resolve_function_build_types(
             &mut items,
             &known_structs,
             &known_closed,
-            "test.sprs",
+            &path,
         )?;
         let mut registry = crate::front::function_build::FunctionBuildRegistry::default();
         let local =
-            crate::front::function_build::collect_local_function_builds(&items, "test.sprs", false)?;
+            crate::front::function_build::collect_local_function_builds(&items, &path, false)?;
         crate::front::function_build::insert_builds(&mut registry, local)?;
-        crate::front::function_build::lower_functions_with_builds(&mut items, &registry, "test.sprs")?;
+        crate::front::function_build::lower_functions_with_builds(&mut items, &registry, &path)?;
         let mut contracts = HashMap::new();
         for (name, build) in &registry.builds {
             contracts.insert(
@@ -2255,7 +3328,7 @@ mod tests {
                 ),
             );
         }
-        check_module(&items, "test", "test.sprs", &HashMap::new(), &contracts)
+        check_module(&items, module_name, &path, imported, &contracts)
     }
 
     fn err_message(err: &SprsError) -> String {
@@ -2537,7 +3610,7 @@ fn f(x >> Node(i64)) {}
     }
 
     #[test]
-    fn rejects_unresolved_specialization_from_type_param() {
+    fn generic_function_body_waits_for_a_call() {
         let src = r#"
 struct Pair(T) { a >> T, b >> T }
 function_build Take {
@@ -2549,12 +3622,237 @@ fn f use Take {
     return x.a;
 }
 "#;
-        let err = check(src).expect_err("unresolved");
+        let module = check(src).expect("template");
+        assert!(module.functions.is_empty());
+        assert_eq!(module.function_templates.len(), 1);
+        assert!(module.struct_specializations.is_empty());
+        assert!(module.function_specializations.is_empty());
+    }
+
+    #[test]
+    fn generic_calls_create_distinct_instances() {
+        let src = r#"
+fn same<T>(left >> T, right >> T) >> T { return left; }
+fn main() {
+    same(1, 2);
+    same("a", "b");
+}
+"#;
+        let module = check(src).expect("check");
+        assert_eq!(module.function_specializations.len(), 2);
+        let args: Vec<Vec<Type>> = module
+            .function_specializations
+            .iter()
+            .map(|spec| spec.id.function_args.clone())
+            .collect();
+        assert!(args.contains(&vec![Type::Int]) || args.contains(&vec![Type::TypeI64]));
+        assert!(args.iter().any(|a| a == &vec![Type::Str]));
+    }
+
+    #[test]
+    fn identical_generic_calls_dedup() {
+        let src = r#"
+fn same<T>(left >> T, right >> T) >> T { return left; }
+fn main() {
+    same(1, 2);
+    same(3, 4);
+}
+"#;
+        let module = check(src).expect("check");
+        assert_eq!(module.function_specializations.len(), 1);
+    }
+
+    #[test]
+    fn ordinary_generic_recursion_is_allowed() {
+        let src = r#"
+fn rec<T>(n >> i64, value >> T) >> T {
+    if n == 0 {
+        return value;
+    }
+    return rec(n - 1, value);
+}
+fn main() {
+    rec(2, 1);
+}
+"#;
+        let module = check(src).expect("check");
+        assert_eq!(module.function_specializations.len(), 1);
+    }
+
+    #[test]
+    fn expanding_generic_recursion_is_rejected() {
+        let src = r#"
+fn wrap<T>(value >> T) >> T {
+    return wrap([value]);
+}
+fn main() {
+    wrap(1);
+}
+"#;
+        let err = check(src).expect_err("expand");
         assert_eq!(err_code(&err), (ErrorCategory::Semantic, 11));
+        assert!(err_message(&err).contains("generic specialization expands recursively"));
+    }
+
+    #[test]
+    fn does_not_infer_from_return_type_only() {
+        let src = r#"
+fn make<T>() >> T { }
+fn main() {
+    var x >> i64 = make();
+}
+"#;
+        let err = check(src).expect_err("no return inference");
+        assert_eq!(err_code(&err), (ErrorCategory::Type, 7));
+        assert!(err_message(&err).contains("cannot infer generic type `T`"));
+    }
+
+    #[test]
+    fn method_substitutes_owner_args() {
+        let src = r#"
+struct MethodBox(T) {
+    value >> T,
+    pub fn get(self) >> T { return self.value; }
+}
+fn main() {
+    var box = init MethodBox(i64) { value = 42 };
+    box.get();
+}
+"#;
+        let module = check(src).expect("check");
+        assert_eq!(module.function_specializations.len(), 1);
         assert_eq!(
-            err_message(&err),
-            "unresolved type parameter `T` while specializing `Pair(T)`"
+            module.function_specializations[0].id.owner_args,
+            vec![Type::TypeI64]
         );
+        assert_eq!(
+            module.function_specializations[0].function.ret_ty,
+            Some(Type::TypeI64)
+        );
+    }
+
+    #[test]
+    fn same_method_name_is_separated_by_owner() {
+        let src = r#"
+struct A { pub fn get(self) >> i64 { return 1; } }
+struct B { pub fn get(self) >> str { return "x"; } }
+fn main() {
+    var a = init A {};
+    var b = init B {};
+    a.get();
+    b.get();
+}
+"#;
+        let module = check(src).expect("check");
+        assert_eq!(module.function_specializations.len(), 2);
+        let owners: Vec<String> = module
+            .function_specializations
+            .iter()
+            .map(|spec| spec.id.declaration.owner.as_ref().unwrap().name.clone())
+            .collect();
+        assert!(owners.contains(&"A".to_string()));
+        assert!(owners.contains(&"B".to_string()));
+    }
+
+    #[test]
+    fn method_on_non_struct_receiver_is_type_error() {
+        let src = r#"
+fn main() {
+    1.get();
+}
+"#;
+        let err = check(src).expect_err("receiver");
+        assert_eq!(err_code(&err), (ErrorCategory::Type, 7));
+        assert!(err_message(&err).contains("method call requires a struct receiver"));
+    }
+
+    #[test]
+    fn private_imported_method_is_rejected() {
+        let lib = check_named(
+            "lib",
+            r#"
+pkg lib;
+pub struct MethodBox {
+    value >> i64,
+    fn get(self) >> i64 { return self.value; }
+}
+"#,
+            &HashMap::new(),
+        )
+        .expect("lib");
+        let mut imported = HashMap::new();
+        imported.insert("lib".to_string(), lib.interface());
+        let err = check_named(
+            "main",
+            r#"
+pkg main;
+import lib;
+fn main() {
+    var box = init MethodBox { value = 1 };
+    box.get();
+}
+"#,
+            &imported,
+        )
+        .expect_err("private method");
+        assert_eq!(err_code(&err), (ErrorCategory::Semantic, 15));
+        assert!(err_message(&err).contains("Undefined function: get"));
+    }
+
+    #[test]
+    fn cross_module_generic_calls_dedup() {
+        let lib = check_named(
+            "lib",
+            r#"
+pkg lib;
+pub fn same<T>(left >> T, right >> T) >> T { return left; }
+"#,
+            &HashMap::new(),
+        )
+        .expect("lib");
+        let mut imported = HashMap::new();
+        imported.insert("lib".to_string(), lib.interface());
+        let a = check_named(
+            "a",
+            r#"
+pkg a;
+import lib;
+fn go() { lib.same(1, 2); }
+"#,
+            &imported,
+        )
+        .expect("a");
+        let b = check_named(
+            "b",
+            r#"
+pkg b;
+import lib;
+fn go() { lib.same(3, 4); }
+"#,
+            &imported,
+        )
+        .expect("b");
+        let mut modules = HashMap::new();
+        modules.insert("lib".to_string(), lib);
+        modules.insert("a".to_string(), a);
+        modules.insert("b".to_string(), b);
+        drain_program_function_specializations(&mut modules, &HashMap::new()).expect("drain");
+        assert_eq!(modules["lib"].function_specializations.len(), 1);
+        assert!(modules["a"].function_specializations.is_empty());
+        assert!(modules["b"].function_specializations.is_empty());
+    }
+
+    #[test]
+    fn conflicting_generic_arguments_are_type_errors() {
+        let src = r#"
+fn same<T>(left >> T, right >> T) >> T { return left; }
+fn main() {
+    same(1, "x");
+}
+"#;
+        let err = check(src).expect_err("conflict");
+        assert_eq!(err_code(&err), (ErrorCategory::Type, 7));
+        assert!(err_message(&err).contains("type parameter `T` was already resolved to"));
     }
 
     #[test]
