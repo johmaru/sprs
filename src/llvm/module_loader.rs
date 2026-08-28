@@ -1,10 +1,8 @@
 use crate::front::ast;
 use crate::front::error::{ErrorCategory, ErrorCode, Location, SprsError};
-use crate::front::span::Span;
-use crate::llvm::compiler::{
-    Compiler, LINUX_STR, OS, WINDOWS_STR,
-};
 use crate::front::parser::parse_only;
+use crate::front::span::Span;
+use crate::llvm::compiler::{Compiler, LINUX_STR, OS, WINDOWS_STR};
 use crate::llvm::value::build_label_is_error;
 use crate::naming;
 use inkwell::AddressSpace;
@@ -27,14 +25,14 @@ impl<'ctx> Compiler<'ctx> {
             &mut self.hir_modules,
             &self.function_build_contracts,
         )?;
-        let hir_mod = self
-            .hir_modules
-            .get(module_name)
-            .cloned()
-            .ok_or_else(|| SprsError::Internal {
-                message: format!("missing typed module {module_name}"),
-                location: None,
-            })?;
+        let hir_mod =
+            self.hir_modules
+                .get(module_name)
+                .cloned()
+                .ok_or_else(|| SprsError::Internal {
+                    message: format!("missing typed module {module_name}"),
+                    location: None,
+                })?;
         for import_name in &hir_mod.imports {
             self.load_and_compile_module(import_name, None)?;
         }
@@ -42,9 +40,14 @@ impl<'ctx> Compiler<'ctx> {
             return Ok(());
         }
         self.current_file = hir_mod.path.clone();
-        let llvm_module_name = if hir_mod.is_main { "main".to_string() } else { hir_mod.name.clone() };
+        let llvm_module_name = if hir_mod.is_main {
+            "main".to_string()
+        } else {
+            hir_mod.name.clone()
+        };
 
         let module = self.context.create_module(&llvm_module_name);
+        self.apply_module_target(&module);
         self.inject_runtime_constants(&module);
         self.builder.clear_insertion_position();
 
@@ -226,7 +229,8 @@ impl<'ctx> Compiler<'ctx> {
 
         let mut registry = FunctionBuildRegistry::default();
         let mut stack = vec![module_name.to_string()];
-        let mut known_closed_sets: HashSet<String> = self.closed_label_sets.iter().cloned().collect();
+        let mut known_closed_sets: HashSet<String> =
+            self.closed_label_sets.iter().cloned().collect();
         for item in items.iter() {
             if let ast::Item::ClosedLabelSetItem(set) = item {
                 known_closed_sets.insert(set.ident.clone());
@@ -284,9 +288,9 @@ impl<'ctx> Compiler<'ctx> {
         for item in items {
             if let ast::Item::Preprocessor(pre) = item {
                 if pre.starts_with("Windows") {
-                    self.target_os = OS::Windows;
+                    self.set_compile_target(OS::Windows);
                 } else if pre.starts_with("Linux") {
-                    self.target_os = OS::Linux;
+                    self.set_compile_target(OS::Linux);
                 }
             }
         }
@@ -486,7 +490,11 @@ impl<'ctx> Compiler<'ctx> {
         self.register_atom_def(&ast_def)
     }
 
-    pub(crate) fn declare_fn_prototype(&mut self, func: &crate::front::hir::Function, module: &Module<'ctx>) {
+    pub(crate) fn declare_fn_prototype(
+        &mut self,
+        func: &crate::front::hir::Function,
+        module: &Module<'ctx>,
+    ) {
         let arg_types: Vec<BasicMetadataTypeEnum> = (0..func.params.len())
             .map(|_| self.context.ptr_type(AddressSpace::default()).into())
             .collect();
@@ -507,7 +515,5 @@ impl<'ctx> Compiler<'ctx> {
         if !func.is_public {
             fn_val.set_linkage(Linkage::Private);
         }
-
     }
 }
-

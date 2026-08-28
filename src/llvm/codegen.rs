@@ -1005,6 +1005,7 @@ impl<'ctx> Compiler<'ctx> {
 mod tests {
     use super::*;
     use crate::front::hir;
+    use crate::front::label_name::LabelName;
     use crate::front::span::Span;
     use crate::front::type_helper::Type;
     use crate::llvm::compiler::{StoreTag, StoreValue};
@@ -1203,6 +1204,18 @@ mod tests {
                 sprs_runtime::__error_label_from_str as *const () as usize,
             );
         }
+        if let Some(f) = module.get_function("__atom_from_bytes") {
+            engine.add_global_mapping(&f, sprs_runtime::__atom_from_bytes as *const () as usize);
+        }
+        if let Some(f) = module.get_function("__label_new") {
+            engine.add_global_mapping(&f, sprs_runtime::__label_new as *const () as usize);
+        }
+        if let Some(f) = module.get_function("__live_slot_count") {
+            engine.add_global_mapping(&f, sprs_runtime::__live_slot_count as *const () as usize);
+        }
+        if let Some(f) = module.get_function("__string_eq") {
+            engine.add_global_mapping(&f, sprs_runtime::__string_eq as *const () as usize);
+        }
     }
 
     fn add_one(ptr_ty: Type) -> hir::Expr {
@@ -1385,6 +1398,7 @@ mod tests {
         stride_ir_for(Type::TypeI64, 8);
         stride_ir_for(Type::TypeUsize, 8);
         stride_ir_for(Type::App("MaybeUninit".into(), vec![Type::TypeI64]), 8);
+        stride_ir_for(Type::Label, 16);
     }
 
     #[test]
@@ -1881,5 +1895,399 @@ mod tests {
         let result = unsafe { f.call() };
         assert_eq!(result.tag, Tag::Integer as i32);
         assert_eq!(result.data, 1);
+    }
+
+    #[test]
+    fn label_atom_and_payload_roundtrip_same_place() {
+        let context = Context::create();
+        let builder = context.create_builder();
+        let mut compiler = Compiler::new(&context, builder, "label_rt.sprs".into());
+        let module = context.create_module("label_rt");
+        let layout = compiler.storage_layout(&Type::Label).unwrap();
+        assert_eq!(layout.size, 16);
+        let ptr_ty = Type::App(
+            "Ptr".into(),
+            vec![Type::App("MaybeUninit".into(), vec![Type::Label])],
+        );
+        let mu = Type::App("MaybeUninit".into(), vec![Type::Label]);
+        let deref = expr(
+            hir::ExprKind::Deref(Box::new(expr(
+                hir::ExprKind::Var("p".into()),
+                ptr_ty.clone(),
+            ))),
+            mu.clone(),
+        );
+        let atom = expr(hir::ExprKind::AtomRef("ready".into()), Type::Label);
+        let body = vec![
+            stmt(hir::StmtKind::Expr(expr(
+                hir::ExprKind::Macro("init".into(), vec![deref.clone(), atom]),
+                Type::Unit,
+            ))),
+            stmt(hir::StmtKind::Return(Some(expr(
+                hir::ExprKind::Macro("take".into(), vec![deref]),
+                Type::Label,
+            )))),
+        ];
+        let func = hir::Function {
+            name: "label_rt".into(),
+            params: Vec::new(),
+            body,
+            ret_ty: Some(Type::Label),
+            is_public: true,
+            type_params: Vec::new(),
+            when_rules: Vec::new(),
+            span: dummy_span(),
+        };
+        compiler.declare_fn_prototype(&func, &module);
+        let fn_val = module.get_function("label_rt").expect("prototype");
+        let entry = context.append_basic_block(fn_val, "entry");
+        compiler.builder.position_at_end(entry);
+        compiler.function_signatures = Some(fn_val);
+        compiler.enter_scope();
+        let slot = compiler
+            .builder
+            .build_alloca(layout.llvm_type, "label_slot")
+            .unwrap();
+        let p = create_entry_block_alloca(&mut compiler, "p").expect("p");
+        let addr = compiler
+            .builder
+            .build_ptr_to_int(slot, context.i64_type(), "label_addr")
+            .unwrap();
+        compiler.build_runtime_value_store(
+            p,
+            StoreTag::Int(Tag::RawPtr as u64),
+            StoreValue::Int(addr),
+            "ptr",
+        );
+        compiler.add_variable("p".into(), p.into());
+        for name in [
+            "__drop",
+            "__clone",
+            "__panic",
+            "__atom_from_bytes",
+            "__label_new",
+            "__struct_new",
+            "__struct_borrow",
+            "__struct_track_value",
+            "__struct_forget_owned",
+        ] {
+            let _ = compiler.get_runtime_fn(&module, name).expect(name);
+        }
+        compiler
+            .compile_block(&func.body, &module)
+            .expect("compile");
+        if compiler
+            .builder
+            .get_insert_block()
+            .unwrap()
+            .get_terminator()
+            .is_none()
+        {
+            compiler.exit_scope(&module).expect("exit");
+        } else if !compiler.scopes.is_empty() {
+            compiler.scopes.pop();
+        }
+        assert!(fn_val.verify(true), "invalid label_rt");
+        Target::initialize_native(&InitializationConfig::default()).expect("native target");
+        let engine = module
+            .create_jit_execution_engine(OptimizationLevel::None)
+            .expect("jit");
+        map_runtime(&engine, &module);
+        type TestFn = unsafe extern "C" fn() -> SprsValue;
+        let f = unsafe { engine.get_function::<TestFn>("label_rt") }.expect("lookup");
+        let atom = unsafe { f.call() };
+        assert_eq!(atom.tag, Tag::Atom as i32);
+        assert_ne!(atom.tag, Tag::Label as i32);
+
+        // Second function: payload only, same layout contract.
+        let builder = context.create_builder();
+        let mut compiler = Compiler::new(&context, builder, "label_payload.sprs".into());
+        let module = context.create_module("label_payload");
+        let layout = compiler.storage_layout(&Type::Label).unwrap();
+        let ptr_ty = Type::App(
+            "Ptr".into(),
+            vec![Type::App("MaybeUninit".into(), vec![Type::Label])],
+        );
+        let mu = Type::App("MaybeUninit".into(), vec![Type::Label]);
+        let deref = expr(
+            hir::ExprKind::Deref(Box::new(expr(
+                hir::ExprKind::Var("p".into()),
+                ptr_ty.clone(),
+            ))),
+            mu.clone(),
+        );
+        let payload = expr(
+            hir::ExprKind::Label(
+                LabelName::Static("ok".into()),
+                Box::new(expr(hir::ExprKind::Number(42), Type::TypeI64)),
+            ),
+            Type::Label,
+        );
+        let body = vec![
+            stmt(hir::StmtKind::Expr(expr(
+                hir::ExprKind::Macro("init".into(), vec![deref.clone(), payload]),
+                Type::Unit,
+            ))),
+            stmt(hir::StmtKind::Return(Some(expr(
+                hir::ExprKind::Macro("take".into(), vec![deref]),
+                Type::Label,
+            )))),
+        ];
+        let func = hir::Function {
+            name: "label_payload".into(),
+            params: Vec::new(),
+            body,
+            ret_ty: Some(Type::Label),
+            is_public: true,
+            type_params: Vec::new(),
+            when_rules: Vec::new(),
+            span: dummy_span(),
+        };
+        compiler.declare_fn_prototype(&func, &module);
+        let fn_val = module.get_function("label_payload").expect("prototype");
+        let entry = context.append_basic_block(fn_val, "entry");
+        compiler.builder.position_at_end(entry);
+        compiler.function_signatures = Some(fn_val);
+        compiler.enter_scope();
+        let slot = compiler
+            .builder
+            .build_alloca(layout.llvm_type, "label_slot")
+            .unwrap();
+        let p = create_entry_block_alloca(&mut compiler, "p").expect("p");
+        let addr = compiler
+            .builder
+            .build_ptr_to_int(slot, context.i64_type(), "label_addr")
+            .unwrap();
+        compiler.build_runtime_value_store(
+            p,
+            StoreTag::Int(Tag::RawPtr as u64),
+            StoreValue::Int(addr),
+            "ptr",
+        );
+        compiler.add_variable("p".into(), p.into());
+        for name in [
+            "__drop",
+            "__clone",
+            "__panic",
+            "__atom_from_bytes",
+            "__label_new",
+            "__struct_new",
+            "__struct_borrow",
+            "__struct_track_value",
+            "__struct_forget_owned",
+        ] {
+            let _ = compiler.get_runtime_fn(&module, name).expect(name);
+        }
+        compiler
+            .compile_block(&func.body, &module)
+            .expect("compile");
+        if compiler
+            .builder
+            .get_insert_block()
+            .unwrap()
+            .get_terminator()
+            .is_none()
+        {
+            compiler.exit_scope(&module).expect("exit");
+        } else if !compiler.scopes.is_empty() {
+            compiler.scopes.pop();
+        }
+        assert!(fn_val.verify(true), "invalid label_payload");
+        let engine = module
+            .create_jit_execution_engine(OptimizationLevel::None)
+            .expect("jit");
+        map_runtime(&engine, &module);
+        let f = unsafe { engine.get_function::<TestFn>("label_payload") }.expect("lookup");
+        let payload = unsafe { f.call() };
+        assert_eq!(payload.tag, Tag::Label as i32);
+        sprs_runtime::__drop(payload.tag, payload.data);
+    }
+
+    #[test]
+    fn struct_clone_read_forgets_temp_slab() {
+        let context = Context::create();
+        let builder = context.create_builder();
+        let mut compiler = Compiler::new(&context, builder, "box_clone.sprs".into());
+        let module = context.create_module("box_clone");
+        compiler
+            .register_struct(
+                "Box".into(),
+                vec![crate::front::ast::StructField {
+                    ident: "value".into(),
+                    ty: Some(Type::Str),
+                    default_value: None,
+                    span: dummy_span(),
+                }],
+            )
+            .unwrap();
+        let box_ty = Type::Struct("Box".into());
+        let layout = compiler.storage_layout(&box_ty).unwrap();
+        let ptr_mu = Type::App(
+            "Ptr".into(),
+            vec![Type::App("MaybeUninit".into(), vec![box_ty.clone()])],
+        );
+        let mu = Type::App("MaybeUninit".into(), vec![box_ty.clone()]);
+        let ptr_ty = Type::App("Ptr".into(), vec![box_ty.clone()]);
+        let deref_mu = expr(
+            hir::ExprKind::Deref(Box::new(expr(
+                hir::ExprKind::Var("p".into()),
+                ptr_mu.clone(),
+            ))),
+            mu.clone(),
+        );
+        let init_struct = expr(
+            hir::ExprKind::StructInit {
+                struct_ref: hir::StructRef::Plain("Box".into()),
+                fields: vec![(0, expr(hir::ExprKind::Str("hello".into()), Type::Str))],
+            },
+            box_ty.clone(),
+        );
+        let body = vec![
+            stmt(hir::StmtKind::Var {
+                name: "b".into(),
+                binding_ty: box_ty.clone(),
+                is_ambi: false,
+                is_annotated: true,
+                init: init_struct,
+            }),
+            stmt(hir::StmtKind::Expr(expr(
+                hir::ExprKind::Macro(
+                    "init".into(),
+                    vec![
+                        deref_mu.clone(),
+                        expr(hir::ExprKind::Var("b".into()), box_ty.clone()),
+                    ],
+                ),
+                Type::Unit,
+            ))),
+            stmt(hir::StmtKind::Var {
+                name: "q".into(),
+                binding_ty: ptr_ty.clone(),
+                is_ambi: false,
+                is_annotated: true,
+                init: expr(
+                    hir::ExprKind::Macro("ref".into(), vec![deref_mu.clone()]),
+                    ptr_ty.clone(),
+                ),
+            }),
+            stmt(hir::StmtKind::Var {
+                name: "copied".into(),
+                binding_ty: box_ty.clone(),
+                is_ambi: false,
+                is_annotated: true,
+                init: expr(
+                    hir::ExprKind::Deref(Box::new(expr(
+                        hir::ExprKind::Var("q".into()),
+                        ptr_ty.clone(),
+                    ))),
+                    box_ty.clone(),
+                ),
+            }),
+            stmt(hir::StmtKind::Var {
+                name: "original".into(),
+                binding_ty: box_ty.clone(),
+                is_ambi: false,
+                is_annotated: true,
+                init: expr(
+                    hir::ExprKind::Macro("take".into(), vec![deref_mu]),
+                    box_ty.clone(),
+                ),
+            }),
+            stmt(hir::StmtKind::Return(Some(expr(
+                hir::ExprKind::Number(1),
+                Type::TypeI64,
+            )))),
+        ];
+        let func = hir::Function {
+            name: "box_clone".into(),
+            params: Vec::new(),
+            body,
+            ret_ty: Some(Type::TypeI64),
+            is_public: true,
+            type_params: Vec::new(),
+            when_rules: Vec::new(),
+            span: dummy_span(),
+        };
+        compiler.declare_fn_prototype(&func, &module);
+        let fn_val = module.get_function("box_clone").expect("prototype");
+        let entry = context.append_basic_block(fn_val, "entry");
+        compiler.builder.position_at_end(entry);
+        compiler.function_signatures = Some(fn_val);
+        compiler.enter_scope();
+        let slot = compiler
+            .builder
+            .build_alloca(layout.llvm_type, "box_slot")
+            .unwrap();
+        let p = create_entry_block_alloca(&mut compiler, "p").expect("p");
+        let addr = compiler
+            .builder
+            .build_ptr_to_int(slot, context.i64_type(), "box_addr")
+            .unwrap();
+        compiler.build_runtime_value_store(
+            p,
+            StoreTag::Int(Tag::RawPtr as u64),
+            StoreValue::Int(addr),
+            "ptr",
+        );
+        compiler.add_variable("p".into(), p.into());
+        for name in [
+            "__drop",
+            "__clone",
+            "__panic",
+            "__string_new",
+            "__string_eq",
+            "__struct_new",
+            "__struct_borrow",
+            "__struct_track_value",
+            "__struct_forget_owned",
+            "__live_slot_count",
+        ] {
+            let _ = compiler.get_runtime_fn(&module, name).expect(name);
+        }
+        compiler
+            .compile_block(&func.body, &module)
+            .expect("compile");
+        if compiler
+            .builder
+            .get_insert_block()
+            .unwrap()
+            .get_terminator()
+            .is_none()
+        {
+            compiler.exit_scope(&module).expect("exit");
+        } else if !compiler.scopes.is_empty() {
+            compiler.scopes.pop();
+        }
+        assert!(fn_val.verify(true), "invalid box_clone");
+        let ir = module.print_to_string().to_string();
+        let struct_clones = ir.matches("clone_forget_temp").count();
+        assert_eq!(
+            struct_clones, 1,
+            "Clone read must clone then forget the temp struct once\n{ir}"
+        );
+        assert!(
+            ir.contains("call { i32, i64 } @__clone")
+                || ir.contains("call {{ i32, i64 }} @__clone"),
+            "Clone read must call __clone\n{ir}"
+        );
+        let before = sprs_runtime::__live_slot_count();
+        Target::initialize_native(&InitializationConfig::default()).expect("native target");
+        let engine = module
+            .create_jit_execution_engine(OptimizationLevel::None)
+            .expect("jit");
+        map_runtime(&engine, &module);
+        if let Some(f) = module.get_function("__string_from_cstr") {
+            engine.add_global_mapping(&f, sprs_runtime::__string_from_cstr as *const () as usize);
+        }
+        type TestFn = unsafe extern "C" fn() -> SprsValue;
+        let f = unsafe { engine.get_function::<TestFn>("box_clone") }.expect("lookup");
+        let result = unsafe { f.call() };
+        assert_eq!(result.tag, Tag::Integer as i32);
+        assert_eq!(result.data, 1);
+        let after = sprs_runtime::__live_slot_count();
+        assert_eq!(
+            after, before,
+            "temporary compatibility struct leaked: before={before} after={after}"
+        );
     }
 }

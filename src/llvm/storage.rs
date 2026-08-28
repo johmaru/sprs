@@ -7,7 +7,7 @@ use inkwell::values::{BasicValueEnum, IntValue, PointerValue, ValueKind};
 
 use crate::front::error::SprsError;
 use crate::front::hir;
-use crate::front::type_helper::{Type, ptr_element};
+use crate::front::type_helper::{Type, is_tagged_storage, is_user_struct_type, ptr_element};
 use crate::llvm::builder_helper::BuilderExt;
 use crate::llvm::compiler::{Compiler, StoreTag, StoreValue, Tag};
 use crate::llvm::layout::unwrap_storage_type;
@@ -32,7 +32,6 @@ fn is_handle_type(ty: &Type) -> bool {
         ty,
         Type::Str
             | Type::Buffer
-            | Type::Label
             | Type::AtomVal
             | Type::ClosedLabelSet(_)
             | Type::Range
@@ -44,15 +43,7 @@ fn is_handle_type(ty: &Type) -> bool {
 }
 
 fn is_user_struct(ty: &Type) -> bool {
-    matches!(ty, Type::Struct(_))
-        || matches!(
-            ty,
-            Type::App(name, _)
-                if !matches!(
-                    name.as_str(),
-                    "List" | "Ptr" | "MaybeUninit" | "Process" | "Label"
-                )
-        )
+    is_user_struct_type(ty)
 }
 
 /// Matches `Compiler::register_struct`: these fields are i64 in the
@@ -79,33 +70,39 @@ pub(crate) fn slab_stores_i64_data(ty: &Type) -> bool {
     )
 }
 
-fn runtime_tag_for(ty: &Type) -> Tag {
+fn runtime_tag_for(ty: &Type) -> Result<Tag, SprsError> {
     match ty {
-        Type::Int | Type::TypeI64 => Tag::Integer,
-        Type::TypeI8 => Tag::Int8,
-        Type::TypeU8 => Tag::Uint8,
-        Type::TypeI16 => Tag::Int16,
-        Type::TypeU16 => Tag::Uint16,
-        Type::TypeI32 => Tag::Int32,
-        Type::TypeU32 => Tag::Uint32,
-        Type::TypeU64 | Type::TypeUsize => Tag::Uint64,
-        Type::Float | Type::TypeF64 => Tag::Float,
-        Type::TypeF32 => Tag::Float32,
-        Type::TypeF16 => Tag::Float16,
-        Type::Bool => Tag::Boolean,
-        Type::Str => Tag::String,
-        Type::Buffer => Tag::Buffer,
-        Type::Range => Tag::Range,
-        Type::Label => Tag::Label,
-        Type::App(name, _) if name == "Label" => Tag::Label,
-        Type::AtomVal | Type::Atom(_) | Type::ClosedLabelSet(_) => Tag::Atom,
-        Type::App(name, _) if name == "List" => Tag::List,
-        Type::RawPtr => Tag::RawPtr,
-        Type::App(name, _) if name == "Ptr" => Tag::RawPtr,
-        Type::Unit => Tag::Unit,
-        _ if is_user_struct(ty) => Tag::Struct,
-        _ if is_handle_type(ty) => Tag::String,
-        _ => Tag::Unit,
+        Type::Int | Type::TypeI64 => Ok(Tag::Integer),
+        Type::TypeI8 => Ok(Tag::Int8),
+        Type::TypeU8 => Ok(Tag::Uint8),
+        Type::TypeI16 => Ok(Tag::Int16),
+        Type::TypeU16 => Ok(Tag::Uint16),
+        Type::TypeI32 => Ok(Tag::Int32),
+        Type::TypeU32 => Ok(Tag::Uint32),
+        Type::TypeU64 | Type::TypeUsize => Ok(Tag::Uint64),
+        Type::Float | Type::TypeF64 => Ok(Tag::Float),
+        Type::TypeF32 => Ok(Tag::Float32),
+        Type::TypeF16 => Ok(Tag::Float16),
+        Type::Bool => Ok(Tag::Boolean),
+        Type::Str => Ok(Tag::String),
+        Type::Buffer => Ok(Tag::Buffer),
+        Type::Range => Ok(Tag::Range),
+        Type::App(name, _) if name == "Label" => Ok(Tag::Label),
+        Type::AtomVal | Type::Atom(_) | Type::ClosedLabelSet(_) => Ok(Tag::Atom),
+        Type::App(name, _) if name == "List" => Ok(Tag::List),
+        Type::RawPtr => Ok(Tag::RawPtr),
+        Type::App(name, _) if name == "Ptr" => Ok(Tag::RawPtr),
+        Type::Unit => Ok(Tag::Unit),
+        Type::App(name, _) if name == "Process" => {
+            Err(storage_error("Process(T) has no runtime StorageRep tag"))
+        }
+        other if is_user_struct(other) => Ok(Tag::Struct),
+        other if is_handle_type(other) => Err(storage_error(format!(
+            "no runtime tag for StorageRep of {other}"
+        ))),
+        other => Err(storage_error(format!(
+            "no runtime tag for StorageRep of {other}"
+        ))),
     }
 }
 
@@ -177,7 +174,20 @@ pub fn load_storage_as_runtime<'ctx>(
     let ty = unwrap_storage_type(ty);
     let loaded = load_storage_value(compiler, module, place, &ty)?;
     match mode {
-        StorageLoad::Clone => clone_runtime_value(compiler, loaded, module),
+        StorageLoad::Clone => {
+            let cloned = clone_runtime_value(compiler, loaded, module)?;
+            if is_user_struct(&ty) {
+                let handle = load_runtime_data(compiler, loaded, "clone_temp_struct");
+                let forget_fn = compiler.get_runtime_fn(module, "__struct_forget_owned")?;
+                compiler
+                    .builder
+                    .build_call(forget_fn, &[handle.into()], "clone_forget_temp")
+                    .unwrap();
+                let drop_fn = compiler.get_runtime_fn(module, "__drop")?;
+                drop_var(compiler, loaded, drop_fn, "clone_temp_struct");
+            }
+            Ok(cloned)
+        }
         StorageLoad::Move => Ok(loaded),
     }
 }
@@ -222,7 +232,7 @@ pub fn drop_storage<'ctx>(
         | Type::Bool
         | Type::Unit
         | Type::RawPtr => Ok(()),
-        Type::App(name, _) if name == "Ptr" => Ok(()),
+        Type::App(name, _) if name == "Ptr" || name == "Process" => Ok(()),
         other if is_user_struct(other) => {
             let fields = compiler.struct_storage_fields(other)?;
             let layout = compiler.storage_layout(other)?;
@@ -275,13 +285,22 @@ fn load_storage_value<'ctx>(
             .unwrap();
         return wrap_runtime(compiler, Tag::RawPtr, addr, "ptr_runtime");
     }
+    if is_tagged_storage(ty) {
+        let loaded = compiler
+            .builder
+            .build_load(compiler.runtime_value_type, place, "load_tagged")
+            .unwrap();
+        let ptr = create_entry_block_alloca(compiler, "tagged_runtime")?;
+        compiler.builder.build_store(ptr, loaded).unwrap();
+        return Ok(ptr);
+    }
     if is_handle_type(ty) {
         let handle = compiler
             .builder
             .build_load(compiler.context.i64_type(), place, "load_handle")
             .unwrap()
             .into_int_value();
-        return wrap_runtime(compiler, runtime_tag_for(ty), handle, "handle_runtime");
+        return wrap_runtime(compiler, runtime_tag_for(ty)?, handle, "handle_runtime");
     }
     match ty {
         Type::Bool => {
@@ -302,7 +321,7 @@ fn load_storage_value<'ctx>(
         }
         Type::Float | Type::TypeF64 => {
             let bits = load_float_bits(compiler, place, compiler.context.f64_type().into(), "f64")?;
-            wrap_runtime(compiler, runtime_tag_for(ty), bits, "f64_runtime")
+            wrap_runtime(compiler, runtime_tag_for(ty)?, bits, "f64_runtime")
         }
         Type::Unit => wrap_runtime(
             compiler,
@@ -317,7 +336,7 @@ fn load_storage_value<'ctx>(
                 .build_load(layout.llvm_type, place, "load_scalar")
                 .unwrap();
             let data = int_to_i64(compiler, loaded, ty)?;
-            wrap_runtime(compiler, runtime_tag_for(ty), data, "scalar_runtime")
+            wrap_runtime(compiler, runtime_tag_for(ty)?, data, "scalar_runtime")
         }
     }
 }
@@ -343,6 +362,18 @@ fn store_storage_value<'ctx>(
             )
             .unwrap();
         compiler.builder.build_store(place, ptr).unwrap();
+        return Ok(());
+    }
+    if is_tagged_storage(ty) {
+        let loaded = compiler
+            .builder
+            .build_load(compiler.runtime_value_type, value_ptr, "store_tagged")
+            .unwrap();
+        compiler.builder.build_store(place, loaded).unwrap();
+        compiler.build_tag_store(
+            Tag::Unit,
+            compiler.build_tag_gep(value_ptr, "store_tagged_src"),
+        );
         return Ok(());
     }
     if is_handle_type(ty) {
@@ -732,7 +763,7 @@ fn read_runtime_struct_field<'ctx>(
             .build_load(compiler.context.i64_type(), field_ptr, "read_imm_field")
             .unwrap()
             .into_int_value();
-        return wrap_runtime(compiler, runtime_tag_for(field_ty), val, "imm_field");
+        return wrap_runtime(compiler, runtime_tag_for(field_ty)?, val, "imm_field");
     }
     let ptr = create_entry_block_alloca(compiler, "read_field_rv")?;
     let loaded = compiler

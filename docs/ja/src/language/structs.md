@@ -4,6 +4,8 @@
 `Self` は宣言中の構造体へ解決されます。その構造体のフィールド型（`List(Self)` のような入れ子の型適用を含む）、および method のパラメータ / 戻り値注釈と本体で有効です。
 同一モジュール内の構造体型は、宣言順に関係なく参照できます。
 未定義の裸の型名、または構造体フィールドと method の外の `Self` は `SPRS-SEM-011` として報告されます。
+値そのものによる field 循環（`struct A { x >> A }` や、`Ptr` / `List` などの間接型を挟まない相互参照）も `SPRS-SEM-011`（`recursive struct has infinite storage size`）です。
+前方参照は、循環が `Ptr(T)` や `List(T)` を通るときは有効です。
 
 ```sprs
 struct Tree {

@@ -7,6 +7,10 @@ applications such as `List(Self)`, and in method parameter / return
 annotations and bodies. Struct types in the same module can be referenced
 regardless of declaration order. An undefined bare type name, or `Self`
 outside a struct field or method, is reported as `SPRS-SEM-011`.
+A by-value field cycle (`struct A { x >> A }`, or mutual `A`/`B` fields
+without `Ptr` / `List` / another indirect type) is also `SPRS-SEM-011`
+(`recursive struct has infinite storage size`). Forward references stay
+valid when the cycle goes through `Ptr(T)` or `List(T)`.
 
 ```sprs
 struct Tree {

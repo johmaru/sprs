@@ -893,6 +893,19 @@ pub extern "C" fn __struct_forget_owned(handle: u64) -> i32 {
     })
 }
 
+/// Occupied slab slots, excluding the reserved index 0 sentinel.
+#[unsafe(no_mangle)]
+pub extern "C" fn __live_slot_count() -> i64 {
+    SLOTS.with(|slots_cell| {
+        slots_cell
+            .borrow()
+            .iter()
+            .skip(1)
+            .filter(|slot| !matches!(slot.data, SlotData::Empty))
+            .count() as i64
+    })
+}
+
 /// Create a label slot containing a copied name and one runtime payload.
 #[unsafe(no_mangle)]
 pub extern "C" fn __label_new(

@@ -237,6 +237,41 @@ pub fn maybe_uninit_type(element: Type) -> Type {
     Type::App("MaybeUninit".into(), vec![element])
 }
 
+/// StorageRep of this type is a handle, address, or tagged sum — not an
+/// inline nested struct. Cycle detection must not follow these edges.
+pub fn is_storage_indirect(ty: &Type) -> bool {
+    let ty = maybe_uninit_inner(ty).unwrap_or(ty);
+    matches!(
+        ty,
+        Type::Str
+            | Type::Buffer
+            | Type::Label
+            | Type::AtomVal
+            | Type::ClosedLabelSet(_)
+            | Type::Range
+            | Type::Atom(_)
+            | Type::RawPtr
+    ) || matches!(
+        ty,
+        Type::App(name, _) if name == "List" || name == "Process" || name == "Label" || name == "Ptr"
+    )
+}
+
+/// User-defined struct or generic struct application (`Pair(i64)`).
+pub fn is_user_struct_type(ty: &Type) -> bool {
+    match ty {
+        Type::Struct(_) => true,
+        Type::App(name, _) => !is_builtin_type_name(name),
+        _ => false,
+    }
+}
+
+/// Broad `Label` is a sum of Atom and payload Label, so StorageRep stores
+/// the runtime tag plus data. Exact atoms / `Label(:name, T)` stay handles.
+pub fn is_tagged_storage(ty: &Type) -> bool {
+    matches!(ty, Type::Label)
+}
+
 /// Result type tracked by `Process(T)`, if this is a process constructor app.
 #[allow(dead_code)]
 pub fn process_result_type(ty: &Type) -> Option<&Type> {

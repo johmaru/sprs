@@ -25,13 +25,12 @@ pub struct TypeLayout<'ctx> {
 }
 
 pub fn host_target_machine() -> TargetMachine {
-    let _ = Target::initialize_native(&InitializationConfig::default());
-    Target::initialize_x86(&InitializationConfig::default());
-    let triple = TargetMachine::get_default_triple();
-    create_target_machine(&triple)
+    create_target_machine(&TargetMachine::get_default_triple())
 }
 
 pub fn create_target_machine(triple: &TargetTriple) -> TargetMachine {
+    let _ = Target::initialize_native(&InitializationConfig::default());
+    Target::initialize_x86(&InitializationConfig::default());
     let target = Target::from_triple(triple).unwrap_or_else(|err| {
         panic!("failed to resolve LLVM target {triple}: {err}");
     });
@@ -67,7 +66,6 @@ fn is_handle_type(ty: &Type) -> bool {
         ty,
         Type::Str
             | Type::Buffer
-            | Type::Label
             | Type::AtomVal
             | Type::ClosedLabelSet(_)
             | Type::Range
@@ -154,6 +152,7 @@ impl<'ctx> Compiler<'ctx> {
                 Ok(self.context.ptr_type(AddressSpace::default()).into())
             }
             Type::Unit => Ok(self.context.struct_type(&[], false).into()),
+            Type::Label => Ok(self.runtime_value_type.into()),
             Type::Struct(_) => self.struct_storage_llvm_type(&ty),
             other if is_handle_type(other) => Ok(self.context.i64_type().into()),
             other if is_user_struct_app(other) => self.struct_storage_llvm_type(other),
@@ -431,5 +430,64 @@ mod tests {
         assert_eq!(user.align, 8);
         let llvm_ty = user.llvm_type.into_struct_type();
         assert_eq!(llvm_ty.count_fields(), 2);
+    }
+
+    #[test]
+    fn broad_label_storage_keeps_tag_and_data() {
+        let context = Context::create();
+        let mut compiler = layout_compiler(&context);
+        let label = compiler.storage_layout(&Type::Label).unwrap();
+        assert_eq!(label.size, 16);
+        assert_eq!(label.align, 8);
+        let mu = compiler
+            .storage_layout(&maybe_uninit_type(Type::Label))
+            .unwrap();
+        assert_eq!(mu.size, label.size);
+        assert_eq!(mu.align, label.align);
+        assert_eq!(compiler.storage_layout(&Type::AtomVal).unwrap().size, 8);
+        assert_eq!(
+            compiler
+                .storage_layout(&Type::App(
+                    "Label".into(),
+                    vec![Type::Atom("ok".into()), Type::TypeI64]
+                ))
+                .unwrap()
+                .size,
+            8
+        );
+    }
+
+    #[test]
+    fn storage_layout_uses_compile_target_machine() {
+        let context = Context::create();
+        let mut compiler = layout_compiler(&context);
+        compiler.set_compile_target(crate::llvm::compiler::OS::Windows);
+        let windows_triple = format!("{:?}", compiler.target_machine.get_triple());
+        assert!(
+            windows_triple.contains("x86_64-pc-windows-msvc"),
+            "{windows_triple}"
+        );
+        let usize_layout = compiler.storage_layout(&Type::TypeUsize).unwrap();
+        let data = compiler.target_machine.get_target_data();
+        let ptr_int = compiler.context.ptr_sized_int_type(&data, None);
+        assert_eq!(
+            usize_layout.size,
+            data.get_store_size(&ptr_int.as_any_type_enum())
+        );
+        let module = context.create_module("target_layout");
+        compiler.apply_module_target(&module);
+        assert_eq!(
+            format!("{}", module.get_triple()),
+            format!("{}", compiler.target_machine.get_triple())
+        );
+        compiler.storage_layout(&Type::TypeI64).unwrap();
+        assert!(!compiler.layout_cache.is_empty());
+        compiler.set_compile_target(crate::llvm::compiler::OS::Linux);
+        assert!(compiler.layout_cache.is_empty());
+        let linux_triple = format!("{:?}", compiler.target_machine.get_triple());
+        assert!(
+            linux_triple.contains("x86_64-pc-linux-gnu"),
+            "{linux_triple}"
+        );
     }
 }

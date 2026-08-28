@@ -125,11 +125,11 @@ fn identity_point(value >> Point) >> Point {
 }
 
 struct ForwardA {
-    b >> ForwardB
+    b >> Ptr(ForwardB)
 }
 
 struct ForwardB {
-    a >> ForwardA
+    a >> Ptr(ForwardA)
 }
 
 struct Tree {

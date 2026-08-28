@@ -8,9 +8,10 @@ use crate::front::label_name::{LabelName, LabelNamePart};
 use crate::front::span::{Span, Spanned};
 use crate::front::type_helper::{
     Type, TypeAnnot, contains_unresolved_type, is_builtin_type_name, is_error_label_type,
-    join_list_element_types, list_element, list_type, maybe_uninit_inner, maybe_uninit_type,
-    ptr_element, ptr_maybe_uninit_element, ptr_type, reject_payloadless_label_type,
-    resolve_declared_type_params, types_assignable, types_compatible, validate_type_app,
+    is_storage_indirect, is_user_struct_type, join_list_element_types, list_element, list_type,
+    maybe_uninit_inner, maybe_uninit_type, ptr_element, ptr_maybe_uninit_element, ptr_type,
+    reject_payloadless_label_type, resolve_declared_type_params, types_assignable,
+    types_compatible, validate_type_app,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -458,6 +459,12 @@ pub fn check_module(
             span: s.span,
         });
         checker.register_struct_methods(s, &type_params)?;
+    }
+
+    for s in &hir_structs {
+        if s.type_params.is_empty() {
+            checker.reject_infinite_inline_storage(&Type::Struct(s.name.clone()), s.span)?;
+        }
     }
 
     for item in items {
@@ -1987,7 +1994,104 @@ impl Checker<'_> {
             },
         );
         self.specialization_order.push(id.clone());
+        self.reject_infinite_inline_storage(&Type::App(name.to_string(), resolved_args), span)?;
         Ok(id)
+    }
+
+    fn reject_infinite_inline_storage(&mut self, ty: &Type, span: Span) -> Result<(), SprsError> {
+        let mut visiting = HashSet::new();
+        self.walk_inline_storage(ty, span, &mut visiting)
+    }
+
+    fn walk_inline_storage(
+        &mut self,
+        ty: &Type,
+        span: Span,
+        visiting: &mut HashSet<Type>,
+    ) -> Result<(), SprsError> {
+        let ty = maybe_uninit_inner(ty)
+            .cloned()
+            .unwrap_or_else(|| ty.clone());
+        if is_storage_indirect(&ty) {
+            return Ok(());
+        }
+        if matches!(
+            ty,
+            Type::Param(_)
+                | Type::Any
+                | Type::Named(_)
+                | Type::SelfType
+                | Type::Unit
+                | Type::Int
+                | Type::Float
+                | Type::Bool
+                | Type::TypeI8
+                | Type::TypeU8
+                | Type::TypeI16
+                | Type::TypeU16
+                | Type::TypeI32
+                | Type::TypeU32
+                | Type::TypeI64
+                | Type::TypeU64
+                | Type::TypeUsize
+                | Type::TypeF16
+                | Type::TypeF32
+                | Type::TypeF64
+        ) {
+            return Ok(());
+        }
+        if !is_user_struct_type(&ty) {
+            return Ok(());
+        }
+        if !visiting.insert(ty.clone()) {
+            return Err(semantic(
+                &self.file,
+                span,
+                11,
+                "recursive struct has infinite storage size".to_string(),
+                Some("introduce Ptr(...) or another indirect container".to_string()),
+            ));
+        }
+        let fields = self.inline_field_types(&ty, span)?;
+        for field_ty in fields {
+            self.walk_inline_storage(&field_ty, span, visiting)?;
+        }
+        visiting.remove(&ty);
+        Ok(())
+    }
+
+    fn inline_field_types(&mut self, ty: &Type, span: Span) -> Result<Vec<Type>, SprsError> {
+        match ty {
+            Type::Struct(name) => {
+                let info = self.structs.get(name).ok_or_else(|| {
+                    semantic(
+                        &self.file,
+                        span,
+                        11,
+                        format!("Undefined type: {name}"),
+                        None,
+                    )
+                })?;
+                if !info.type_params.is_empty() {
+                    return Ok(Vec::new());
+                }
+                Ok(info.fields.iter().map(|field| field.ty.clone()).collect())
+            }
+            Type::App(name, args) if !is_builtin_type_name(name) => {
+                let id = self.instantiate_struct(name, args.clone(), span)?;
+                let spec = self.struct_specializations.get(&id).ok_or_else(|| {
+                    semantic(
+                        &self.file,
+                        span,
+                        11,
+                        format!("unresolved type parameter `T` while specializing `{name}`"),
+                        None,
+                    )
+                })?;
+                Ok(spec.fields.iter().map(|field| field.ty.clone()).collect())
+            }
+            _ => Ok(Vec::new()),
+        }
     }
 
     fn fields_for_struct_ref(
@@ -3853,15 +3957,51 @@ fn f() {
 
     #[test]
     fn resolves_forward_struct_and_self() {
-        let module = check("struct A { b >> B } struct B { a >> A }").expect("check");
-        assert_eq!(module.structs[0].fields[0].ty, Type::Struct("B".into()));
-        assert_eq!(module.structs[1].fields[0].ty, Type::Struct("A".into()));
-        let module = check("struct Node { next >> Self, children >> List(Self) }").expect("check");
-        assert_eq!(module.structs[0].fields[0].ty, Type::Struct("Node".into()));
+        let module = check("struct A { b >> Ptr(B) } struct B { a >> Ptr(A) }").expect("check");
+        assert_eq!(
+            module.structs[0].fields[0].ty,
+            Type::App("Ptr".into(), vec![Type::Struct("B".into())])
+        );
+        assert_eq!(
+            module.structs[1].fields[0].ty,
+            Type::App("Ptr".into(), vec![Type::Struct("A".into())])
+        );
+        let module =
+            check("struct Node { next >> Ptr(Self), children >> List(Self) }").expect("check");
+        assert_eq!(
+            module.structs[0].fields[0].ty,
+            Type::App("Ptr".into(), vec![Type::Struct("Node".into())])
+        );
         assert_eq!(
             module.structs[0].fields[1].ty,
             Type::App("List".into(), vec![Type::Struct("Node".into())])
         );
+    }
+
+    #[test]
+    fn rejects_by_value_recursive_structs() {
+        let cases = [
+            "struct A { x >> A }",
+            "struct A { b >> B } struct B { a >> A }",
+            "struct A { b >> B } struct B { c >> C } struct C { a >> A }",
+            "struct Rec(T) { inner >> Rec(T) }\nfn f(x >> Rec(i64)) {}",
+        ];
+        for src in cases {
+            let err = check(src).expect_err(src);
+            assert_eq!(err_code(&err), (ErrorCategory::Semantic, 11), "{src}");
+            assert!(
+                err_message(&err).contains("recursive struct has infinite storage size"),
+                "{src}: {}",
+                err_message(&err)
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_indirect_recursive_structs() {
+        check("struct Node { next >> Ptr(Node) }").expect("ptr");
+        check("struct Tree { children >> List(Self) }").expect("list");
+        check("struct Box(T) { value >> T }\nfn f(x >> Box(i64)) {}").expect("generic box");
     }
 
     #[test]
@@ -3998,17 +4138,25 @@ fn f() {
     }
 
     #[test]
-    fn allows_same_key_self_recursive_generic() {
+    fn rejects_same_key_self_recursive_generic() {
         let src = r#"
 struct Node(T) { value >> T, next >> Node(T) }
 fn f(x >> Node(i64)) {}
 "#;
-        let module = check(src).expect("check");
-        assert_eq!(module.struct_specializations.len(), 1);
-        assert_eq!(
-            module.struct_specializations[0].fields[1].ty,
-            Type::App("Node".into(), vec![Type::TypeI64])
+        let err = check(src).expect_err("by-value Node(T)");
+        assert_eq!(err_code(&err), (ErrorCategory::Semantic, 11));
+        assert!(
+            err_message(&err).contains("recursive struct has infinite storage size"),
+            "{}",
+            err_message(&err)
         );
+        check(
+            r#"
+struct Node(T) { value >> T, next >> Ptr(Node(T)) }
+fn f(x >> Node(i64)) {}
+"#,
+        )
+        .expect("indirect Node(T)");
     }
 
     #[test]

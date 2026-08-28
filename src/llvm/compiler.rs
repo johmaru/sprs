@@ -10,7 +10,7 @@ use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::Linkage;
 use inkwell::module::Module;
-use inkwell::targets::TargetMachine;
+use inkwell::targets::{TargetMachine, TargetTriple};
 use inkwell::types::BasicTypeEnum;
 use inkwell::types::StructType;
 use inkwell::values::GlobalValue;
@@ -345,6 +345,22 @@ impl<'ctx> Compiler<'ctx> {
             target_machine: crate::llvm::layout::host_target_machine(),
             layout_cache: HashMap::new(),
         }
+    }
+
+    pub fn set_compile_target(&mut self, os: OS) {
+        self.target_os = os;
+        let triple = match os {
+            OS::Windows => TargetTriple::create("x86_64-pc-windows-msvc"),
+            OS::Linux => TargetTriple::create("x86_64-pc-linux-gnu"),
+            OS::Unknown => TargetMachine::get_default_triple(),
+        };
+        self.target_machine = crate::llvm::layout::create_target_machine(&triple);
+        self.layout_cache.clear();
+    }
+
+    pub fn apply_module_target(&self, module: &Module<'_>) {
+        module.set_triple(&self.target_machine.get_triple());
+        module.set_data_layout(&self.target_machine.get_target_data().get_data_layout());
     }
 
     pub(crate) fn location(&self, span: crate::front::span::Span) -> Location {
@@ -819,6 +835,7 @@ impl<'ctx> Compiler<'ctx> {
                 false,
             ),
             "__struct_forget_owned" => i32_type.fn_type(&[i64_type.into()], false),
+            "__live_slot_count" => i64_type.fn_type(&[], false),
             _ => {
                 return Err(SprsError::Semantic {
                     code: ErrorCode {

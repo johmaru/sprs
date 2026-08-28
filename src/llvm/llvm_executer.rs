@@ -3,7 +3,7 @@ use std::{path::Path, process::Command};
 use inkwell::{
     context::Context,
     passes::PassBuilderOptions,
-    targets::{InitializationConfig, Target, TargetMachine, TargetTriple},
+    targets::{InitializationConfig, Target},
 };
 
 use crate::naming;
@@ -94,35 +94,17 @@ pub fn build_and_run(
 
     Target::initialize_x86(&InitializationConfig::default());
 
-    let target_triple = if compiler.target_os == compiler::OS::Unknown {
-        TargetMachine::get_default_triple()
-    } else if compiler.target_os == compiler::OS::Windows {
-        TargetTriple::create("x86_64-pc-windows-msvc")
-    } else {
-        TargetTriple::create("x86_64-pc-linux-gnu")
-    };
-    let target = Target::from_triple(&target_triple).map_err(|e| format!("Target error: {}", e))?;
-    let target_machine = target
-        .create_target_machine(
-            &target_triple,
-            "generic",
-            "",
-            inkwell::OptimizationLevel::Default,
-            inkwell::targets::RelocMode::PIC,
-            inkwell::targets::CodeModel::Default,
-        )
-        .ok_or("Failed to create target machine")?;
+    let target_machine = &compiler.target_machine;
 
     let mut object_files = Vec::new();
     let mut temp_ll_files = Vec::new();
 
     for (name, module) in &compiler.modules {
-        module.set_data_layout(&target_machine.get_target_data().get_data_layout());
-        module.set_triple(&target_triple);
+        compiler.apply_module_target(module);
 
         // mem2reg
         let pass_options = PassBuilderOptions::create();
-        if let Err(e) = module.run_passes("mem2reg", &target_machine, pass_options) {
+        if let Err(e) = module.run_passes("mem2reg", target_machine, pass_options) {
             eprintln!(
                 "Warning: LLVM run_passes failed for module '{}': {}",
                 name, e
@@ -215,10 +197,7 @@ pub fn build_and_run(
         .map_err(|e| format!("Failed to invoke clang: {}", e))?;
 
     if status_link.success() {
-        println!(
-            "Successfully created executable: {}",
-            exec_path.display()
-        );
+        println!("Successfully created executable: {}", exec_path.display());
         if mode == ExecuteMode::Run {
             println!("--- Running ---");
             let can_run = match compiler.target_os {
