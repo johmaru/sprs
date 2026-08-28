@@ -66,23 +66,26 @@ var a = "hello";
 
 ```
 
-* `@move(value)`: 変数またはポインタ place からムーブする。変数束縛または `*p` のスロットは `Unit` になる。
+* `@move(value)`: 変数からムーブする。元の束縛は `Unit` になる。`@move(*p)` はコンパイルエラー。raw storage には `@take` を使う。
 
 例:
 
 ```sprs
 var a = "hello";
 @println(@move(a)); # a becomes Unit
-var x = @move(*p);  # *p becomes Unit
 ```
 
-* `@init(*p, value)`: `Unit` のポインタ place を初期化する。第一引数は間接参照でなければならない。結果型は `unit`。`Unit` 以外の先は panic する。構造体初期化（`init Type { ... }`）ではない。
+* `@init(*p, value)`: 未初期化 storage へ `value` をムーブする。`p` は `Ptr(MaybeUninit(T))` で、第一引数は `*p` でなければならない。結果型は `unit`。置換代入ではなく、古い値は drop しない。構造体初期化（`init Type { ... }`）ではない。
 
 ```sprs
 @init(*p, x);
 ```
 
-ムーブセマンティクス、`@clone`、`@move`、`@init`、自動 drop は [メモリ管理](memory-management.md) を参照してください。
+* `@ref(*p) -> Ptr(T)`: `p : Ptr(MaybeUninit(T))` に現在有効な `T` があると caller が保証する。所有権は動かず、`p` の型も変わらない。戻り値は `Ptr(T)`。
+
+* `@take(*p) -> T`: `p : Ptr(MaybeUninit(T))` から有効な `T` をムーブする。元のバイト列は論理的に未初期化になり、`Unit` は書き込まない。
+
+ムーブセマンティクス、`@clone`、`@move`、`@init` / `@ref` / `@take`、自動 drop は [メモリ管理](memory-management.md) を参照してください。
 
 * `@cast(value, type)`: 値を指定型へキャストする
 
@@ -117,7 +120,7 @@ var ok = 5 == 5;
   `data == 0` のとき Boolean `true`、それ以外は `false`。
   ビット単位の補数ではない。
 構造体初期化はコア構文 `init TypeName { field = value, ... }` であり、マクロではありません。
-`@init` は未知マクロです（`SPRS-SEM-003`）。
+旧構造体 `@init(...)` は廃止です（`SPRS-SEM-003`）。ポインタ `@init(*p, value)` は上で説明しています。
 [構造体](../language/structs.md) を参照してください。
 
 

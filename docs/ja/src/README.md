@@ -10,6 +10,7 @@
 コンパイラはハイブリッド型付けを使います。
 ランタイム値はタグでディスパッチされ、`>>` 注釈は検査用の静的型を保持します。
 注釈のないコードは動的なまま、使いやすく保たれます。
+型付きポインタ（`Ptr(T)`）が指すのは具象 `StorageRep(T)` layout であり、RuntimeValue `{tag,data}` スロットではありません。[型と束縛](language/types-and-bindings.md) と [メモリ管理](reference/memory-management.md) を参照してください。
 
 このドキュメントはまだ開発中であり、今後変わる可能性があります。
 

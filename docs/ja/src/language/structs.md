@@ -26,7 +26,7 @@ fn identity(value >> Tree) >> Tree {
 default 式に `self` や先行フィールドの束縛はありません。default も初期化子もない
 フィールドは `missing required field \`name\` in init Type` です。未知フィールドと
 重複フィールドは初期化子の span でコンパイルエラーです。旧 `@init(...)` は構造体初期化ではありません。
-`init Type { ... }` が構造体を作り、`@init(*p, value)` はポインタ place の初期化マクロです。
+`init Type { ... }` が構造体を作り、`@init(*p, value)` は `Ptr(MaybeUninit(T))` storage の初期化です。RuntimeValue の `Unit` スロット書き込みではありません。
 
 ```sprs
 pub struct Point {
@@ -71,6 +71,12 @@ fn main() {
 所有文字列の特殊化は `str` です（`init Pair(str) { a = "owned", b = "x" }`）。
 `String` は型名ではありません。ジェネリックフィールドの default と、期待型だけによる
 型引数なしの `init Pair { ... }` は現在使えません。
+
+構造体の typed storage（`StorageRep`）は、target ABI の padding を含む inline の field layout です。
+通常の構造体値はまだ RuntimeValue の `Tag::Struct` slab ハンドルで評価されることがあります。
+storage との pack / unpack はコンパイラとランタイムの橋渡しです。
+ポインタ算術と `@init` / `@take` が使うのは inline layout であり、`{tag,data}` スロットではありません。
+[型と束縛](types-and-bindings.md) を参照してください。
 
 ```sprs
 struct Pair(T) {

@@ -7,7 +7,11 @@ Sprs ソースからこれらの `__` シンボルを呼ばないでください
 言語レベルの API ではありません。
 
 ランタイム値は `{ i32 tag, i64 data }` です。
-ヒープ値では、`data` はハンドル `(index:u32 << 32) | generation:u32` です。
+これは評価器の表現です。ポインタの storage ではなく、size / alignment / `Ptr(T) + n` の stride の正本でもありません。
+
+型付きポインタが指すのは `StorageRep(T)` です。LLVM の具象型と target ABI の size / alignment です。`StorageRep(MaybeUninit(T))` は `StorageRep(T)` と同一です。struct の `StorageRep` は field の inline layout（padding 込み）です。runtime 管理の owned 型はその layout に slab ハンドルを置き、payload は slab に残します。
+
+ヒープ値では、RuntimeValue の `data` はハンドル `(index:u32 << 32) | generation:u32` です。
 ハンドル `0` は無効です。
 Atom の `data` は intern id です。
 RawPtr の `data` は素のアドレスです。
@@ -77,7 +81,8 @@ RawPtr の `data` は素のアドレスです。
 | __string_from_cstr | C 文字列ポインタから String スロットを割り当てる。 |
 | __string_concat | 2 つの String スロットを新しい String スロットへ連結する。 |
 | __string_eq | 2 つの String スロットハンドルを内容で比較する。 |
-| __struct_new | `size` バイトを持つ構造体スロットを割り当てる。 |
+| __struct_new | `size` バイトの互換用構造体 slab を割り当てる。通常の評価済み構造体値はまだこの経路を使う。`StorageRep(struct)` 自体は inline の field layout であり、この slab ではない。 |
 | __struct_borrow | フィールドアクセス用に生の構造体ポインタを借用する。 |
 | __struct_track_value | フィールド値を登録し、構造体の drop/clone が所有するようにする。 |
+| __struct_forget_owned | field を inline `StorageRep` へムーブしたあと、owned 追跡だけ外す。payload は drop しない。その後 slab を `__drop` できる。 |
 | __sprs_set_output | `__println` 用のホスト出力コールバックを登録する。未登録なら `__println` は `eprintln!` を使う。コンパイラの `get_runtime_fn` はこのシンボルを宣言しない。 |

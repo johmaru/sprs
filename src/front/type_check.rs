@@ -1,14 +1,16 @@
 use crate::front::ast::{self, FbCondition, Item, MatchPat};
 use crate::front::error::{ErrorCategory, ErrorCode, Location, SprsError};
-use crate::front::function_build::{CallContractError, ResolvedFunctionSignature, resolve_call_contract};
+use crate::front::function_build::{
+    CallContractError, ResolvedFunctionSignature, resolve_call_contract,
+};
 use crate::front::hir;
 use crate::front::label_name::{LabelName, LabelNamePart};
 use crate::front::span::{Span, Spanned};
 use crate::front::type_helper::{
     Type, TypeAnnot, contains_unresolved_type, is_builtin_type_name, is_error_label_type,
-    join_list_element_types, list_element, list_type, ptr_element, reject_payloadless_label_type,
-    resolve_declared_type_params, types_assignable, types_compatible,
-    validate_type_app,
+    join_list_element_types, list_element, list_type, maybe_uninit_inner, maybe_uninit_type,
+    ptr_element, ptr_maybe_uninit_element, ptr_type, reject_payloadless_label_type,
+    resolve_declared_type_params, types_assignable, types_compatible, validate_type_app,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -65,7 +67,13 @@ struct Checker<'a> {
     function_build_contracts: &'a HashMap<String, (Vec<String>, Vec<(FbCondition, Type)>)>,
 }
 
-fn semantic(file: &str, span: Span, number: u32, message: String, help: Option<String>) -> SprsError {
+fn semantic(
+    file: &str,
+    span: Span,
+    number: u32,
+    message: String,
+    help: Option<String>,
+) -> SprsError {
     SprsError::Semantic {
         code: ErrorCode {
             category: ErrorCategory::Semantic,
@@ -175,10 +183,9 @@ pub fn check_module(
             checker.import_struct(s);
         }
         for set in &iface.closed_label_sets {
-            checker.closed_label_sets.insert(
-                set.name.clone(),
-                (set.members.clone(), set.is_public),
-            );
+            checker
+                .closed_label_sets
+                .insert(set.name.clone(), (set.members.clone(), set.is_public));
         }
         for atom in &iface.atoms {
             checker.atom_defs.insert(atom.name.clone());
@@ -211,20 +218,23 @@ pub fn check_module(
                 owner: None,
                 name: f.name.clone(),
             };
-            checker.free_function_ids.entry(f.name.clone()).or_insert(decl);
+            checker
+                .free_function_ids
+                .entry(f.name.clone())
+                .or_insert(decl);
         }
         for template in &iface.function_templates {
-            checker.templates.insert(template.id.clone(), template.clone());
+            checker
+                .templates
+                .insert(template.id.clone(), template.clone());
             if template.id.owner.is_none() {
-                checker.free_function_ids.insert(template.id.name.clone(), template.id.clone());
+                checker
+                    .free_function_ids
+                    .insert(template.id.name.clone(), template.id.clone());
                 checker.fns.insert(
                     template.id.name.clone(),
                     FnSig {
-                        params: template
-                            .params
-                            .iter()
-                            .map(|p| p.ty.clone())
-                            .collect(),
+                        params: template.params.iter().map(|p| p.ty.clone()).collect(),
                         ret_ty: template.ret_ty.clone(),
                         type_params: template.function_params.clone(),
                         when_rules: template.when_rules.clone(),
@@ -297,10 +307,9 @@ pub fn check_module(
                         None,
                     ));
                 }
-                checker.closed_label_sets.insert(
-                    set.ident.clone(),
-                    (set.members.clone(), set.is_public),
-                );
+                checker
+                    .closed_label_sets
+                    .insert(set.ident.clone(), (set.members.clone(), set.is_public));
                 hir_sets.push(hir::ClosedLabelSet {
                     name: set.ident.clone(),
                     members: set.members.clone(),
@@ -471,18 +480,16 @@ pub fn check_module(
                 let mut annot = p.ty.clone();
                 if let Some(a) = &mut annot {
                     checker.resolve_annotation_type(&mut a.ty, p.span, allow_type_params)?;
-                    reject_payloadless_label_type(&a.ty).map_err(|message| {
-                        semantic(path, p.span, 11, message, None)
-                    })?;
+                    reject_payloadless_label_type(&a.ty)
+                        .map_err(|message| semantic(path, p.span, 11, message, None))?;
                 }
                 params.push(annot);
             }
             let mut ret_ty = func.ret_ty.clone();
             if let Some(ty) = &mut ret_ty {
                 checker.resolve_annotation_type(ty, func.span, allow_type_params)?;
-                reject_payloadless_label_type(ty).map_err(|message| {
-                    semantic(path, func.span, 11, message, None)
-                })?;
+                reject_payloadless_label_type(ty)
+                    .map_err(|message| semantic(path, func.span, 11, message, None))?;
             }
             checker.current_type_params.clear();
             let llvm_name = if func.ident == "main" {
@@ -521,9 +528,8 @@ pub fn check_module(
             let mut annot = var.ty.clone();
             if let Some(a) = &mut annot {
                 checker.resolve_annotation_type(&mut a.ty, var.span, false)?;
-                reject_payloadless_label_type(&a.ty).map_err(|message| {
-                    semantic(path, var.span, 11, message, None)
-                })?;
+                reject_payloadless_label_type(&a.ty)
+                    .map_err(|message| semantic(path, var.span, 11, message, None))?;
             }
             let expected = annot.as_ref().map(|a| &a.ty);
             let init = match &var.expr {
@@ -611,7 +617,6 @@ pub fn check_module(
     })
 }
 
-
 fn function_instance_display(id: &hir::FunctionInstanceId) -> String {
     let owner = match &id.declaration.owner {
         Some(st) => format!("{}::", Type::App(st.name.clone(), id.owner_args.clone())),
@@ -664,7 +669,12 @@ fn substitute_stmt(stmt: &mut ast::Stmt, bindings: &HashMap<String, Type>) -> Re
             }
         }
         ast::Stmt::Assign(assign) => substitute_expr(&mut assign.expr.node, bindings)?,
-        ast::Stmt::IndexAssign { collection, index, expr, .. } => {
+        ast::Stmt::IndexAssign {
+            collection,
+            index,
+            expr,
+            ..
+        } => {
             substitute_expr(&mut collection.node, bindings)?;
             substitute_expr(&mut index.node, bindings)?;
             substitute_expr(&mut expr.node, bindings)?;
@@ -676,7 +686,11 @@ fn substitute_stmt(stmt: &mut ast::Stmt, bindings: &HashMap<String, Type>) -> Re
         ast::Stmt::Expr(expr) | ast::Stmt::Defer { expr, .. } => {
             substitute_expr(&mut expr.node, bindings)?;
         }
-        ast::Stmt::If { cond, then_blk, else_blk } => {
+        ast::Stmt::If {
+            cond,
+            then_blk,
+            else_blk,
+        } => {
             substitute_expr(&mut cond.node, bindings)?;
             for stmt in then_blk {
                 substitute_stmt(&mut stmt.node, bindings)?;
@@ -703,11 +717,15 @@ fn substitute_stmt(stmt: &mut ast::Stmt, bindings: &HashMap<String, Type>) -> Re
                 substitute_expr(&mut expr.node, bindings)?;
             }
         }
-        ast::Stmt::Match { scrutinee, arms, .. } => {
+        ast::Stmt::Match {
+            scrutinee, arms, ..
+        } => {
             substitute_expr(&mut scrutinee.node, bindings)?;
             for arm in arms {
                 match &mut arm.body {
-                    ast::MatchArmBody::ExprBreak(expr) => substitute_expr(&mut expr.node, bindings)?,
+                    ast::MatchArmBody::ExprBreak(expr) => {
+                        substitute_expr(&mut expr.node, bindings)?
+                    }
                     ast::MatchArmBody::Block(stmts) => {
                         for stmt in stmts {
                             substitute_stmt(&mut stmt.node, bindings)?;
@@ -748,7 +766,9 @@ fn substitute_expr(expr: &mut ast::Expr, bindings: &HashMap<String, Type>) -> Re
             substitute_expr(&mut l.node, bindings)?;
             substitute_expr(&mut r.node, bindings)?;
         }
-        ast::Expr::Call { type_args, args, .. } => {
+        ast::Expr::Call {
+            type_args, args, ..
+        } => {
             for ty in type_args {
                 *ty = crate::front::type_helper::substitute_type(ty, bindings)?;
             }
@@ -756,7 +776,12 @@ fn substitute_expr(expr: &mut ast::Expr, bindings: &HashMap<String, Type>) -> Re
                 substitute_expr(&mut arg.node, bindings)?;
             }
         }
-        ast::Expr::MemberCall { receiver, type_args, args, .. } => {
+        ast::Expr::MemberCall {
+            receiver,
+            type_args,
+            args,
+            ..
+        } => {
             substitute_expr(&mut receiver.node, bindings)?;
             for ty in type_args {
                 *ty = crate::front::type_helper::substitute_type(ty, bindings)?;
@@ -787,7 +812,6 @@ fn substitute_expr(expr: &mut ast::Expr, bindings: &HashMap<String, Type>) -> Re
     }
     Ok(())
 }
-
 
 pub fn drain_program_function_specializations(
     modules: &mut HashMap<String, hir::Module>,
@@ -822,12 +846,8 @@ pub fn drain_program_function_specializations(
                     imported.insert(name.clone(), m.interface());
                 }
             }
-            let mut specialized = check_module_from_templates(
-                &owner_mod,
-                &imported,
-                function_build_contracts,
-                id,
-            )?;
+            let mut specialized =
+                check_module_from_templates(&owner_mod, &imported, function_build_contracts, id)?;
             if let Some(dest) = modules.get_mut(&owner) {
                 dest.function_specializations
                     .extend(specialized.function_specializations.drain(..));
@@ -915,15 +935,18 @@ fn seed_checker_and_specialize(
             );
         }
         for template in &iface.function_templates {
-            checker.templates.insert(template.id.clone(), template.clone());
+            checker
+                .templates
+                .insert(template.id.clone(), template.clone());
             if template.id.owner.is_none() {
                 checker
                     .free_function_ids
                     .insert(template.id.name.clone(), template.id.clone());
             } else if let Some(owner) = &template.id.owner {
-                checker
-                    .method_ids
-                    .insert((owner.name.clone(), template.id.name.clone()), template.id.clone());
+                checker.method_ids.insert(
+                    (owner.name.clone(), template.id.name.clone()),
+                    template.id.clone(),
+                );
             }
         }
         for set in &iface.closed_label_sets {
@@ -951,7 +974,9 @@ fn seed_checker_and_specialize(
         checker.import_struct(s);
     }
     for spec in &module.struct_specializations {
-        checker.struct_specializations.insert(spec.id.clone(), spec.clone());
+        checker
+            .struct_specializations
+            .insert(spec.id.clone(), spec.clone());
         checker.specialization_order.push(spec.id.clone());
     }
     for f in &module.functions {
@@ -987,7 +1012,9 @@ fn seed_checker_and_specialize(
         );
     }
     for template in &module.function_templates {
-        checker.templates.insert(template.id.clone(), template.clone());
+        checker
+            .templates
+            .insert(template.id.clone(), template.clone());
         checker.template_order.push(template.id.clone());
         if template.id.owner.is_none() {
             checker
@@ -1003,9 +1030,10 @@ fn seed_checker_and_specialize(
                 },
             );
         } else if let Some(owner) = &template.id.owner {
-            checker
-                .method_ids
-                .insert((owner.name.clone(), template.id.name.clone()), template.id.clone());
+            checker.method_ids.insert(
+                (owner.name.clone(), template.id.name.clone()),
+                template.id.clone(),
+            );
         }
     }
     for spec in &module.function_specializations {
@@ -1058,7 +1086,6 @@ fn seed_checker_and_specialize(
 }
 
 impl Checker<'_> {
-
     fn function_templates_in_order(&self) -> Vec<hir::FunctionTemplate> {
         self.template_order
             .iter()
@@ -1086,7 +1113,10 @@ impl Checker<'_> {
                     &self.file,
                     func.span,
                     11,
-                    format!("duplicate type parameter `{name}` in function `{}`", func.ident),
+                    format!(
+                        "duplicate type parameter `{name}` in function `{}`",
+                        func.ident
+                    ),
                     None,
                 ));
             }
@@ -1114,16 +1144,16 @@ impl Checker<'_> {
                 None,
             ));
         }
-        self.free_function_ids.insert(func.ident.clone(), decl.clone());
+        self.free_function_ids
+            .insert(func.ident.clone(), decl.clone());
         if !type_params.is_empty() {
             let mut stored = func.clone();
             let mut bindings = HashMap::new();
             for name in &type_params {
                 bindings.insert(name.clone(), Type::Param(name.clone()));
             }
-            substitute_function_ast(&mut stored, &bindings).map_err(|message| {
-                semantic(&self.file, func.span, 11, message, None)
-            })?;
+            substitute_function_ast(&mut stored, &bindings)
+                .map_err(|message| semantic(&self.file, func.span, 11, message, None))?;
             let template = hir::FunctionTemplate {
                 id: decl.clone(),
                 params: stored.params,
@@ -1165,7 +1195,10 @@ impl Checker<'_> {
                     &self.file,
                     method.span,
                     4,
-                    format!("Duplicate method `{}` in struct `{}`", method.ident, st.ident),
+                    format!(
+                        "Duplicate method `{}` in struct `{}`",
+                        method.ident, st.ident
+                    ),
                     None,
                 ));
             }
@@ -1238,9 +1271,8 @@ impl Checker<'_> {
             }
             body_bindings.insert("Self".to_string(), self_type.clone());
             for stmt in &mut body {
-                substitute_stmt(&mut stmt.node, &body_bindings).map_err(|message| {
-                    semantic(&self.file, method.span, 11, message, None)
-                })?;
+                substitute_stmt(&mut stmt.node, &body_bindings)
+                    .map_err(|message| semantic(&self.file, method.span, 11, message, None))?;
             }
             let template = hir::FunctionTemplate {
                 id: decl.clone(),
@@ -1282,7 +1314,11 @@ impl Checker<'_> {
         if self.function_specializations.contains_key(&id) {
             return Ok(());
         }
-        if self.function_spec_stack.iter().any(|existing| existing == &id) {
+        if self
+            .function_spec_stack
+            .iter()
+            .any(|existing| existing == &id)
+        {
             return Ok(());
         }
         if let Some(prev) = self
@@ -1308,15 +1344,19 @@ impl Checker<'_> {
             }
             return Ok(());
         }
-        let template = self.templates.get(&id.declaration).cloned().ok_or_else(|| {
-            semantic(
-                &self.file,
-                span,
-                11,
-                format!("undefined function `{}`", id.declaration.name),
-                None,
-            )
-        })?;
+        let template = self
+            .templates
+            .get(&id.declaration)
+            .cloned()
+            .ok_or_else(|| {
+                semantic(
+                    &self.file,
+                    span,
+                    11,
+                    format!("undefined function `{}`", id.declaration.name),
+                    None,
+                )
+            })?;
         let mut bindings = HashMap::new();
         for (param, arg) in template.owner_params.iter().zip(id.owner_args.iter()) {
             bindings.insert(param.clone(), arg.clone());
@@ -1346,9 +1386,8 @@ impl Checker<'_> {
             build_ref_span: Span::DUMMY,
             span: template.span,
         };
-        substitute_function_ast(&mut func, &bindings).map_err(|message| {
-            semantic(&self.file, span, 11, message, None)
-        })?;
+        substitute_function_ast(&mut func, &bindings)
+            .map_err(|message| semantic(&self.file, span, 11, message, None))?;
         if let Some(self_ty) = &self.current_self_type {
             if let Some(first) = func.params.first_mut() {
                 if first.ident == "self" && first.ty.is_none() {
@@ -1372,7 +1411,11 @@ impl Checker<'_> {
                 function: hir_fn,
             },
         );
-        if !self.function_spec_order.iter().any(|existing| existing == &id) {
+        if !self
+            .function_spec_order
+            .iter()
+            .any(|existing| existing == &id)
+        {
             self.function_spec_order.push(id);
         }
         Ok(())
@@ -1402,7 +1445,10 @@ impl Checker<'_> {
                     &self.file,
                     span,
                     11,
-                    format!("unresolved type parameter `{}`", Self::unresolved_name(arg).unwrap_or_else(|| arg.to_string())),
+                    format!(
+                        "unresolved type parameter `{}`",
+                        Self::unresolved_name(arg).unwrap_or_else(|| arg.to_string())
+                    ),
                     None,
                 ));
             }
@@ -1489,7 +1535,10 @@ impl Checker<'_> {
                 &self.file,
                 span,
                 11,
-                format!("generic function `{name}` expects 0 type argument(s), found {}", type_args.len()),
+                format!(
+                    "generic function `{name}` expects 0 type argument(s), found {}",
+                    type_args.len()
+                ),
                 None,
             ));
         }
@@ -1509,7 +1558,11 @@ impl Checker<'_> {
                 ));
             }
         };
-        let Some(decl) = self.method_ids.get(&(struct_name.clone(), name.to_string())).cloned() else {
+        let Some(decl) = self
+            .method_ids
+            .get(&(struct_name.clone(), name.to_string()))
+            .cloned()
+        else {
             return Err(semantic(
                 &self.file,
                 span,
@@ -1519,7 +1572,13 @@ impl Checker<'_> {
             ));
         };
         let template = self.templates.get(&decl).cloned().ok_or_else(|| {
-            semantic(&self.file, span, 15, format!("Undefined function: {name}"), None)
+            semantic(
+                &self.file,
+                span,
+                15,
+                format!("Undefined function: {name}"),
+                None,
+            )
         })?;
         let owner_args = match &recv.ty {
             Type::App(_, args) => args.clone(),
@@ -1555,12 +1614,17 @@ impl Checker<'_> {
         call_args.extend(args.iter().cloned());
         let actuals: Vec<Type> = std::iter::once(self_ty.clone())
             .chain(args.iter().enumerate().map(|(idx, arg)| {
-                let expected = sig.params.get(idx + 1).and_then(|p| p.as_ref()).map(|a| &a.ty);
+                let expected = sig
+                    .params
+                    .get(idx + 1)
+                    .and_then(|p| p.as_ref())
+                    .map(|a| &a.ty);
                 self.infer_type_in(arg, expected)
             }))
             .collect();
         let contract = self.contract_from_sig(&sig);
-        if let Err(err) = crate::front::function_build::resolve_generic_call(&contract, &[], &actuals)
+        if let Err(err) =
+            crate::front::function_build::resolve_generic_call(&contract, &[], &actuals)
         {
             return Err(self.map_call_error(name, err, span, args));
         }
@@ -1598,7 +1662,9 @@ impl Checker<'_> {
                 &self.file,
                 span,
                 11,
-                format!("generic function `{fn_name}` expects {expected} type argument(s), found {actual}"),
+                format!(
+                    "generic function `{fn_name}` expects {expected} type argument(s), found {actual}"
+                ),
                 None,
             ),
             CallContractError::UnresolvedTypeParam { name } => type_err(
@@ -1610,15 +1676,9 @@ impl Checker<'_> {
                 None,
                 None,
             ),
-            CallContractError::TypeConflict { message } => type_err(
-                &self.file,
-                span,
-                7,
-                message,
-                None,
-                None,
-                None,
-            ),
+            CallContractError::TypeConflict { message } => {
+                type_err(&self.file, span, 7, message, None, None, None)
+            }
             CallContractError::NotConcrete { message } => type_err(
                 &self.file,
                 span,
@@ -1655,7 +1715,6 @@ impl Checker<'_> {
             },
         );
     }
-
 
     fn unresolved_name(ty: &Type) -> Option<String> {
         match ty {
@@ -1763,9 +1822,8 @@ impl Checker<'_> {
                     self.resolve_annotation_type(arg, span, allow_type_params)?;
                 }
                 if is_builtin_type_name(&name) {
-                    validate_type_app(&name, &resolved_args).map_err(|message| {
-                        semantic(&self.file, span, 11, message, None)
-                    })?;
+                    validate_type_app(&name, &resolved_args)
+                        .map_err(|message| semantic(&self.file, span, 11, message, None))?;
                     *ty = Type::App(name, resolved_args);
                     return Ok(None);
                 }
@@ -1855,9 +1913,7 @@ impl Checker<'_> {
                 &self.file,
                 span,
                 11,
-                format!(
-                    "unresolved type parameter `{unresolved}` while specializing `{display}`"
-                ),
+                format!("unresolved type parameter `{unresolved}` while specializing `{display}`"),
                 None,
             ));
         }
@@ -1868,7 +1924,11 @@ impl Checker<'_> {
         if self.struct_specializations.contains_key(&id) {
             return Ok(id);
         }
-        if self.specialization_stack.iter().any(|existing| existing == &id) {
+        if self
+            .specialization_stack
+            .iter()
+            .any(|existing| existing == &id)
+        {
             return Ok(id);
         }
         if let Some(prev) = self
@@ -1897,8 +1957,8 @@ impl Checker<'_> {
         self.specialization_stack.push(id.clone());
         let mut fields = Vec::new();
         for field in template_fields {
-            let mut ty = crate::front::type_helper::substitute_type(&field.ty, &bindings)
-                .map_err(|reason| {
+            let mut ty = crate::front::type_helper::substitute_type(&field.ty, &bindings).map_err(
+                |reason| {
                     semantic(
                         &self.file,
                         span,
@@ -1906,7 +1966,8 @@ impl Checker<'_> {
                         format!("cannot specialize `{display}`: {reason}"),
                         None,
                     )
-                })?;
+                },
+            )?;
             self.resolve_annotation_type(&mut ty, field.span, false)?;
             fields.push(hir::StructField {
                 name: field.name,
@@ -1945,7 +2006,11 @@ impl Checker<'_> {
                     message: format!("Undefined struct : {name}"),
                     help: None,
                 })?;
-                Ok((info.fields.clone(), info.field_indices.clone(), name.clone()))
+                Ok((
+                    info.fields.clone(),
+                    info.field_indices.clone(),
+                    name.clone(),
+                ))
             }
             hir::StructRef::Generic(id) => {
                 if !self.struct_specializations.contains_key(id) {
@@ -1976,11 +2041,7 @@ impl Checker<'_> {
         }
     }
 
-    fn struct_ref_from_type(
-        &mut self,
-        ty: &Type,
-        span: Span,
-    ) -> Result<hir::StructRef, SprsError> {
+    fn struct_ref_from_type(&mut self, ty: &Type, span: Span) -> Result<hir::StructRef, SprsError> {
         match ty {
             Type::Struct(name) => Ok(hir::StructRef::Plain(name.clone())),
             Type::App(name, args) if self.structs.contains_key(name) => {
@@ -2029,7 +2090,11 @@ impl Checker<'_> {
         self.atom_defs.contains(name) && !self.private_atom_defs.contains(name)
     }
 
-    fn resolve_closed_label_member(&self, name: &str, span: Span) -> Result<Option<String>, SprsError> {
+    fn resolve_closed_label_member(
+        &self,
+        name: &str,
+        span: Span,
+    ) -> Result<Option<String>, SprsError> {
         let Some((set, member)) = name.split_once('.') else {
             return Ok(None);
         };
@@ -2052,7 +2117,13 @@ impl Checker<'_> {
         Ok(Some(set.to_string()))
     }
 
-    fn type_mismatch_assign(&self, span: Span, message: String, expected: &Type, actual: &Type) -> SprsError {
+    fn type_mismatch_assign(
+        &self,
+        span: Span,
+        message: String,
+        expected: &Type,
+        actual: &Type,
+    ) -> SprsError {
         type_err(
             &self.file,
             span,
@@ -2064,7 +2135,11 @@ impl Checker<'_> {
         )
     }
 
-    fn check_list_literal_elements(&self, expr: &Spanned<ast::Expr>, expected: &Type) -> Result<(), SprsError> {
+    fn check_list_literal_elements(
+        &self,
+        expr: &Spanned<ast::Expr>,
+        expected: &Type,
+    ) -> Result<(), SprsError> {
         let ast::Expr::List(elements) = &expr.node else {
             return Ok(());
         };
@@ -2156,7 +2231,11 @@ impl Checker<'_> {
                     result = Some(match result {
                         None => arm_ty,
                         Some(t) if types_compatible(&t, &arm_ty) => {
-                            if t != Type::Any { t } else { arm_ty }
+                            if t != Type::Any {
+                                t
+                            } else {
+                                arm_ty
+                            }
                         }
                         Some(_) => Type::Any,
                     });
@@ -2167,7 +2246,12 @@ impl Checker<'_> {
                 result.unwrap_or(Type::Any)
             }
             ast::Expr::Call { name, args, .. } => self.infer_call_return_type(name, args),
-            ast::Expr::MemberCall { receiver, name, args, .. } => {
+            ast::Expr::MemberCall {
+                receiver,
+                name,
+                args,
+                ..
+            } => {
                 if let ast::Expr::Var(_) = &receiver.node {
                     self.infer_call_return_type(name, args)
                 } else {
@@ -2204,7 +2288,10 @@ impl Checker<'_> {
                         if matches!(payload_ty, Type::Unit) {
                             Type::App("Label".into(), vec![Type::Atom(static_name.clone())])
                         } else {
-                            Type::App("Label".into(), vec![Type::Atom(static_name.clone()), payload_ty])
+                            Type::App(
+                                "Label".into(),
+                                vec![Type::Atom(static_name.clone()), payload_ty],
+                            )
                         }
                     }
                     LabelName::Dynamic(_) => {
@@ -2236,7 +2323,8 @@ impl Checker<'_> {
                                 if let Some(field) = spec.fields.iter().find(|f| f.name == *rhs) {
                                     return field.ty.clone();
                                 }
-                            } else if let Some(field) = info.fields.iter().find(|f| f.name == *rhs) {
+                            } else if let Some(field) = info.fields.iter().find(|f| f.name == *rhs)
+                            {
                                 return field.ty.clone();
                             }
                         }
@@ -2318,13 +2406,35 @@ impl Checker<'_> {
                 if args.is_empty() {
                     Type::App("Label".into(), vec![Type::Atom("error".into())])
                 } else {
-                    Type::App("Label".into(), vec![Type::Atom("error".into()), self.infer_type(&args[0])])
+                    Type::App(
+                        "Label".into(),
+                        vec![Type::Atom("error".into()), self.infer_type(&args[0])],
+                    )
                 }
             }
             "label_is" => Type::Bool,
             "label_name" => Type::Str,
             "label_payload" => Type::Any,
             "init" => Type::Unit,
+            "ref" => {
+                if let Some(ast::Expr::Deref(inner)) = args.first().map(|a| &a.node) {
+                    ptr_maybe_uninit_element(&self.infer_type(inner))
+                        .cloned()
+                        .map(ptr_type)
+                        .unwrap_or(Type::Any)
+                } else {
+                    Type::Any
+                }
+            }
+            "take" => {
+                if let Some(ast::Expr::Deref(inner)) = args.first().map(|a| &a.node) {
+                    ptr_maybe_uninit_element(&self.infer_type(inner))
+                        .cloned()
+                        .unwrap_or(Type::Any)
+                } else {
+                    Type::Any
+                }
+            }
             "clone" | "move" => {
                 if !args.is_empty() {
                     self.infer_type(&args[0])
@@ -2381,7 +2491,11 @@ impl Checker<'_> {
         }
     }
 
-    fn check_expr(&mut self, expr: &Spanned<ast::Expr>, expected: Option<&Type>) -> Result<hir::Expr, SprsError> {
+    fn check_expr(
+        &mut self,
+        expr: &Spanned<ast::Expr>,
+        expected: Option<&Type>,
+    ) -> Result<hir::Expr, SprsError> {
         self.check_expr_in(expr, expected)
     }
 
@@ -2471,18 +2585,52 @@ impl Checker<'_> {
                         None,
                     ));
                 };
+                if maybe_uninit_inner(pointee).is_some() {
+                    return Err(type_err(
+                        &self.file,
+                        span,
+                        1,
+                        format!(
+                            "Type mismatch: ordinary read through Ptr(MaybeUninit(T)) is not allowed; use @ref or @take"
+                        ),
+                        Some("Ptr(T)".to_string()),
+                        Some(format!("{}", h.ty)),
+                        None,
+                    ));
+                }
                 let ty = pointee.clone();
                 (hir::ExprKind::Deref(Box::new(h)), ty)
             }
-            ast::Expr::Call { name, type_args, args } => {
+            ast::Expr::Call {
+                name,
+                type_args,
+                args,
+            } => {
                 let (callee, ret_ty) = self.resolve_checked_call(name, type_args, args, span)?;
                 let args_h = self.check_args(args)?;
-                (hir::ExprKind::Call { callee, args: args_h }, ret_ty)
+                (
+                    hir::ExprKind::Call {
+                        callee,
+                        args: args_h,
+                    },
+                    ret_ty,
+                )
             }
-            ast::Expr::MemberCall { receiver, name, type_args, args } => {
+            ast::Expr::MemberCall {
+                receiver,
+                name,
+                type_args,
+                args,
+            } => {
                 let (callee, args_h, ret_ty) =
                     self.resolve_method_call(receiver, name, type_args, args, span)?;
-                (hir::ExprKind::Call { callee, args: args_h }, ret_ty)
+                (
+                    hir::ExprKind::Call {
+                        callee,
+                        args: args_h,
+                    },
+                    ret_ty,
+                )
             }
             ast::Expr::ModuleAccess(module_name, function_name, args) => {
                 let (callee, ret_ty) = self.resolve_checked_call(function_name, &[], args, span)?;
@@ -2494,7 +2642,13 @@ impl Checker<'_> {
                     },
                     other => other,
                 };
-                (hir::ExprKind::Call { callee, args: args_h }, ret_ty)
+                (
+                    hir::ExprKind::Call {
+                        callee,
+                        args: args_h,
+                    },
+                    ret_ty,
+                )
             }
             ast::Expr::Macro(ident, args) => self.check_macro(ident, args, span)?,
             ast::Expr::List(elements) => {
@@ -2620,7 +2774,10 @@ impl Checker<'_> {
             ast::Expr::Match { scrutinee, arms } => {
                 let scrut_h = self.check_expr(scrutinee, None)?;
                 self.validate_match_patterns(arms.iter().map(|a| (&a.pat, a.span)), &scrut_h.ty)?;
-                self.check_closed_exhaustiveness(&scrut_h.ty, arms.iter().map(|a| (&a.pat, a.span)))?;
+                self.check_closed_exhaustiveness(
+                    &scrut_h.ty,
+                    arms.iter().map(|a| (&a.pat, a.span)),
+                )?;
                 let mut arms_h = Vec::new();
                 for arm in arms {
                     self.scopes.push(HashMap::new());
@@ -2689,6 +2846,44 @@ impl Checker<'_> {
             || matches!(expr.kind, hir::ExprKind::Number(n) if n >= 0)
     }
 
+    fn check_raw_storage_deref_place(
+        &mut self,
+        arg: &Spanned<ast::Expr>,
+        builtin: &str,
+    ) -> Result<(hir::Expr, Type), SprsError> {
+        let ast::Expr::Deref(inner) = &arg.node else {
+            return Err(semantic(
+                &self.file,
+                arg.span,
+                13,
+                format!("@{builtin} first argument must be a dereference place"),
+                None,
+            ));
+        };
+        let pointer = self.check_expr(inner, None)?;
+        let Some(inner_ty) = ptr_maybe_uninit_element(&pointer.ty) else {
+            return Err(type_err(
+                &self.file,
+                arg.span,
+                1,
+                format!(
+                    "Type mismatch: @{builtin} expects Ptr(MaybeUninit(T)), got {}",
+                    pointer.ty
+                ),
+                Some("Ptr(MaybeUninit(T))".to_string()),
+                Some(format!("{}", pointer.ty)),
+                None,
+            ));
+        };
+        let inner_ty = inner_ty.clone();
+        let dest = hir::Expr {
+            kind: hir::ExprKind::Deref(Box::new(pointer)),
+            ty: maybe_uninit_type(inner_ty.clone()),
+            span: arg.span,
+        };
+        Ok((dest, inner_ty))
+    }
+
     fn check_add(
         &mut self,
         l: &Spanned<ast::Expr>,
@@ -2752,7 +2947,13 @@ impl Checker<'_> {
         span: Span,
     ) -> Result<hir::Expr, SprsError> {
         let target = self.get_binding(name).ok_or_else(|| {
-            semantic(&self.file, span, 2, format!("Undefined variable: {}", name), None)
+            semantic(
+                &self.file,
+                span,
+                2,
+                format!("Undefined variable: {}", name),
+                None,
+            )
         })?;
         if let ast::Expr::Var(src) = &rhs.node {
             if src == name {
@@ -2807,7 +3008,10 @@ impl Checker<'_> {
             }
         }
         for (idx, (field_name, field_expr)) in field_exprs.iter().enumerate() {
-            if field_exprs[..idx].iter().any(|(prev, _)| prev == field_name) {
+            if field_exprs[..idx]
+                .iter()
+                .any(|(prev, _)| prev == field_name)
+            {
                 return Err(SprsError::Semantic {
                     code: ErrorCode {
                         category: ErrorCategory::Semantic,
@@ -2899,7 +3103,9 @@ impl Checker<'_> {
                         if !types_assignable(elem_ty, &val_ty) {
                             return Err(self.type_mismatch_assign(
                                 args[1].span,
-                                format!("Type mismatch: list element has {val_ty}, expected {elem_ty}"),
+                                format!(
+                                    "Type mismatch: list element has {val_ty}, expected {elem_ty}"
+                                ),
                                 elem_ty,
                                 &val_ty,
                             ));
@@ -2909,12 +3115,22 @@ impl Checker<'_> {
             }
             "cast" => {
                 if args.len() != 2 {
-                    return Err(semantic(&self.file, span, 13, "@cast expects 2 arguments".into(), None));
+                    return Err(semantic(
+                        &self.file,
+                        span,
+                        13,
+                        "@cast expects 2 arguments".into(),
+                        None,
+                    ));
                 }
             }
             "is_error" => arity_err(1, "@is_error expects exactly 1 argument".into(), 3)?,
             "attach" => {
-                arity_err(2, "@attach expects exactly 2 arguments: expression and label".into(), 3)?;
+                arity_err(
+                    2,
+                    "@attach expects exactly 2 arguments: expression and label".into(),
+                    3,
+                )?;
                 match &args[1].node {
                     ast::Expr::AttachSlot(name) => {
                         self.attachments.insert(name.clone());
@@ -2933,20 +3149,34 @@ impl Checker<'_> {
                 }
             }
             "label_is" => {
-                arity_err(2, "@label_is expects exactly 2 arguments: value and label".into(), 3)?;
+                arity_err(
+                    2,
+                    "@label_is expects exactly 2 arguments: value and label".into(),
+                    3,
+                )?;
             }
             "raw" => arity_err(1, "@raw expects 1 argument".into(), 13)?,
             "free" => arity_err(1, "@free expects 1 argument".into(), 13)?,
             "move" => {
                 arity_err(1, "@move expects 1 argument".into(), 13)?;
                 match &args[0].node {
-                    ast::Expr::Var(_) | ast::Expr::Deref(_) => {}
+                    ast::Expr::Deref(_) => {
+                        return Err(semantic(
+                            &self.file,
+                            args[0].span,
+                            13,
+                            "@move does not accept a dereference place; use @take for raw storage"
+                                .into(),
+                            None,
+                        ));
+                    }
+                    ast::Expr::Var(_) => {}
                     _ => {
                         return Err(semantic(
                             &self.file,
                             args[0].span,
                             13,
-                            "@move expects a variable or dereference place argument".into(),
+                            "@move expects a variable argument".into(),
                             None,
                         ));
                     }
@@ -2954,29 +3184,16 @@ impl Checker<'_> {
             }
             "init" => {
                 arity_err(2, "@init expects 2 arguments".into(), 13)?;
-                match &args[0].node {
-                    ast::Expr::Deref(_) => {}
-                    _ => {
-                        return Err(semantic(
-                            &self.file,
-                            args[0].span,
-                            13,
-                            "@init first argument must be a dereference place".into(),
-                            None,
-                        ));
-                    }
-                }
-                let dest = self.check_expr(&args[0], None)?;
-                let pointee = dest.ty.clone();
-                let value = self.check_expr_in(&args[1], Some(&pointee))?;
-                if !types_assignable(&pointee, &value.ty) {
+                let (dest, inner_ty) = self.check_raw_storage_deref_place(&args[0], "init")?;
+                let value = self.check_expr_in(&args[1], Some(&inner_ty))?;
+                if !types_assignable(&inner_ty, &value.ty) {
                     return Err(self.type_mismatch_assign(
                         args[1].span,
                         format!(
-                            "Type mismatch: cannot initialize dereference of type {pointee} with {}",
+                            "Type mismatch: cannot initialize dereference of type {inner_ty} with {}",
                             value.ty
                         ),
-                        &pointee,
+                        &inner_ty,
                         &value.ty,
                     ));
                 }
@@ -2985,9 +3202,21 @@ impl Checker<'_> {
                     Type::Unit,
                 ));
             }
-            "println" | "buf_len" | "buf_get" | "buf_set" | "clone" | "fcast"
-            | "lshift" | "rshift" | "not" | "error_message" | "label_payload" | "label_name"
-            | "error" => {}
+            "ref" => {
+                arity_err(1, "@ref expects 1 argument".into(), 13)?;
+                let (dest, inner_ty) = self.check_raw_storage_deref_place(&args[0], "ref")?;
+                return Ok((
+                    hir::ExprKind::Macro("ref".into(), vec![dest]),
+                    ptr_type(inner_ty),
+                ));
+            }
+            "take" => {
+                arity_err(1, "@take expects 1 argument".into(), 13)?;
+                let (dest, inner_ty) = self.check_raw_storage_deref_place(&args[0], "take")?;
+                return Ok((hir::ExprKind::Macro("take".into(), vec![dest]), inner_ty));
+            }
+            "println" | "buf_len" | "buf_get" | "buf_set" | "clone" | "fcast" | "lshift"
+            | "rshift" | "not" | "error_message" | "label_payload" | "label_name" | "error" => {}
             _ => {
                 return Err(semantic(
                     &self.file,
@@ -3097,21 +3326,21 @@ impl Checker<'_> {
             &self.file,
             first_span.unwrap_or(Span::DUMMY),
             17,
-            format!("non-exhaustive match on {}; missing {}", set, missing.join(", ")),
+            format!(
+                "non-exhaustive match on {}; missing {}",
+                set,
+                missing.join(", ")
+            ),
             None,
         ))
     }
 
-    fn check_function(
-        &mut self,
-        func: &ast::Function,
-    ) -> Result<hir::Function, SprsError> {
+    fn check_function(&mut self, func: &ast::Function) -> Result<hir::Function, SprsError> {
         self.attachments.clear();
         self.scopes.push(HashMap::new());
         if let Some(ret) = &func.ret_ty {
-            reject_payloadless_label_type(ret).map_err(|msg| {
-                semantic(&self.file, func.span, 11, msg, None)
-            })?;
+            reject_payloadless_label_type(ret)
+                .map_err(|msg| semantic(&self.file, func.span, 11, msg, None))?;
         }
         let (type_params_early, _) = match &func.build_ref {
             Some(name) => self
@@ -3136,9 +3365,8 @@ impl Checker<'_> {
             let mut annot = p.ty.clone();
             if let Some(a) = &mut annot {
                 self.resolve_annotation_type(&mut a.ty, p.span, allow_type_params)?;
-                reject_payloadless_label_type(&a.ty).map_err(|message| {
-                    semantic(&self.file, p.span, 11, message, None)
-                })?;
+                reject_payloadless_label_type(&a.ty)
+                    .map_err(|message| semantic(&self.file, p.span, 11, message, None))?;
             }
             let (ty, is_ambi, is_annotated) = match annot {
                 Some(a) => (a.ty, a.ambi, true),
@@ -3206,9 +3434,8 @@ impl Checker<'_> {
                 if let Some(a) = &mut annot {
                     let allow_type_params = self.current_type_params.len() != 0;
                     self.resolve_annotation_type(&mut a.ty, var.span, allow_type_params)?;
-                    reject_payloadless_label_type(&a.ty).map_err(|message| {
-                        semantic(&self.file, var.span, 11, message, None)
-                    })?;
+                    reject_payloadless_label_type(&a.ty)
+                        .map_err(|message| semantic(&self.file, var.span, 11, message, None))?;
                 }
                 let expected_ty = annot.as_ref().map(|a| &a.ty);
                 let unit = Spanned::new(ast::Expr::Unit(), Span::DUMMY);
@@ -3398,7 +3625,9 @@ impl Checker<'_> {
                         if !types_assignable(elem_ty, &rhs_ty) {
                             return Err(self.type_mismatch_assign(
                                 *ia_span,
-                                format!("Type mismatch: list element has {rhs_ty}, expected {elem_ty}"),
+                                format!(
+                                    "Type mismatch: list element has {rhs_ty}, expected {elem_ty}"
+                                ),
                                 elem_ty,
                                 &rhs_ty,
                             ));
@@ -3434,6 +3663,17 @@ impl Checker<'_> {
                     ));
                 };
                 let pointee = pointee.clone();
+                if maybe_uninit_inner(&pointee).is_some() {
+                    return Err(type_err(
+                        &self.file,
+                        *da_span,
+                        1,
+                        "Type mismatch: assignment through Ptr(MaybeUninit(T)) is not allowed; use @init".to_string(),
+                        Some("Ptr(T)".to_string()),
+                        Some(format!("{}", pointer_h.ty)),
+                        None,
+                    ));
+                }
                 let rhs = self.check_expr_in(expr, Some(&pointee))?;
                 if !types_assignable(&pointee, &rhs.ty) {
                     return Err(self.type_mismatch_assign(
@@ -3501,7 +3741,9 @@ mod tests {
 
     fn err_message(err: &SprsError) -> String {
         match err {
-            SprsError::Semantic { message, .. } | SprsError::Type { message, .. } => message.clone(),
+            SprsError::Semantic { message, .. } | SprsError::Type { message, .. } => {
+                message.clone()
+            }
             other => panic!("unexpected {other:?}"),
         }
     }
@@ -3525,7 +3767,10 @@ fn f() >> i64 {
 "#;
         let module = check(src).expect("check");
         let body = &first_fn(&module).body;
-        let hir::StmtKind::Var { init, binding_ty, .. } = &body[0].kind else {
+        let hir::StmtKind::Var {
+            init, binding_ty, ..
+        } = &body[0].kind
+        else {
             panic!("expected var");
         };
         assert_eq!(*binding_ty, Type::App("List".into(), vec![Type::TypeI64]));
@@ -3570,16 +3815,8 @@ fn f() >> i16 {
     #[test]
     fn negative_table() {
         let cases: &[(&str, ErrorCategory, u32)] = &[
-            (
-                r#"fn f() >> i64 { return "x"; }"#,
-                ErrorCategory::Type,
-                5,
-            ),
-            (
-                r#"fn f(){ var x >> i64 = "x"; }"#,
-                ErrorCategory::Type,
-                6,
-            ),
+            (r#"fn f() >> i64 { return "x"; }"#, ErrorCategory::Type, 5),
+            (r#"fn f(){ var x >> i64 = "x"; }"#, ErrorCategory::Type, 6),
             (
                 r#"fn f(){ var xs >> List(i64) = [1, "x"]; }"#,
                 ErrorCategory::Type,
@@ -3632,7 +3869,9 @@ fn f() {
         let err = check("struct A { value >> DoesNotExist }").expect_err("undef");
         assert_eq!(err_code(&err), (ErrorCategory::Semantic, 11));
         match err {
-            SprsError::Semantic { message, location, .. } => {
+            SprsError::Semantic {
+                message, location, ..
+            } => {
                 assert_eq!(message, "Undefined type: DoesNotExist");
                 assert_eq!(location.file, "test.sprs");
             }
@@ -3677,7 +3916,11 @@ fn f() {
         assert_eq!(fields.len(), 2);
         assert_eq!(fields[0].ty, Type::TypeI64);
         assert_eq!(fields[1].ty, Type::TypeI64);
-        assert!(!fields.iter().any(|f| crate::front::type_helper::contains_unresolved_type(&f.ty)));
+        assert!(
+            !fields
+                .iter()
+                .any(|f| crate::front::type_helper::contains_unresolved_type(&f.ty))
+        );
     }
 
     #[test]
@@ -3723,10 +3966,23 @@ fn f() {
         let module = check(&src).expect("check");
         assert_eq!(module.struct_specializations.len(), 2);
         let inner = Type::App("Pair".into(), vec![Type::TypeI64]);
-        assert!(module.struct_specializations.iter().any(|s| s.id.args == vec![Type::TypeI64]));
-        assert!(module.struct_specializations.iter().any(|s| s.id.args == vec![inner.clone()]));
+        assert!(
+            module
+                .struct_specializations
+                .iter()
+                .any(|s| s.id.args == vec![Type::TypeI64])
+        );
+        assert!(
+            module
+                .struct_specializations
+                .iter()
+                .any(|s| s.id.args == vec![inner.clone()])
+        );
         let outer_fields = pair_fields(&module, &[inner]);
-        assert_eq!(outer_fields[0].ty, Type::App("Pair".into(), vec![Type::TypeI64]));
+        assert_eq!(
+            outer_fields[0].ty,
+            Type::App("Pair".into(), vec![Type::TypeI64])
+        );
     }
 
     #[test]
@@ -4074,7 +4330,8 @@ fn read(p >> Ptr(i64)) >> i64 { return *p; }
         assert_eq!(ret.ty, Type::TypeI64);
         assert!(matches!(ret.kind, hir::ExprKind::Deref(_)));
 
-        let err = check("fn bad(p >> Ptr(i64), q >> Ptr(str)) { p = q; }").expect_err("ptr mismatch");
+        let err =
+            check("fn bad(p >> Ptr(i64), q >> Ptr(str)) { p = q; }").expect_err("ptr mismatch");
         assert_eq!(err_code(&err), (ErrorCategory::Type, 6));
     }
 
@@ -4169,7 +4426,12 @@ fn main(p >> Ptr(i64), n >> usize) >> Ptr(i64) { return offset(p, n); }
         ];
         for src in cases {
             let err = check(src).expect_err(src);
-            assert_eq!(err_code(&err), (ErrorCategory::Type, 1), "{src} => {}", err_message(&err));
+            assert_eq!(
+                err_code(&err),
+                (ErrorCategory::Type, 1),
+                "{src} => {}",
+                err_message(&err)
+            );
             assert!(
                 err_message(&err).starts_with(
                     "Type mismatch: pointer offset expects usize or a non-negative integer literal, got "
@@ -4181,29 +4443,29 @@ fn main(p >> Ptr(i64), n >> usize) >> Ptr(i64) { return offset(p, n); }
     }
 
     #[test]
-    fn pointer_move_and_init_preserve_pointee_type() {
+    fn maybe_uninit_of_owned_and_generic_struct_types() {
         let src = r#"
-fn take(p >> Ptr(i64)) >> i64 {
-    var x = @move(*p);
-    @init(*p, x);
-    return x;
+struct Pair(T) { a >> T, b >> T }
+fn owned(x >> MaybeUninit(str)) { }
+fn generic(x >> MaybeUninit(Pair(i64))) { }
+fn ptr_generic(p >> Ptr(MaybeUninit(Pair(i64)))) { }
+"#;
+        check(src).expect("maybe uninit owned/generic");
+    }
+
+    #[test]
+    fn maybe_uninit_storage_builtins_type_check() {
+        let src = r#"
+fn flow(p >> Ptr(MaybeUninit(i64)), v >> i64) >> Ptr(i64) {
+    @init(*p, v);
+    var q = @ref(*p);
+    var x = @take(*p);
+    return q;
 }
 "#;
         let module = check(src).expect("check");
         let body = &first_fn(&module).body;
-        let hir::StmtKind::Var { init, binding_ty, .. } = &body[0].kind else {
-            panic!("expected move binding");
-        };
-        assert_eq!(init.ty, Type::TypeI64);
-        assert_eq!(binding_ty, &Type::TypeI64);
-        match &init.kind {
-            hir::ExprKind::Macro(name, args) => {
-                assert_eq!(name, "move");
-                assert!(matches!(args[0].kind, hir::ExprKind::Deref(_)));
-            }
-            other => panic!("expected @move, got {other:?}"),
-        }
-        let hir::StmtKind::Expr(init_call) = &body[1].kind else {
+        let hir::StmtKind::Expr(init_call) = &body[0].kind else {
             panic!("expected @init statement");
         };
         assert_eq!(init_call.ty, Type::Unit);
@@ -4215,32 +4477,113 @@ fn take(p >> Ptr(i64)) >> i64 {
             }
             other => panic!("expected @init, got {other:?}"),
         }
+        let hir::StmtKind::Var {
+            init, binding_ty, ..
+        } = &body[1].kind
+        else {
+            panic!("expected @ref binding");
+        };
+        let ptr_i64 = Type::App("Ptr".into(), vec![Type::TypeI64]);
+        assert_eq!(init.ty, ptr_i64);
+        assert_eq!(binding_ty, &ptr_i64);
+        match &init.kind {
+            hir::ExprKind::Macro(name, args) => {
+                assert_eq!(name, "ref");
+                assert!(matches!(args[0].kind, hir::ExprKind::Deref(_)));
+            }
+            other => panic!("expected @ref, got {other:?}"),
+        }
+        let hir::StmtKind::Var {
+            init, binding_ty, ..
+        } = &body[2].kind
+        else {
+            panic!("expected @take binding");
+        };
+        assert_eq!(init.ty, Type::TypeI64);
+        assert_eq!(binding_ty, &Type::TypeI64);
+        match &init.kind {
+            hir::ExprKind::Macro(name, args) => {
+                assert_eq!(name, "take");
+                assert!(matches!(args[0].kind, hir::ExprKind::Deref(_)));
+            }
+            other => panic!("expected @take, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_ordinary_maybe_uninit_read_and_move_deref() {
+        let read = check("fn bad(p >> Ptr(MaybeUninit(i64))) >> i64 { return *p; }")
+            .expect_err("ordinary read");
+        assert_eq!(err_code(&read), (ErrorCategory::Type, 1));
+        assert!(err_message(&read).contains("ordinary read through Ptr(MaybeUninit(T))"));
+
+        let moved =
+            check("fn bad(p >> Ptr(MaybeUninit(i64))) { @move(*p); }").expect_err("move deref");
+        assert_eq!(err_code(&moved), (ErrorCategory::Semantic, 13));
+        assert_eq!(
+            err_message(&moved),
+            "@move does not accept a dereference place; use @take for raw storage"
+        );
+
+        let assign = check("fn bad(p >> Ptr(MaybeUninit(i64))) { *p = 1; }").expect_err("assign");
+        assert_eq!(err_code(&assign), (ErrorCategory::Type, 1));
+        assert!(err_message(&assign).contains("assignment through Ptr(MaybeUninit(T))"));
     }
 
     #[test]
     fn rejects_invalid_pointer_init() {
-        let arity = check("fn bad(p >> Ptr(i64)) { @init(*p); }").expect_err("arity");
+        let arity = check("fn bad(p >> Ptr(MaybeUninit(i64))) { @init(*p); }").expect_err("arity");
         assert_eq!(err_code(&arity), (ErrorCategory::Semantic, 13));
 
-        let place = check("fn bad(p >> Ptr(i64), x >> i64) { @init(p, x); }").expect_err("place");
+        let place = check("fn bad(p >> Ptr(MaybeUninit(i64)), x >> i64) { @init(p, x); }")
+            .expect_err("place");
         assert_eq!(err_code(&place), (ErrorCategory::Semantic, 13));
         assert_eq!(
             err_message(&place),
             "@init first argument must be a dereference place"
         );
 
-        let mismatch = check(r#"fn bad(p >> Ptr(i64)) { @init(*p, "x"); }"#).expect_err("mismatch");
+        let field = check(
+            r#"
+struct Box { p >> Ptr(MaybeUninit(i64)) }
+fn bad(b >> Box, x >> i64) { @init(b.p, x); }
+"#,
+        )
+        .expect_err("field");
+        assert_eq!(err_code(&field), (ErrorCategory::Semantic, 13));
+
+        let ptr_t =
+            check(r#"fn bad(p >> Ptr(i64), x >> i64) { @init(*p, x); }"#).expect_err("ptr t");
+        assert_eq!(err_code(&ptr_t), (ErrorCategory::Type, 1));
+        assert!(err_message(&ptr_t).contains("@init expects Ptr(MaybeUninit(T))"));
+
+        let mismatch = check(r#"fn bad(p >> Ptr(MaybeUninit(i64))) { @init(*p, "x"); }"#)
+            .expect_err("mismatch");
         assert_eq!(err_code(&mismatch), (ErrorCategory::Type, 6));
         assert_eq!(
             err_message(&mismatch),
             "Type mismatch: cannot initialize dereference of type i64 with str"
         );
 
+        let take_place = check("fn bad(x >> i64) { @take(x); }").expect_err("take place");
+        assert_eq!(err_code(&take_place), (ErrorCategory::Semantic, 13));
+        assert_eq!(
+            err_message(&take_place),
+            "@take first argument must be a dereference place"
+        );
+
+        let ref_place = check("fn bad(x >> i64) { @ref(x); }").expect_err("ref place");
+        assert_eq!(err_code(&ref_place), (ErrorCategory::Semantic, 13));
+        assert_eq!(
+            err_message(&ref_place),
+            "@ref first argument must be a dereference place"
+        );
+
         let move_place = check("fn bad(p >> Ptr(i64)) { @move(1); }").expect_err("move place");
         assert_eq!(err_code(&move_place), (ErrorCategory::Semantic, 13));
         assert_eq!(
             err_message(&move_place),
-            "@move expects a variable or dereference place argument"
+            "@move expects a variable argument"
         );
     }
 }

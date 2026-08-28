@@ -64,14 +64,19 @@ fn main() {
 
 **Typed pointer dereference (`Ptr(T)`):**
 
-A non-owning read of `*p` keeps the pointee in place. Contexts that take ownership — variable initialization (`var x = *p`), arguments, `return`, and storing into a list, label, or struct — clone the pointee with the existing `__clone` path.
+`Ptr(T)` points at concrete `StorageRep(T)`, not a RuntimeValue `{tag,data}` slot. See [Types and Bindings](../language/types-and-bindings.md) for the layout contract. A non-owning read of `*p` keeps the pointee in place. Contexts that take ownership — variable initialization (`var x = *p`), arguments, `return`, and storing into a list, label, or struct — clone the pointee with the existing `__clone` path.
 
 Replacement assignment `*p = value` prepares the owned right-hand side first, drops the old pointee, then stores the new value. `*p = *p` therefore clones before drop. The pointer value itself is a non-owning address and is not an extra drop target.
 
-Pointer places have three ownership contracts:
+**Raw storage (`Ptr(MaybeUninit(T))`):**
 
-- `@move(*p)` copies `{tag,data}` out and sets the destination slot to `Unit` (heap and primitive alike).
-- `@init(*p, value)` stores into a `Unit` slot only. It does not `__drop` the old value. A non-`Unit` destination panics with `@init destination is already initialized`.
-- `*p = value` is replace: owned rhs, then `__drop` of the old pointee, then store.
+`MaybeUninit(T)` has the same layout as `T`. Ordinary `*p` and `*p = value` are compile errors. Ownership uses a separate API:
+
+- `@init(*p, value)` moves `value : T` into uninitialized storage. It does not drop an old value and does not track initialization at runtime.
+- `@ref(*p)` returns `Ptr(T)` without moving ownership. `p` stays `Ptr(MaybeUninit(T))`.
+- `@take(*p)` moves `T` out. Source bytes are left logically uninitialized; they are not overwritten with `Unit`.
+- `@move(*p)` is rejected. `@move` is only for ordinary values.
+
+`*p = value` on `Ptr(T)` remains replacement of an initialized `T`.
 
 Buffers participate in the same auto-drop path as other heap values. Prefer `destroy` / `defer destroy(...)` when you need an explicit lifetime cut. Details of Buffer liveness, `unsafe`, RawPtr, and `defer` order are in [Buffers and Unsafe](../language/buffers-and-unsafe.md).

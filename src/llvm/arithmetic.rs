@@ -58,7 +58,12 @@ pub fn create_ptr_add_expr<'ctx>(
 
     let l_data_ptr = self_compiler
         .builder
-        .build_struct_gep(self_compiler.runtime_value_type, l_ptr, 1, "ptr_add_base_ptr")
+        .build_struct_gep(
+            self_compiler.runtime_value_type,
+            l_ptr,
+            1,
+            "ptr_add_base_ptr",
+        )
         .unwrap();
     let base = self_compiler
         .builder
@@ -68,29 +73,32 @@ pub fn create_ptr_add_expr<'ctx>(
 
     let r_data_ptr = self_compiler
         .builder
-        .build_struct_gep(self_compiler.runtime_value_type, r_ptr, 1, "ptr_add_off_ptr")
+        .build_struct_gep(
+            self_compiler.runtime_value_type,
+            r_ptr,
+            1,
+            "ptr_add_off_ptr",
+        )
         .unwrap();
     let offset = self_compiler
         .builder
-        .build_load(self_compiler.context.i64_type(), r_data_ptr, "ptr_add_offset")
+        .build_load(
+            self_compiler.context.i64_type(),
+            r_data_ptr,
+            "ptr_add_offset",
+        )
         .unwrap()
         .into_int_value();
 
-    let stride = self_compiler.runtime_value_type.size_of().ok_or_else(|| {
-        SprsError::Internal {
-            message: "runtime value type has no LLVM size".to_string(),
+    let pointee =
+        crate::front::type_helper::ptr_element(&lhs.ty).ok_or_else(|| SprsError::Internal {
+            message: "pointer add requires Ptr(T)".to_string(),
             location: None,
-        }
-    })?;
+        })?;
+    let stride = self_compiler.storage_stride_const(pointee)?;
 
-    let (byte_offset, mul_overflow) = build_checked_int_op(
-        self_compiler,
-        module,
-        stride,
-        offset,
-        BinOpKind::Mul,
-        false,
-    )?;
+    let (byte_offset, mul_overflow) =
+        build_checked_int_op(self_compiler, module, stride, offset, BinOpKind::Mul, false)?;
     let (addr, add_overflow) = build_checked_int_op(
         self_compiler,
         module,

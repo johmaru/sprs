@@ -134,6 +134,7 @@ pub fn var_load_at_init_variable<'ctx>(
 /// Copy `{tag,data}` out of a pointer place and unconditionally mark the
 /// destination slot `Tag::Unit`. Unlike [`move_variable`], this is not
 /// limited to heap tags.
+#[allow(dead_code)]
 pub fn move_out_pointer_place<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
     dest_ptr: PointerValue<'ctx>,

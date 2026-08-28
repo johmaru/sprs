@@ -4,11 +4,10 @@ use crate::llvm::value::{
     build_dynamic_string, build_label_is_error, create_entry_block_alloca,
     create_error_label_from_str, create_label,
 };
-use crate::llvm::builder_helper::{BuilderExt, ContextExt};
-use crate::llvm::variable::{clone_runtime_value, move_out_pointer_place, move_variable, var_load_at_init_variable};
+use crate::llvm::variable::{clone_runtime_value, move_variable, var_load_at_init_variable};
 use crate::{
-    front::hir,
     front::error::{ErrorCategory, ErrorCode, Location, SprsError},
+    front::hir,
     front::span::Span,
     llvm::compiler::{Compiler, StoreTag, StoreValue, Tag},
 };
@@ -518,7 +517,7 @@ pub fn call_builtin_macro_clone<'ctx>(
 pub fn call_builtin_macro_move<'ctx>(
     self_compiler: &mut Compiler<'ctx>,
     args: &Vec<hir::Expr>,
-    module: &inkwell::module::Module<'ctx>,
+    _module: &inkwell::module::Module<'ctx>,
 ) -> Result<BasicValueEnum<'ctx>, SprsError> {
     if args.len() != 1 {
         return Err(SprsError::Semantic {
@@ -550,18 +549,23 @@ pub fn call_builtin_macro_move<'ctx>(
             move_variable(self_compiler, &source_ptr.into(), name);
             Ok(moved_ptr.into())
         }
-        hir::ExprKind::Deref(pointer) => {
-            let dest = self_compiler.compile_deref_place(pointer, module)?;
-            let moved_ptr = move_out_pointer_place(self_compiler, dest, "move_deref")?;
-            Ok(moved_ptr.into())
-        }
+        hir::ExprKind::Deref(_) => Err(SprsError::Semantic {
+            code: ErrorCode {
+                category: ErrorCategory::Semantic,
+                number: 13,
+            },
+            location: Location::new(String::new(), args[0].span),
+            message: "@move does not accept a dereference place; use @take for raw storage"
+                .to_string(),
+            help: None,
+        }),
         _ => Err(SprsError::Semantic {
             code: ErrorCode {
                 category: ErrorCategory::Semantic,
                 number: 13,
             },
             location: Location::new(String::new(), args[0].span),
-            message: "@move expects a variable or dereference place argument".to_string(),
+            message: "@move expects a variable argument".to_string(),
             help: None,
         }),
     }
@@ -600,53 +604,117 @@ pub fn call_builtin_macro_init<'ctx>(
     };
 
     let dest = self_compiler.compile_deref_place(pointer, module)?;
-    let tag_ptr = self_compiler.build_tag_gep(dest, "init_dest");
-    let tag = self_compiler.build_load_tag(tag_ptr, "init_dest");
-    let unit_tag = self_compiler.get_tag_from_tag_enum(Tag::Unit);
-    let is_unit = self_compiler.tag_cmp(inkwell::IntPredicate::EQ, tag, unit_tag, "init_dest");
-
-    let parent_fn = self_compiler
-        .builder
-        .get_insert_block()
-        .unwrap()
-        .get_parent()
-        .unwrap();
-    let already_bb = self_compiler
-        .context
-        .append_basic_block(parent_fn, "init_already_bb");
-    let ok_bb = self_compiler.context.append_basic_block(parent_fn, "init_ok_bb");
-    self_compiler
-        .builder
-        .build_conditional_branch(is_unit, ok_bb, already_bb)
-        .unwrap();
-
-    self_compiler.builder.position_at_end(already_bb);
-    let panic_fn = self_compiler.get_runtime_fn(module, "__panic")?;
-    let msg = self_compiler
-        .builder
-        .build_global_string_ptr(
-            "@init destination is already initialized",
-            "init_already_msg",
-        )
-        .unwrap()
-        .as_pointer_value();
-    self_compiler
-        .builder
-        .build_call(panic_fn, &[msg.into()], "init_already_panic")
-        .unwrap();
-    self_compiler.builder.build_unreachable().unwrap();
-
-    self_compiler.builder.position_at_end(ok_bb);
+    let inner = crate::front::type_helper::maybe_uninit_inner(&args[0].ty)
+        .cloned()
+        .ok_or_else(|| SprsError::Internal {
+            message: "@init requires Ptr(MaybeUninit(T))".to_string(),
+            location: None,
+        })?;
     let val_ptr = self_compiler.compile_owned_expr(&args[1], module, "init_owned")?;
-    let new_val = self_compiler
-        .builder
-        .build_load(self_compiler.runtime_value_type, val_ptr, "init_load")
-        .unwrap();
-    self_compiler.builder.build_store(dest, new_val).unwrap();
+    crate::llvm::storage::store_runtime_to_storage(
+        self_compiler,
+        module,
+        dest,
+        &inner,
+        val_ptr,
+        false,
+    )?;
 
     let res_ptr = create_entry_block_alloca(self_compiler, "init_res")?;
     self_compiler.tag_only_runtime_value_store(res_ptr, Tag::Unit as u64, "unit_res");
     Ok(res_ptr.into())
+}
+
+pub fn call_builtin_macro_ref<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+    args: &Vec<hir::Expr>,
+    module: &inkwell::module::Module<'ctx>,
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
+    if args.len() != 1 {
+        return Err(SprsError::Semantic {
+            code: ErrorCode {
+                category: ErrorCategory::Semantic,
+                number: 13,
+            },
+            location: Location::new(String::new(), Span::DUMMY),
+            message: "@ref expects 1 argument".to_string(),
+            help: None,
+        });
+    }
+    let pointer = match &args[0].kind {
+        hir::ExprKind::Deref(pointer) => pointer.as_ref(),
+        _ => {
+            return Err(SprsError::Semantic {
+                code: ErrorCode {
+                    category: ErrorCategory::Semantic,
+                    number: 13,
+                },
+                location: Location::new(String::new(), args[0].span),
+                message: "@ref first argument must be a dereference place".to_string(),
+                help: None,
+            });
+        }
+    };
+    let dest = self_compiler.compile_deref_place(pointer, module)?;
+    let addr = self_compiler
+        .builder
+        .build_ptr_to_int(dest, self_compiler.context.i64_type(), "ref_addr")
+        .unwrap();
+    let res_ptr = create_entry_block_alloca(self_compiler, "ref_res")?;
+    self_compiler.build_runtime_value_store(
+        res_ptr,
+        StoreTag::Int(Tag::RawPtr as u64),
+        StoreValue::Int(addr),
+        "ref_res",
+    );
+    Ok(res_ptr.into())
+}
+
+pub fn call_builtin_macro_take<'ctx>(
+    self_compiler: &mut Compiler<'ctx>,
+    args: &Vec<hir::Expr>,
+    module: &inkwell::module::Module<'ctx>,
+) -> Result<BasicValueEnum<'ctx>, SprsError> {
+    if args.len() != 1 {
+        return Err(SprsError::Semantic {
+            code: ErrorCode {
+                category: ErrorCategory::Semantic,
+                number: 13,
+            },
+            location: Location::new(String::new(), Span::DUMMY),
+            message: "@take expects 1 argument".to_string(),
+            help: None,
+        });
+    }
+    let pointer = match &args[0].kind {
+        hir::ExprKind::Deref(pointer) => pointer.as_ref(),
+        _ => {
+            return Err(SprsError::Semantic {
+                code: ErrorCode {
+                    category: ErrorCategory::Semantic,
+                    number: 13,
+                },
+                location: Location::new(String::new(), args[0].span),
+                message: "@take first argument must be a dereference place".to_string(),
+                help: None,
+            });
+        }
+    };
+    let dest = self_compiler.compile_deref_place(pointer, module)?;
+    let inner = crate::front::type_helper::maybe_uninit_inner(&args[0].ty)
+        .cloned()
+        .ok_or_else(|| SprsError::Internal {
+            message: "@take requires Ptr(MaybeUninit(T))".to_string(),
+            location: None,
+        })?;
+    let taken = crate::llvm::storage::load_storage_as_runtime(
+        self_compiler,
+        module,
+        dest,
+        &inner,
+        crate::llvm::storage::StorageLoad::Move,
+    )?;
+    Ok(taken.into())
 }
 
 pub fn call_builtin_macro_cast<'ctx>(

@@ -869,6 +869,30 @@ pub extern "C" fn __struct_track_value(
     }
 }
 
+/// Drop tracking for moved-out struct fields without dropping payloads.
+/// The struct allocation can then be released with `__drop`.
+#[unsafe(no_mangle)]
+pub extern "C" fn __struct_forget_owned(handle: u64) -> i32 {
+    if handle == INVALID_HANDLE {
+        return 0;
+    }
+    SLOTS.with(|slots_cell| {
+        let mut slots = slots_cell.borrow_mut();
+        let idx = handle_index(handle) as usize;
+        let Some(slot) = slots.get_mut(idx) else {
+            return 0;
+        };
+        if slot.generation != handle_gen(handle) {
+            return 0;
+        }
+        let SlotData::Struct { owned_values, .. } = &mut slot.data else {
+            return 0;
+        };
+        owned_values.clear();
+        1
+    })
+}
+
 /// Create a label slot containing a copied name and one runtime payload.
 #[unsafe(no_mangle)]
 pub extern "C" fn __label_new(
@@ -1544,11 +1568,11 @@ mod tests {
         __atom_eq, __atom_from_bytes, __atom_from_string, __atom_name, __buffer_exist,
         __buffer_get, __buffer_into_raw, __buffer_len, __buffer_new, __buffer_set, __clone, __drop,
         __error_label_from_str, __error_message_from_label, __label_is_error, __label_name,
-        __label_name_eq, __label_new, __label_new_from_string, __label_payload, __list_get, __list_set,
-        __list_new, __list_push, __raw_free,
-        __string_eq, __string_new, __struct_borrow, __struct_new, __struct_track_value,
-        __value_to_string, INVALID_HANDLE, RAW_LAYOUTS, SlotData, SprsValue, Tag, atom_name,
-        format_sprs_value, intern_atom, slot_with,
+        __label_name_eq, __label_new, __label_new_from_string, __label_payload, __list_get,
+        __list_new, __list_push, __list_set, __raw_free, __string_eq, __string_new,
+        __struct_borrow, __struct_new, __struct_track_value, __value_to_string, INVALID_HANDLE,
+        RAW_LAYOUTS, SlotData, SprsValue, Tag, atom_name, format_sprs_value, intern_atom,
+        slot_with,
     };
 
     #[test]
@@ -2043,7 +2067,6 @@ mod tests {
         assert_eq!(first.tag, Tag::Integer as i32);
         assert_eq!(first.data, 9);
         __drop(Tag::List as i32, list);
-
     }
 
     #[test]

@@ -1,7 +1,7 @@
-use crate::front::hir;
 use crate::front::ast;
 use crate::front::ast::FbCondition;
 use crate::front::error::{ErrorCategory, ErrorCode, Location, SprsError};
+use crate::front::hir;
 use crate::front::span::Span;
 use crate::front::type_helper::Type;
 use crate::llvm::builder_helper;
@@ -10,6 +10,7 @@ use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::Linkage;
 use inkwell::module::Module;
+use inkwell::targets::TargetMachine;
 use inkwell::types::BasicTypeEnum;
 use inkwell::types::StructType;
 use inkwell::values::GlobalValue;
@@ -17,6 +18,8 @@ use inkwell::values::IntValue;
 use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
 use std::collections::HashMap;
 use std::collections::HashSet;
+
+use crate::llvm::layout::TypeLayout;
 
 pub struct StructDef<'ctx> {
     pub fields: Vec<ast::StructField>,
@@ -64,6 +67,8 @@ pub struct Compiler<'ctx> {
     pub attachments: HashMap<String, PointerValue<'ctx>>,
     pub hir_modules: HashMap<String, crate::front::hir::Module>,
     pub typecheck_visiting: Vec<String>,
+    pub target_machine: TargetMachine,
+    pub layout_cache: HashMap<Type, TypeLayout<'ctx>>,
 }
 
 pub enum StoreTag<'ctx> {
@@ -337,6 +342,8 @@ impl<'ctx> Compiler<'ctx> {
             attachments: HashMap::new(),
             hir_modules: HashMap::new(),
             typecheck_visiting: Vec::new(),
+            target_machine: crate::llvm::layout::host_target_machine(),
+            layout_cache: HashMap::new(),
         }
     }
 
@@ -391,16 +398,11 @@ impl<'ctx> Compiler<'ctx> {
         None
     }
 
-    pub fn add_variable(
-        &mut self,
-        name: String,
-        value: BasicValueEnum<'ctx>,
-    ) {
+    pub fn add_variable(&mut self, name: String, value: BasicValueEnum<'ctx>) {
         if let Some(current_scope) = self.scopes.last_mut() {
-            current_scope.variables.insert(
-                name.clone(),
-                VarBinding { value },
-            );
+            current_scope
+                .variables
+                .insert(name.clone(), VarBinding { value });
             current_scope.var_name.push(name);
         }
     }
@@ -414,8 +416,7 @@ impl<'ctx> Compiler<'ctx> {
     pub(crate) fn emit_drop_for_return(&mut self, module: &Module<'ctx>) -> Result<(), SprsError> {
         let drop_fn = self.get_runtime_fn(module, "__drop")?;
 
-        let mut scope_work: Vec<(Vec<hir::Expr>, Vec<(PointerValue<'ctx>, String)>)> =
-            Vec::new();
+        let mut scope_work: Vec<(Vec<hir::Expr>, Vec<(PointerValue<'ctx>, String)>)> = Vec::new();
         // skip(1): exclude scopes[0] (global). Remaining scopes, including the
         // function-argument scope, are cleaned up innermost-first. Deferred/vars
         // are taken first so compile_expr does not borrow `scopes` while mutating.
@@ -460,16 +461,14 @@ impl<'ctx> Compiler<'ctx> {
         Ok(())
     }
 
-    pub fn ensure_function_specialization_name(
-        &mut self,
-        id: &hir::FunctionInstanceId,
-    ) -> String {
+    pub fn ensure_function_specialization_name(&mut self, id: &hir::FunctionInstanceId) -> String {
         if let Some(name) = self.function_specialization_names.get(id) {
             return name.clone();
         }
         let name = format!("__sprs_mono_fn_{}", self.next_function_specialization_id);
         self.next_function_specialization_id += 1;
-        self.function_specialization_names.insert(id.clone(), name.clone());
+        self.function_specialization_names
+            .insert(id.clone(), name.clone());
         name
     }
 
@@ -538,13 +537,8 @@ impl<'ctx> Compiler<'ctx> {
 
         let llvm_type = self.context.struct_type(&llvm_field_types, false);
 
-        self.struct_defs.insert(
-            name,
-            StructDef {
-                fields,
-                llvm_type,
-            },
-        );
+        self.struct_defs
+            .insert(name, StructDef { fields, llvm_type });
         Ok(())
     }
 
@@ -558,18 +552,12 @@ impl<'ctx> Compiler<'ctx> {
         for field in &specialization.fields {
             if crate::front::type_helper::contains_unresolved_type(&field.ty) {
                 return Err(SprsError::Internal {
-                    message: format!(
-                        "unresolved type in specialization field `{}`",
-                        field.name
-                    ),
+                    message: format!("unresolved type in specialization field `{}`", field.name),
                     location: None,
                 });
             }
         }
-        let name = format!(
-            "__sprs_mono_struct_{}",
-            self.next_struct_specialization_id
-        );
+        let name = format!("__sprs_mono_struct_{}", self.next_struct_specialization_id);
         self.next_struct_specialization_id += 1;
         let fields: Vec<ast::StructField> = specialization
             .fields
@@ -830,6 +818,7 @@ impl<'ctx> Compiler<'ctx> {
                 ],
                 false,
             ),
+            "__struct_forget_owned" => i32_type.fn_type(&[i64_type.into()], false),
             _ => {
                 return Err(SprsError::Semantic {
                     code: ErrorCode {
@@ -847,12 +836,11 @@ impl<'ctx> Compiler<'ctx> {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::front::span::Span;
-    use crate::front::type_helper::{contains_unresolved_type, Type};
+    use crate::front::type_helper::{Type, contains_unresolved_type};
     use inkwell::context::Context;
 
     fn spec(args: Vec<Type>) -> hir::StructSpecialization {

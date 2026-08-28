@@ -29,7 +29,7 @@ field uses `StructField.default_value`, evaluated at each `init` in the caller
 expression context. There is no `self` / earlier-field binding in a default
 expression. A field with no default and no initializer is
 `missing required field \`name\` in init Type`. Unknown and duplicate fields are
-compile errors on the initializer span. Old `@init(...)` is not struct initialization. `init Type { ... }` creates a struct. `@init(*p, value)` is the pointer-place initialization macro.
+compile errors on the initializer span. Old `@init(...)` is not struct initialization. `init Type { ... }` creates a struct. `@init(*p, value)` initializes `Ptr(MaybeUninit(T))` storage; it is not a RuntimeValue `Unit` slot write.
 
 ```sprs
 pub struct Point {
@@ -75,6 +75,12 @@ Nested applications such as `Pair(Pair(i64))` specialize the inner type first.
 Owned string specializations use `str` (`init Pair(str) { a = "owned", b = "x" }`).
 `String` is not a type name. Generic field defaults and `init Pair { ... }` without
 type arguments (including inference from an expected type) cannot be used.
+
+Typed storage (`StorageRep`) for a struct is the inline field layout with
+target ABI padding. Ordinary struct values may still evaluate through a
+RuntimeValue `Tag::Struct` slab handle; packing to and from storage is a
+compiler/runtime bridge. Pointer arithmetic and `@init` / `@take` use the
+inline layout, not a `{tag,data}` slot. See [Types and Bindings](types-and-bindings.md).
 
 ```sprs
 struct Pair(T) {

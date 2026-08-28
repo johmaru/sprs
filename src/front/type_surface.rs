@@ -5,9 +5,7 @@ use crate::front::span::Span;
 use crate::front::type_helper::Type;
 use lalrpop_util::ParseError;
 
-pub fn user(
-    error: ParserUserError,
-) -> ParseError<usize, Token, ParserUserError> {
+pub fn user(error: ParserUserError) -> ParseError<usize, Token, ParserUserError> {
     ParseError::User { error }
 }
 
@@ -43,7 +41,10 @@ fn legacy_type_help(name: &str) -> Option<(&'static str, &'static str)> {
             "Label(:error, Any)",
             "use Label(:error, Any) instead of err",
         )),
-        "atom" | "Atom" => Some(("Label", "Atom is not a surface type; use Label, :name, or Label(:name, T)")),
+        "atom" | "Atom" => Some((
+            "Label",
+            "Atom is not a surface type; use Label, :name, or Label(:name, T)",
+        )),
         "label" => Some(("Label", "use Label instead of label")),
         _ => None,
     }
@@ -97,7 +98,10 @@ pub fn named_type(
             11,
             span,
             "Label application must be Label or Label(:name, T)",
-            Some("payloadless exact labels use :name; payload labels use Label(:name, T)".to_string()),
+            Some(
+                "payloadless exact labels use :name; payload labels use Label(:name, T)"
+                    .to_string(),
+            ),
         )),
         ("List", [_]) => Ok(Type::App("List".into(), args)),
         ("List", _) => Err(sem(
@@ -112,6 +116,13 @@ pub fn named_type(
             span,
             "Ptr requires exactly one type argument",
             Some("use Ptr(T)".to_string()),
+        )),
+        ("MaybeUninit", [_]) => Ok(Type::App("MaybeUninit".into(), args)),
+        ("MaybeUninit", _) => Err(sem(
+            11,
+            span,
+            "MaybeUninit requires exactly one type argument",
+            Some("use MaybeUninit(T)".to_string()),
         )),
         ("Process", [_]) => Ok(Type::App("Process".into(), args)),
         ("Process", _) => Err(sem(

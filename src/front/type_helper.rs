@@ -162,8 +162,7 @@ pub fn types_compatible(expected: &Type, actual: &Type) -> bool {
         }
         (Type::Label, Type::App(n, args)) | (Type::App(n, args), Type::Label) => {
             n == "Label"
-                && (is_untyped_collection_args(args)
-                    || matches!(args.first(), Some(Type::Atom(_))))
+                && (is_untyped_collection_args(args) || matches!(args.first(), Some(Type::Atom(_))))
         }
         _ => false,
     }
@@ -212,6 +211,30 @@ pub fn ptr_element(ty: &Type) -> Option<&Type> {
         },
         _ => None,
     }
+}
+
+/// Inner type of `MaybeUninit(T)`.
+pub fn maybe_uninit_inner(ty: &Type) -> Option<&Type> {
+    match ty {
+        Type::App(name, args) if name == "MaybeUninit" => match args.as_slice() {
+            [elem] => Some(elem),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// `T` when `ty` is `Ptr(MaybeUninit(T))`.
+pub fn ptr_maybe_uninit_element(ty: &Type) -> Option<&Type> {
+    ptr_element(ty).and_then(maybe_uninit_inner)
+}
+
+pub fn ptr_type(element: Type) -> Type {
+    Type::App("Ptr".into(), vec![element])
+}
+
+pub fn maybe_uninit_type(element: Type) -> Type {
+    Type::App("MaybeUninit".into(), vec![element])
 }
 
 /// Result type tracked by `Process(T)`, if this is a process constructor app.
@@ -294,9 +317,7 @@ fn label_args_compatible(expected: &[Type], actual: &[Type]) -> bool {
 pub fn reject_payloadless_label_type(ty: &Type) -> Result<(), String> {
     match ty {
         Type::App(n, args) if n == "Label" => match args.as_slice() {
-            [Type::Atom(name)] => Err(format!(
-                "use :{name} instead of Label(:{name})"
-            )),
+            [Type::Atom(name)] => Err(format!("use :{name} instead of Label(:{name})")),
             _ => Ok(()),
         },
         _ => Ok(()),
@@ -383,6 +404,13 @@ pub fn validate_type_app(name: &str, args: &[Type]) -> Result<(), String> {
                 Err("Ptr requires exactly one type argument".to_string())
             }
         }
+        "MaybeUninit" => {
+            if args.len() == 1 {
+                Ok(())
+            } else {
+                Err("MaybeUninit requires exactly one type argument".to_string())
+            }
+        }
         "Process" => {
             if args.len() == 1 {
                 Ok(())
@@ -392,9 +420,7 @@ pub fn validate_type_app(name: &str, args: &[Type]) -> Result<(), String> {
         }
         "Label" => match args {
             [Type::Atom(_), _] => Ok(()),
-            _ => Err(
-                "Label application must be Label or Label(:name, T)".to_string(),
-            ),
+            _ => Err("Label application must be Label or Label(:name, T)".to_string()),
         },
         "Range" | "Buffer" | "RawPtr" | "Any" | "Self" => {
             if args.is_empty() {
@@ -411,7 +437,16 @@ pub fn validate_type_app(name: &str, args: &[Type]) -> Result<(), String> {
 pub fn is_builtin_type_name(name: &str) -> bool {
     matches!(
         name,
-        "Any" | "List" | "Ptr" | "Label" | "Process" | "Range" | "Buffer" | "RawPtr" | "Self"
+        "Any"
+            | "List"
+            | "Ptr"
+            | "MaybeUninit"
+            | "Label"
+            | "Process"
+            | "Range"
+            | "Buffer"
+            | "RawPtr"
+            | "Self"
     )
 }
 
@@ -636,7 +671,10 @@ mod tests {
         assert!(!types_compatible(&label_int_str, &label_ok_int));
 
         // closed label sets and flat AtomVal are accepted by broad Label
-        assert!(types_compatible(&Type::Label, &Type::ClosedLabelSet("Color".into())));
+        assert!(types_compatible(
+            &Type::Label,
+            &Type::ClosedLabelSet("Color".into())
+        ));
         assert!(types_compatible(&Type::Label, &Type::AtomVal));
     }
 
@@ -741,7 +779,10 @@ mod tests {
         assert_eq!(Type::Str.to_string(), "str");
         assert_eq!(Type::Unit.to_string(), "unit");
         assert_eq!(Type::Any.to_string(), "Any");
-        assert_eq!(Type::App("List".into(), vec![Type::Any]).to_string(), "List(Any)");
+        assert_eq!(
+            Type::App("List".into(), vec![Type::Any]).to_string(),
+            "List(Any)"
+        );
         assert_eq!(Type::Range.to_string(), "Range");
         assert_eq!(Type::Buffer.to_string(), "Buffer");
         assert_eq!(Type::RawPtr.to_string(), "RawPtr");
@@ -782,10 +823,7 @@ mod tests {
         assert!(!types_assignable(&list_int, &list_str));
         assert!(types_assignable(&list_int, &Type::Any));
         assert_eq!(join_list_element_types(&[Type::Int, Type::Int]), Type::Int);
-        assert_eq!(
-            join_list_element_types(&[Type::Int, Type::Str]),
-            Type::Any
-        );
+        assert_eq!(join_list_element_types(&[Type::Int, Type::Str]), Type::Any);
         assert_eq!(join_list_element_types(&[]), Type::Any);
         assert_eq!(
             process_result_type(&process_type(Type::Str)),
@@ -835,5 +873,32 @@ mod tests {
             substitute_type(&Type::Named("U".into()), &bindings).unwrap(),
             Type::Named("U".into())
         );
+        assert_eq!(
+            substitute_type(
+                &Type::App("MaybeUninit".into(), vec![Type::Named("T".into())]),
+                &bindings
+            )
+            .unwrap(),
+            Type::App("MaybeUninit".into(), vec![Type::TypeI64])
+        );
+    }
+
+    #[test]
+    fn maybe_uninit_is_compile_time_constructor() {
+        let mu_i64 = maybe_uninit_type(Type::TypeI64);
+        let mu_str = maybe_uninit_type(Type::Str);
+        let mu_pair = maybe_uninit_type(Type::App("Pair".into(), vec![Type::TypeI64]));
+        let ptr_mu = ptr_type(mu_i64.clone());
+        assert_eq!(mu_i64.to_string(), "MaybeUninit(i64)");
+        assert_eq!(mu_str.to_string(), "MaybeUninit(str)");
+        assert_eq!(mu_pair.to_string(), "MaybeUninit(Pair(i64))");
+        assert_eq!(ptr_mu.to_string(), "Ptr(MaybeUninit(i64))");
+        assert_eq!(maybe_uninit_inner(&mu_i64), Some(&Type::TypeI64));
+        assert_eq!(ptr_maybe_uninit_element(&ptr_mu), Some(&Type::TypeI64));
+        assert!(maybe_uninit_inner(&Type::TypeI64).is_none());
+        assert!(validate_type_app("MaybeUninit", &[Type::TypeI64]).is_ok());
+        assert!(validate_type_app("MaybeUninit", &[]).is_err());
+        assert!(validate_type_app("MaybeUninit", &[Type::Int, Type::Str]).is_err());
+        assert!(is_builtin_type_name("MaybeUninit"));
     }
 }

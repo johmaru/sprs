@@ -168,10 +168,7 @@ fn third_function(xs >> List(Any)) >> List(Any) { return xs; }
                 match &stmt.node {
                     crate::front::ast::Stmt::Var(variable_statement) => {
                         let init = variable_statement.expr.as_ref().unwrap();
-                        assert!(matches!(
-                            init.node,
-                            crate::front::ast::Expr::Call { .. }
-                        ));
+                        assert!(matches!(init.node, crate::front::ast::Expr::Call { .. }));
                     }
                     other => panic!("expected var, got {:?}", other),
                 }
@@ -302,8 +299,7 @@ fn second_label_value(input_value >> Label(:ok, str)) >> Label(:ok, str) { retur
         }
         match &items[1] {
             Item::FunctionItem(function_item) => {
-                let expected =
-                    Type::App("Label".into(), vec![Type::Atom("ok".into()), Type::Str]);
+                let expected = Type::App("Label".into(), vec![Type::Atom("ok".into()), Type::Str]);
                 assert_eq!(function_item.ret_ty.as_ref(), Some(&expected));
             }
             other => panic!("expected second function, got {:?}", other),
@@ -319,8 +315,7 @@ fn third_function() >> Label(:error, Any) { return :error; }
 "#;
         let items = parse_only(src, "named_label_ty.sprs").expect("parse");
         let atom_ok = Type::Atom("ok".into());
-        let label_ok_int =
-            Type::App("Label".into(), vec![Type::Atom("ok".into()), Type::TypeI64]);
+        let label_ok_int = Type::App("Label".into(), vec![Type::Atom("ok".into()), Type::TypeI64]);
         let err_label = Type::App("Label".into(), vec![Type::Atom("error".into()), Type::Any]);
 
         match &items[0] {
@@ -893,7 +888,11 @@ fn main() {
         };
         match &main_fn.blk[0].node {
             Stmt::Expr(expr) => match &expr.node {
-                Expr::Call { name, type_args, args } => {
+                Expr::Call {
+                    name,
+                    type_args,
+                    args,
+                } => {
                     assert_eq!(name, "same");
                     assert_eq!(type_args, &vec![Type::TypeI64]);
                     assert_eq!(args.len(), 2);
@@ -916,7 +915,12 @@ fn main() {
         }
         match &main_fn.blk[2].node {
             Stmt::Expr(expr) => match &expr.node {
-                Expr::MemberCall { receiver, name, args, type_args } => {
+                Expr::MemberCall {
+                    receiver,
+                    name,
+                    args,
+                    type_args,
+                } => {
                     assert!(matches!(receiver.node, Expr::Var(ref ident) if ident == "fn_builds"));
                     assert_eq!(name, "fb_add");
                     assert!(type_args.is_empty());
@@ -964,17 +968,19 @@ struct MethodBox(T) {
 
     #[test]
     fn parses_module_generic_call() {
-        let items = parse_only(
-            "fn main() { fn_builds.foo<i64>(x); }\n",
-            "mod_generic.sprs",
-        )
-        .expect("parse");
+        let items = parse_only("fn main() { fn_builds.foo<i64>(x); }\n", "mod_generic.sprs")
+            .expect("parse");
         let Item::FunctionItem(function_item) = &items[0] else {
             panic!("expected function");
         };
         match &function_item.blk[0].node {
             Stmt::Expr(expr) => match &expr.node {
-                Expr::MemberCall { name, type_args, args, .. } => {
+                Expr::MemberCall {
+                    name,
+                    type_args,
+                    args,
+                    ..
+                } => {
                     assert_eq!(name, "foo");
                     assert_eq!(type_args, &vec![Type::TypeI64]);
                     assert_eq!(args.len(), 1);
@@ -1203,7 +1209,9 @@ fn main() {}
             panic!("expected var statement");
         };
         let init = var_decl.expr.as_ref().expect("var has initializer");
-        assert!(matches!(&init.node, Expr::StructInit { ty: Type::Named(name), fields } if name == "Empty" && fields.is_empty()));
+        assert!(
+            matches!(&init.node, Expr::StructInit { ty: Type::Named(name), fields } if name == "Empty" && fields.is_empty())
+        );
     }
 
     #[test]
@@ -1219,21 +1227,9 @@ fn main() {}
 
     #[test]
     fn rejects_old_fb_directive_spellings() {
-        assert!(parse_only(
-            "function_build A { @FbArgs(x >> i64); }\n",
-            "old_fb.sprs"
-        )
-        .is_err());
-        assert!(parse_only(
-            "function_build A { @FbRetTy(i64); }\n",
-            "old_fb2.sprs"
-        )
-        .is_err());
-        assert!(parse_only(
-            "function_build A { @FbVisibility(pub); }\n",
-            "old_fb3.sprs"
-        )
-        .is_err());
+        assert!(parse_only("function_build A { @FbArgs(x >> i64); }\n", "old_fb.sprs").is_err());
+        assert!(parse_only("function_build A { @FbRetTy(i64); }\n", "old_fb2.sprs").is_err());
+        assert!(parse_only("function_build A { @FbVisibility(pub); }\n", "old_fb3.sprs").is_err());
     }
 
     #[test]
@@ -1284,10 +1280,7 @@ fn main() {}
         let ty = function_item.params[0].ty.as_ref().map(|a| &a.ty);
         assert_eq!(
             ty,
-            Some(&Type::App(
-                "Result".into(),
-                vec![Type::TypeI64, Type::Str]
-            ))
+            Some(&Type::App("Result".into(), vec![Type::TypeI64, Type::Str]))
         );
     }
 
@@ -1337,10 +1330,13 @@ fn f() {
 
     #[test]
     fn rejects_process_wrong_arity() {
-        let err = parse_only("fn f(x >> Process(i64, str)) { return; }\n", "arity.sprs")
-            .unwrap_err();
+        let err =
+            parse_only("fn f(x >> Process(i64, str)) { return; }\n", "arity.sprs").unwrap_err();
         let msg = format!("{err:?}");
-        assert!(msg.contains("Process requires exactly one type argument"), "{msg}");
+        assert!(
+            msg.contains("Process requires exactly one type argument"),
+            "{msg}"
+        );
     }
 
     #[test]
@@ -1359,18 +1355,12 @@ fn write(p >> Ptr(i64)) { *p = 7; }
 "#;
         let items = parse_only(src, "ptr.sprs").expect("parse");
         let ptr_i64 = Type::App("Ptr".into(), vec![Type::TypeI64]);
-        let ptr_ptr_str = Type::App(
-            "Ptr".into(),
-            vec![Type::App("Ptr".into(), vec![Type::Str])],
-        );
+        let ptr_ptr_str = Type::App("Ptr".into(), vec![Type::App("Ptr".into(), vec![Type::Str])]);
         let Item::FunctionItem(read) = &items[0] else {
             panic!("expected read");
         };
         assert_eq!(read.ret_ty.as_ref(), Some(&Type::TypeI64));
-        assert_eq!(
-            read.params[0].ty.as_ref().map(|a| &a.ty),
-            Some(&ptr_i64)
-        );
+        assert_eq!(read.params[0].ty.as_ref().map(|a| &a.ty), Some(&ptr_i64));
         let Stmt::Return(Some(ret)) = &read.blk[0].node else {
             panic!("expected return *p");
         };
@@ -1385,7 +1375,10 @@ fn write(p >> Ptr(i64)) { *p = 7; }
         let Item::FunctionItem(nest) = &items[1] else {
             panic!("expected nest");
         };
-        assert_eq!(nest.params[0].ty.as_ref().map(|a| &a.ty), Some(&ptr_ptr_str));
+        assert_eq!(
+            nest.params[0].ty.as_ref().map(|a| &a.ty),
+            Some(&ptr_ptr_str)
+        );
         let Stmt::Return(Some(ret)) = &nest.blk[0].node else {
             panic!("expected return **pp");
         };
@@ -1432,13 +1425,104 @@ fn write(p >> Ptr(i64)) { *p = 7; }
     }
 
     #[test]
+    fn parses_raw_storage_builtins() {
+        let src = r#"
+fn flow(p >> Ptr(MaybeUninit(i64)), v >> i64) {
+    @init(*p, v);
+    var q = @ref(*p);
+    var x = @take(*p);
+}
+"#;
+        let items = parse_only(src, "raw_storage.sprs").expect("parse");
+        let Item::FunctionItem(flow) = &items[0] else {
+            panic!("expected function");
+        };
+        match &flow.blk[0].node {
+            Stmt::Expr(call) => match &call.node {
+                Expr::Macro(name, args) if name == "init" => {
+                    assert!(matches!(&args[0].node, Expr::Deref(_)));
+                    assert_eq!(args.len(), 2);
+                }
+                other => panic!("expected @init, got {other:?}"),
+            },
+            other => panic!("expected init statement, got {other:?}"),
+        }
+        let Stmt::Var(var_q) = &flow.blk[1].node else {
+            panic!("expected @ref binding");
+        };
+        match var_q.expr.as_ref().map(|e| &e.node) {
+            Some(Expr::Macro(name, args)) if name == "ref" => {
+                assert!(matches!(&args[0].node, Expr::Deref(_)));
+            }
+            other => panic!("expected @ref(*p), got {other:?}"),
+        }
+        let Stmt::Var(var_x) = &flow.blk[2].node else {
+            panic!("expected @take binding");
+        };
+        match var_x.expr.as_ref().map(|e| &e.node) {
+            Some(Expr::Macro(name, args)) if name == "take" => {
+                assert!(matches!(&args[0].node, Expr::Deref(_)));
+            }
+            other => panic!("expected @take(*p), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_maybe_uninit_type_applications() {
+        let src = r#"
+fn a(p >> Ptr(MaybeUninit(i64))) { return; }
+fn b(x >> MaybeUninit(str)) { return; }
+fn c(x >> MaybeUninit(Pair(i64))) { return; }
+"#;
+        let items = parse_only(src, "maybe_uninit.sprs").expect("parse");
+        let ptr_mu_i64 = Type::App(
+            "Ptr".into(),
+            vec![Type::App("MaybeUninit".into(), vec![Type::TypeI64])],
+        );
+        let mu_str = Type::App("MaybeUninit".into(), vec![Type::Str]);
+        let mu_pair = Type::App(
+            "MaybeUninit".into(),
+            vec![Type::App("Pair".into(), vec![Type::TypeI64])],
+        );
+        let Item::FunctionItem(a) = &items[0] else {
+            panic!("expected a");
+        };
+        assert_eq!(
+            a.params[0].ty.as_ref().map(|ann| &ann.ty),
+            Some(&ptr_mu_i64)
+        );
+        let Item::FunctionItem(b) = &items[1] else {
+            panic!("expected b");
+        };
+        assert_eq!(b.params[0].ty.as_ref().map(|ann| &ann.ty), Some(&mu_str));
+        let Item::FunctionItem(c) = &items[2] else {
+            panic!("expected c");
+        };
+        assert_eq!(c.params[0].ty.as_ref().map(|ann| &ann.ty), Some(&mu_pair));
+    }
+
+    #[test]
+    fn rejects_invalid_maybe_uninit_arity() {
+        for src in [
+            "fn f(x >> MaybeUninit) { return; }\n",
+            "fn f(x >> MaybeUninit()) { return; }\n",
+            "fn f(x >> MaybeUninit(i64, str)) { return; }\n",
+        ] {
+            let err = parse_only(src, "mu_arity.sprs").unwrap_err();
+            let msg = format!("{err:?}");
+            assert!(
+                msg.contains("MaybeUninit requires exactly one type argument"),
+                "{src} => {msg}"
+            );
+        }
+    }
+
+    #[test]
     fn parses_usize_and_pointer_phase2_forms() {
         let src = r#"
 fn offset(p >> Ptr(i64), n >> usize) >> Ptr(i64) {
     var m >> usize = @cast(1, usize);
     var q = p + 1;
-    var x = @move(*p);
-    @init(*p, x);
     return q;
 }
 "#;
@@ -1450,7 +1534,10 @@ fn offset(p >> Ptr(i64), n >> usize) >> Ptr(i64) {
             function_item.params[1].ty.as_ref().map(|a| &a.ty),
             Some(&Type::TypeUsize)
         );
-        assert_eq!(function_item.ret_ty.as_ref(), Some(&Type::App("Ptr".into(), vec![Type::TypeI64])));
+        assert_eq!(
+            function_item.ret_ty.as_ref(),
+            Some(&Type::App("Ptr".into(), vec![Type::TypeI64]))
+        );
 
         let Stmt::Var(var_m) = &function_item.blk[0].node else {
             panic!("expected usize binding");
@@ -1470,30 +1557,14 @@ fn offset(p >> Ptr(i64), n >> usize) >> Ptr(i64) {
         let add = var_q.expr.as_ref().expect("add");
         assert!(matches!(&add.node, Expr::Add(_, _)));
 
-        let Stmt::Var(var_x) = &function_item.blk[2].node else {
-            panic!("expected @move(*p)");
-        };
-        let moved = var_x.expr.as_ref().expect("move");
-        match &moved.node {
-            Expr::Macro(name, args) if name == "move" => {
-                assert!(matches!(&args[0].node, Expr::Deref(_)));
-            }
-            other => panic!("expected @move(*p), got {other:?}"),
-        }
-
-        match &function_item.blk[3].node {
-            Stmt::Expr(call) => match &call.node {
-                Expr::Macro(name, args) if name == "init" => {
-                    assert!(matches!(&args[0].node, Expr::Deref(_)));
-                    assert_eq!(args.len(), 2);
-                }
-                other => panic!("expected @init(*p, x), got {other:?}"),
-            },
-            other => panic!("expected init statement, got {other:?}"),
-        }
-
-        assert!(parse_only("fn f() { var p = @init(Point); }
-", "old_init.sprs").is_err());
+        assert!(
+            parse_only(
+                "fn f() { var p = @init(Point); }
+",
+                "old_init.sprs"
+            )
+            .is_err()
+        );
     }
 
     #[test]

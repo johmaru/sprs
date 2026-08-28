@@ -59,23 +59,26 @@ var a = "hello";
 
 ```
 
-* `@move(value)`: Move out of a variable or a pointer place. A variable binding or `*p` slot becomes `Unit`.
+* `@move(value)`: Move out of a variable. The source binding becomes `Unit`. `@move(*p)` is a compile error; use `@take` for raw storage.
 
 examples:
 
 ```sprs
 var a = "hello";
 @println(@move(a)); # a becomes Unit
-var x = @move(*p);  # *p becomes Unit
 ```
 
-* `@init(*p, value)`: Initialize a `Unit` pointer place. First argument must be a dereference. Result type is `unit`. A non-`Unit` destination panics. This is not struct initialization (`init Type { ... }`).
+* `@init(*p, value)`: Move `value` into uninitialized storage. `p` must be `Ptr(MaybeUninit(T))` and the first argument must be `*p`. Result type is `unit`. This is not replacement assignment and does not drop an old value. This is not struct initialization (`init Type { ... }`).
 
 ```sprs
 @init(*p, x);
 ```
 
-See [Memory Management](memory-management.md) for move semantics, `@clone`, `@move`, `@init`, and automatic drop.
+* `@ref(*p) -> Ptr(T)`: Assert that `p : Ptr(MaybeUninit(T))` currently holds a valid `T`. Returns `Ptr(T)` without moving ownership or changing `p`'s type.
+
+* `@take(*p) -> T`: Move a valid `T` out of `p : Ptr(MaybeUninit(T))`. The source bytes are left logically uninitialized; they are not written with `Unit`.
+
+See [Memory Management](memory-management.md) for move semantics, `@clone`, `@move`, `@init` / `@ref` / `@take`, and automatic drop.
 
 * `@cast(value, type)`: Cast the value to the specified type
 
@@ -99,7 +102,7 @@ var ok = 5 == 5;
 * `@lshift(value, shift_amount)`: exactly two arguments. Integer tags only. Signed tags (`Integer`, `i8`, `i16`, `i32`, `i64`) use `shl` / arithmetic right shift. Unsigned tags (`u8`..`u64`) use `shl` / logical right shift. A non-integer value produces the error label `"@lshift expects an integer value"`. An existing error-label argument is returned unchanged. The result keeps the tag of `value`.
 * `@rshift(value, shift_amount)`: same rules as `@lshift`. The non-integer message is `"@rshift expects an integer value"`.
 * `@not(value)`: exactly one argument. Boolean `true` when `data == 0`, otherwise `false`. This is not bitwise complement.
-Struct initialization is the core form `init TypeName { field = value, ... }`, not a macro. `@init` is an unknown macro (`SPRS-SEM-003`). See [Structs](../language/structs.md).
+Struct initialization is the core form `init TypeName { field = value, ... }`, not a macro. The old struct `@init(...)` form is gone (`SPRS-SEM-003`). Pointer `@init(*p, value)` is documented above. See [Structs](../language/structs.md).
 
 
 * `@attach(expr, <:name)`: Clone `expr` into the function-local attach slot `<:name`.

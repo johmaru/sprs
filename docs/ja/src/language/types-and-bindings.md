@@ -17,7 +17,8 @@
 | `Range` | Range |
 | `Buffer` | 固定長でゼロ初期化されたバイト配列 |
 | `RawPtr` | `@raw(buf)` から得られる素のアドレス |
-| `Ptr(T)` | 型付きポインタ。引数は常に 1 つ。pointee 型はコンパイル時だけ保持し、実行時は `{ tag, data }` の `Tag::RawPtr`（素のアドレス）を使う。`RawPtr` との暗黙変換はない。`Ptr(T) + offset` は `offset` が `usize` または非負の整数リテラルなら結果も `Ptr(T)` です。 |
+| `Ptr(T)` | `StorageRep(T)` を指す型付きポインタ。引数は常に 1 つ。評価器上のポインタ値は `Tag::RawPtr` のアドレスだが、`Ptr(T)` が指す先は RuntimeValue `{tag,data}` スロットではない。`RawPtr` との暗黙変換はない。`Ptr(T) + offset` は `offset` が `usize` または非負の整数リテラルなら結果も `Ptr(T)` で、バイト stride は `size_of(StorageRep(T))`。 |
+| `MaybeUninit(T)` | 「未初期化かもしれない `T` 用 storage」を表すコンパイル時コンストラクタ。layout は `T` と同一（追加タグ・フラグ・バイトなし）。`Ptr(MaybeUninit(T))` が raw storage ポインタ。通常の `*p` / `*p = value` は拒否し、`@init` / `@ref` / `@take` を使う。 |
 | `Label` | 広いラベル。payload なし atom と payload 付きラベルの両方 |
 | `:name` | 正確な payload なし atom（`:ready`） |
 | `Label(:name, T)` | 正確な payload ラベル。第 1 引数は `:name`。 |
@@ -31,10 +32,23 @@
 
 `Self` は構造体フィールド型（`List(Self)` を含む）と method のシグネチャおよび本体で有効です。[構造体](structs.md) を参照してください。
 
-型の適用はコンパイル時だけです: `List(i64)`、`Ptr(i64)`、`Process(str)`、`Label(:ok, i64)`、`Label(:error, Any)`、および見えるジェネリック構造体（`Pair(i64)`）。組込みコンストラクタの引数個数規則は従来どおりです（`List(i64, str)`、`Ptr()`、`Ptr(i64, str)`、`Process()`、`Range(i64)` は `SPRS-SEM-011`）。`Ptr(i64)` と `Ptr(str)` は別の型です。見えるジェネリック構造体の引数個数誤りも `SPRS-SEM-011` です。未知のコンストラクタ名は未定義型です。`Type::Param` はコンパイル時の置換だけに現れ、実行時タグではありません。
+型の適用はコンパイル時だけです: `List(i64)`、`Ptr(i64)`、`MaybeUninit(i64)`、`Process(str)`、`Label(:ok, i64)`、`Label(:error, Any)`、および見えるジェネリック構造体（`Pair(i64)`）。組込みコンストラクタの引数個数規則は従来どおりです（`List(i64, str)`、`Ptr()`、`Ptr(i64, str)`、`MaybeUninit()`、`MaybeUninit(i64, str)`、`Process()`、`Range(i64)` は `SPRS-SEM-011`）。`Ptr(i64)` と `Ptr(str)` は別の型です。見えるジェネリック構造体の引数個数誤りも `SPRS-SEM-011` です。未知のコンストラクタ名は未定義型です。`Type::Param` はコンパイル時の置換だけに現れ、実行時タグではありません。
 
 この段階では `List(T)` の実行時表現（`Tag::List`）は変えません。`Process(T)` にはまだ実行時タグがありません。組込みの要素型 / 結果型はコンパイル時だけです。ジェネリック構造体の適用はコード生成前に具象レイアウトへ単相化されます。
 ジェネリック関数と method も同じです。具象の型引数リストごとに 1 つの通常関数になります。実行時の generic ディスパッチはありません。
+
+## storage 表現
+
+通常の式評価は、タグ付き RuntimeValue `{ i32 tag, i64 data }` を使います。これはポインタの storage でも ABI layout でもありません。
+
+`StorageRep(T)` は `T` の具象メモリ layout です。LLVM 型と target ABI の size / alignment です。`StorageRep(MaybeUninit(T))` は `StorageRep(T)` と同一です（追加タグ・フラグ・バイトなし）。
+
+- プリミティブは値そのものを置く（`i8`、`i32`、`f64`。`usize` は pointer 幅の符号なし整数）
+- `Ptr(T)` はネイティブアドレスを置く
+- runtime 管理の owned 型（`str`、`Buffer`、`Label` など）は owned ハンドルを置く。payload は slab に残る
+- 構造体は各 field の `StorageRep` を padding 込みで inline 配置する。構造体本体は slab オブジェクトではない
+
+`Ptr(T) + n` のバイト stride は `size_of(StorageRep(T))` です。[演算子](operators.md) と [メモリ管理](../reference/memory-management.md) を参照してください。
 
 ## 型付きリスト
 

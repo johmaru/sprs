@@ -6,7 +6,7 @@ Rust-based compiler for Sprs: a language designed for embedded and system contro
 
 This project implements a super simple compiler for a custom programming language called Sprs using Rust and LLVM via the Inkwell library. The compiler translates Sprs source code into LLVM IR, which is then compiled into machine code for execution.
 
-The compiler uses hybrid typing: runtime values are tag-dispatched, while `>>` annotations keep static types for checking. Unannotated code stays dynamic and easy to use.
+The compiler uses hybrid typing: runtime values are tag-dispatched, while `>>` annotations keep static types for checking. Unannotated code stays dynamic and easy to use. Typed pointers (`Ptr(T)`) address the concrete `StorageRep(T)` layout rather than a RuntimeValue `{tag,data}` slot; see [Types and Bindings](language/types-and-bindings.md) and [Memory Management](reference/memory-management.md).
 
 This documentation is still under development and may change in the future.
 

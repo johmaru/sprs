@@ -4,7 +4,11 @@ These symbols are compiler and runtime internal APIs. They are not language buil
 
 Do not call these `__` symbols from Sprs source. They are not language-level APIs.
 
-A runtime value is `{ i32 tag, i64 data }`. For heap values, `data` is a handle `(index:u32 << 32) | generation:u32`. Handle `0` is invalid. Atom `data` is an intern id. RawPtr `data` is a bare address.
+A runtime value is `{ i32 tag, i64 data }`. This is the evaluator representation. It is not pointer storage and is not the source of truth for size, alignment, or `Ptr(T) + n` stride.
+
+Typed pointers address `StorageRep(T)`: the LLVM concrete type plus the target ABI size and alignment. `StorageRep(MaybeUninit(T))` is identical to `StorageRep(T)`. Struct `StorageRep` is an inline field layout (padding included). Runtime-managed owned types store a slab handle in that layout; the payload stays on the slab.
+
+For heap values, RuntimeValue `data` is a handle `(index:u32 << 32) | generation:u32`. Handle `0` is invalid. Atom `data` is an intern id. RawPtr `data` is a bare address.
 
 | Tag | Value |
 |-----|-------|
@@ -71,7 +75,8 @@ A runtime value is `{ i32 tag, i64 data }`. For heap values, `data` is a handle 
 | __string_from_cstr | Allocate a String slot from a C string pointer. |
 | __string_concat | Concatenate two String slots into a fresh String slot. |
 | __string_eq | Compare two String slot handles by content. |
-| __struct_new | Allocate a struct slot holding `size` bytes. |
+| __struct_new | Allocate a compatibility struct slab holding `size` bytes. Ordinary evaluated struct values still use this path. `StorageRep(struct)` itself is inline field layout, not this slab. |
 | __struct_borrow | Borrow the raw struct pointer for field access. |
 | __struct_track_value | Register a field value so struct drop/clone owns it. |
+| __struct_forget_owned | Clear owned-field tracking after those fields have been moved into inline `StorageRep`. Does not drop payloads. The slab can then be `__drop`ped. |
 | __sprs_set_output | Register a host output callback for `__println`. If none is registered, `__println` uses `eprintln!`. The compiler's `get_runtime_fn` does not declare this symbol. |
