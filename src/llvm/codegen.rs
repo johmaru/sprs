@@ -1399,6 +1399,7 @@ mod tests {
         stride_ir_for(Type::TypeUsize, 8);
         stride_ir_for(Type::App("MaybeUninit".into(), vec![Type::TypeI64]), 8);
         stride_ir_for(Type::Label, 16);
+        stride_ir_for(Type::Any, 16);
     }
 
     #[test]
@@ -2260,15 +2261,14 @@ mod tests {
         }
         assert!(fn_val.verify(true), "invalid box_clone");
         let ir = module.print_to_string().to_string();
-        let struct_clones = ir.matches("clone_forget_temp").count();
-        assert_eq!(
-            struct_clones, 1,
-            "Clone read must clone then forget the temp struct once\n{ir}"
+        assert!(
+            !ir.contains("clone_forget_temp"),
+            "Clone must not unpack source handles into a temp owner\n{ir}"
         );
         assert!(
             ir.contains("call { i32, i64 } @__clone")
                 || ir.contains("call {{ i32, i64 }} @__clone"),
-            "Clone read must call __clone\n{ir}"
+            "owned fields must be cloned from storage\n{ir}"
         );
         let before = sprs_runtime::__live_slot_count();
         Target::initialize_native(&InitializationConfig::default()).expect("native target");
@@ -2288,6 +2288,391 @@ mod tests {
         assert_eq!(
             after, before,
             "temporary compatibility struct leaked: before={before} after={after}"
+        );
+    }
+
+    fn field_def(name: &str, ty: Type) -> crate::front::ast::StructField {
+        crate::front::ast::StructField {
+            ident: name.into(),
+            ty: Some(ty),
+            default_value: None,
+            span: dummy_span(),
+        }
+    }
+
+    fn ptr_mu(ty: Type) -> Type {
+        Type::App(
+            "Ptr".into(),
+            vec![Type::App("MaybeUninit".into(), vec![ty])],
+        )
+    }
+
+    fn runtime_names() -> &'static [&'static str] {
+        &[
+            "__drop",
+            "__clone",
+            "__panic",
+            "__string_new",
+            "__string_eq",
+            "__atom_from_bytes",
+            "__label_new",
+            "__struct_new",
+            "__struct_borrow",
+            "__struct_track_value",
+            "__struct_forget_owned",
+            "__live_slot_count",
+        ]
+    }
+
+    fn compile_slot_fn<'ctx>(
+        compiler: &mut Compiler<'ctx>,
+        context: &'ctx Context,
+        module: &Module<'ctx>,
+        func: hir::Function,
+        pointee: &Type,
+    ) {
+        let layout = compiler.storage_layout(pointee).unwrap();
+        compiler.declare_fn_prototype(&func, module);
+        let fn_val = module.get_function(&func.name).expect("prototype");
+        let entry = context.append_basic_block(fn_val, "entry");
+        compiler.builder.position_at_end(entry);
+        compiler.function_signatures = Some(fn_val);
+        compiler.enter_scope();
+        let slot = compiler
+            .builder
+            .build_alloca(layout.llvm_type, "slot")
+            .unwrap();
+        let p = create_entry_block_alloca(compiler, "p").expect("p");
+        let addr = compiler
+            .builder
+            .build_ptr_to_int(slot, context.i64_type(), "slot_addr")
+            .unwrap();
+        compiler.build_runtime_value_store(
+            p,
+            StoreTag::Int(Tag::RawPtr as u64),
+            StoreValue::Int(addr),
+            "ptr",
+        );
+        compiler.add_variable("p".into(), p.into());
+        for name in runtime_names() {
+            let _ = compiler.get_runtime_fn(module, name).expect(*name);
+        }
+        compiler.compile_block(&func.body, module).expect("compile");
+        if compiler
+            .builder
+            .get_insert_block()
+            .unwrap()
+            .get_terminator()
+            .is_none()
+        {
+            compiler.exit_scope(module).expect("exit");
+        } else if !compiler.scopes.is_empty() {
+            compiler.scopes.pop();
+        }
+        assert!(fn_val.verify(true), "invalid {}", func.name);
+    }
+
+    fn jit_named(module: &Module, name: &str) -> SprsValue {
+        Target::initialize_native(&InitializationConfig::default()).expect("native target");
+        let engine = module
+            .create_jit_execution_engine(OptimizationLevel::None)
+            .expect("jit");
+        map_runtime(&engine, module);
+        if let Some(f) = module.get_function("__string_from_cstr") {
+            engine.add_global_mapping(&f, sprs_runtime::__string_from_cstr as *const () as usize);
+        }
+        type TestFn = unsafe extern "C" fn() -> SprsValue;
+        let f = unsafe { engine.get_function::<TestFn>(name) }.expect("lookup");
+        unsafe { f.call() }
+    }
+
+    fn init_take_body(deref: hir::Expr, value: hir::Expr, taken_ty: Type) -> Vec<hir::Stmt> {
+        vec![
+            stmt(hir::StmtKind::Expr(expr(
+                hir::ExprKind::Macro("init".into(), vec![deref.clone(), value]),
+                Type::Unit,
+            ))),
+            stmt(hir::StmtKind::Return(Some(expr(
+                hir::ExprKind::Macro("take".into(), vec![deref]),
+                taken_ty,
+            )))),
+        ]
+    }
+
+    fn clone_take_body(outer_ty: Type, init_value: hir::Expr) -> Vec<hir::Stmt> {
+        let ptr_mu_ty = ptr_mu(outer_ty.clone());
+        let mu = Type::App("MaybeUninit".into(), vec![outer_ty.clone()]);
+        let ptr_ty = Type::App("Ptr".into(), vec![outer_ty.clone()]);
+        let deref_mu = expr(
+            hir::ExprKind::Deref(Box::new(expr(hir::ExprKind::Var("p".into()), ptr_mu_ty))),
+            mu,
+        );
+        vec![
+            stmt(hir::StmtKind::Expr(expr(
+                hir::ExprKind::Macro("init".into(), vec![deref_mu.clone(), init_value]),
+                Type::Unit,
+            ))),
+            stmt(hir::StmtKind::Var {
+                name: "q".into(),
+                binding_ty: ptr_ty.clone(),
+                is_ambi: false,
+                is_annotated: true,
+                init: expr(
+                    hir::ExprKind::Macro("ref".into(), vec![deref_mu.clone()]),
+                    ptr_ty.clone(),
+                ),
+            }),
+            stmt(hir::StmtKind::Var {
+                name: "copied".into(),
+                binding_ty: outer_ty.clone(),
+                is_ambi: false,
+                is_annotated: true,
+                init: expr(
+                    hir::ExprKind::Deref(Box::new(expr(hir::ExprKind::Var("q".into()), ptr_ty))),
+                    outer_ty.clone(),
+                ),
+            }),
+            stmt(hir::StmtKind::Var {
+                name: "original".into(),
+                binding_ty: outer_ty.clone(),
+                is_ambi: false,
+                is_annotated: true,
+                init: expr(
+                    hir::ExprKind::Macro("take".into(), vec![deref_mu]),
+                    outer_ty,
+                ),
+            }),
+            stmt(hir::StmtKind::Return(Some(expr(
+                hir::ExprKind::Number(1),
+                Type::TypeI64,
+            )))),
+        ]
+    }
+
+    fn i64_fn(name: &str, body: Vec<hir::Stmt>) -> hir::Function {
+        hir::Function {
+            name: name.into(),
+            params: Vec::new(),
+            body,
+            ret_ty: Some(Type::TypeI64),
+            is_public: true,
+            type_params: Vec::new(),
+            when_rules: Vec::new(),
+            span: dummy_span(),
+        }
+    }
+
+    #[test]
+    fn nested_struct_clone_read_no_leak() {
+        let context = Context::create();
+        let builder = context.create_builder();
+        let mut compiler = Compiler::new(&context, builder, "nested.sprs".into());
+        let module = context.create_module("nested_clone");
+        compiler
+            .register_struct("Inner".into(), vec![field_def("value", Type::Str)])
+            .unwrap();
+        compiler
+            .register_struct(
+                "Outer".into(),
+                vec![field_def("inner", Type::Struct("Inner".into()))],
+            )
+            .unwrap();
+        let inner_ty = Type::Struct("Inner".into());
+        let outer_ty = Type::Struct("Outer".into());
+        let inner_init = expr(
+            hir::ExprKind::StructInit {
+                struct_ref: hir::StructRef::Plain("Inner".into()),
+                fields: vec![(0, expr(hir::ExprKind::Str("hello".into()), Type::Str))],
+            },
+            inner_ty,
+        );
+        let outer_init = expr(
+            hir::ExprKind::StructInit {
+                struct_ref: hir::StructRef::Plain("Outer".into()),
+                fields: vec![(0, inner_init)],
+            },
+            outer_ty.clone(),
+        );
+        let func = i64_fn(
+            "nested_clone",
+            clone_take_body(outer_ty.clone(), outer_init),
+        );
+        compile_slot_fn(&mut compiler, &context, &module, func, &outer_ty);
+        let ir = module.print_to_string().to_string();
+        assert!(
+            !ir.contains("clone_forget_temp"),
+            "nested Clone must not forget a source-tracking temp"
+        );
+        let before = sprs_runtime::__live_slot_count();
+        let result = jit_named(&module, "nested_clone");
+        assert_eq!(result.tag, Tag::Integer as i32);
+        assert_eq!(result.data, 1);
+        let after = sprs_runtime::__live_slot_count();
+        assert_eq!(
+            after, before,
+            "nested clone leaked slots: before={before} after={after}"
+        );
+    }
+
+    #[test]
+    fn two_level_nested_struct_clone_no_leak() {
+        let context = Context::create();
+        let builder = context.create_builder();
+        let mut compiler = Compiler::new(&context, builder, "root.sprs".into());
+        let module = context.create_module("root_clone");
+        compiler
+            .register_struct("Leaf".into(), vec![field_def("value", Type::Str)])
+            .unwrap();
+        compiler
+            .register_struct(
+                "Mid".into(),
+                vec![field_def("leaf", Type::Struct("Leaf".into()))],
+            )
+            .unwrap();
+        compiler
+            .register_struct(
+                "Root".into(),
+                vec![field_def("mid", Type::Struct("Mid".into()))],
+            )
+            .unwrap();
+        let leaf_ty = Type::Struct("Leaf".into());
+        let mid_ty = Type::Struct("Mid".into());
+        let root_ty = Type::Struct("Root".into());
+        let leaf = expr(
+            hir::ExprKind::StructInit {
+                struct_ref: hir::StructRef::Plain("Leaf".into()),
+                fields: vec![(0, expr(hir::ExprKind::Str("deep".into()), Type::Str))],
+            },
+            leaf_ty,
+        );
+        let mid = expr(
+            hir::ExprKind::StructInit {
+                struct_ref: hir::StructRef::Plain("Mid".into()),
+                fields: vec![(0, leaf)],
+            },
+            mid_ty,
+        );
+        let root = expr(
+            hir::ExprKind::StructInit {
+                struct_ref: hir::StructRef::Plain("Root".into()),
+                fields: vec![(0, mid)],
+            },
+            root_ty.clone(),
+        );
+        let func = i64_fn("root_clone", clone_take_body(root_ty.clone(), root));
+        compile_slot_fn(&mut compiler, &context, &module, func, &root_ty);
+        let before = sprs_runtime::__live_slot_count();
+        let result = jit_named(&module, "root_clone");
+        assert_eq!(result.tag, Tag::Integer as i32);
+        assert_eq!(result.data, 1);
+        let after = sprs_runtime::__live_slot_count();
+        assert_eq!(
+            after, before,
+            "2-level nested clone leaked slots: before={before} after={after}"
+        );
+    }
+
+    fn jit_any_take(value: hir::Expr) -> SprsValue {
+        let context = Context::create();
+        let builder = context.create_builder();
+        let mut compiler = Compiler::new(&context, builder, "any.sprs".into());
+        let module = context.create_module("any_take");
+        if matches!(&value.ty, Type::Struct(_)) {
+            compiler
+                .register_struct("Box".into(), vec![field_def("value", Type::Str)])
+                .unwrap();
+        }
+        let any = Type::Any;
+        let ptr_mu_ty = ptr_mu(any.clone());
+        let mu = Type::App("MaybeUninit".into(), vec![any.clone()]);
+        let deref = expr(
+            hir::ExprKind::Deref(Box::new(expr(hir::ExprKind::Var("p".into()), ptr_mu_ty))),
+            mu,
+        );
+        let func = hir::Function {
+            name: "any_take".into(),
+            params: Vec::new(),
+            body: init_take_body(deref, value, any.clone()),
+            ret_ty: Some(any),
+            is_public: true,
+            type_params: Vec::new(),
+            when_rules: Vec::new(),
+            span: dummy_span(),
+        };
+        compile_slot_fn(&mut compiler, &context, &module, func, &Type::Any);
+        jit_named(&module, "any_take")
+    }
+
+    #[test]
+    fn any_storage_roundtrips() {
+        let i64_v = jit_any_take(expr(hir::ExprKind::Number(41), Type::TypeI64));
+        assert_eq!(i64_v.tag, Tag::Integer as i32);
+        assert_eq!(i64_v.data, 41);
+
+        let b = jit_any_take(expr(hir::ExprKind::Bool(true), Type::Bool));
+        assert_eq!(b.tag, Tag::Boolean as i32);
+        assert_eq!(b.data, 1);
+
+        let f = jit_any_take(expr(hir::ExprKind::Float(2.5), Type::TypeF64));
+        assert_eq!(f.tag, Tag::Float as i32);
+
+        let s = jit_any_take(expr(hir::ExprKind::Str("hello".into()), Type::Str));
+        assert_eq!(s.tag, Tag::String as i32);
+        sprs_runtime::__drop(s.tag, s.data);
+
+        let atom = jit_any_take(expr(hir::ExprKind::AtomRef("ready".into()), Type::Label));
+        assert_eq!(atom.tag, Tag::Atom as i32);
+
+        let payload = jit_any_take(expr(
+            hir::ExprKind::Label(
+                LabelName::Static("ok".into()),
+                Box::new(expr(hir::ExprKind::Number(42), Type::TypeI64)),
+            ),
+            Type::Label,
+        ));
+        assert_eq!(payload.tag, Tag::Label as i32);
+        sprs_runtime::__drop(payload.tag, payload.data);
+
+        let boxed = jit_any_take(expr(
+            hir::ExprKind::StructInit {
+                struct_ref: hir::StructRef::Plain("Box".into()),
+                fields: vec![(0, expr(hir::ExprKind::Str("box".into()), Type::Str))],
+            },
+            Type::Struct("Box".into()),
+        ));
+        assert_eq!(boxed.tag, Tag::Struct as i32);
+        sprs_runtime::__drop(boxed.tag, boxed.data);
+    }
+
+    #[test]
+    fn any_clone_read_deep_clones_str() {
+        let context = Context::create();
+        let builder = context.create_builder();
+        let mut compiler = Compiler::new(&context, builder, "any_clone.sprs".into());
+        let module = context.create_module("any_clone");
+        let any = Type::Any;
+        let func = i64_fn(
+            "any_clone",
+            clone_take_body(
+                any.clone(),
+                expr(hir::ExprKind::Str("hello".into()), Type::Str),
+            ),
+        );
+        compile_slot_fn(&mut compiler, &context, &module, func, &any);
+        let ir = module.print_to_string().to_string();
+        assert!(
+            ir.contains("call { i32, i64 } @__clone")
+                || ir.contains("call {{ i32, i64 }} @__clone"),
+            "Any Clone read must deep-clone"
+        );
+        let before = sprs_runtime::__live_slot_count();
+        let result = jit_named(&module, "any_clone");
+        assert_eq!(result.tag, Tag::Integer as i32);
+        assert_eq!(result.data, 1);
+        let after = sprs_runtime::__live_slot_count();
+        assert_eq!(
+            after, before,
+            "Any clone leaked slots: before={before} after={after}"
         );
     }
 }

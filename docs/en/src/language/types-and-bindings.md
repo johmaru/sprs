@@ -47,8 +47,9 @@ Ordinary expression evaluation still uses a tagged RuntimeValue `{ i32 tag, i64 
 
 - primitives store the value itself (`i8`, `i32`, `f64`; `usize` is pointer-width unsigned)
 - `Ptr(T)` stores a native address
-- runtime-managed owned types (`str`, `Buffer`, exact `:name` / `Atom`, `Label(:name, T)`, and other slab handles) store an owned handle; the payload stays on the slab
-- broad `Label` is a sum of payloadless atoms and payload labels, so `StorageRep(Label)` stores `{tag, data}` to restore the runtime variant. This is not “RuntimeValue as storage”; the discriminant belongs to the sum type
+- runtime-managed owned types (`str`, `Buffer`, `List(T)`, payload `Label(:name, T)`) store a slab handle; the payload stays on the slab
+- exact Atom / closed label members store an intern id (immediate `i64`, not a slab object)
+- broad `Label` and `Any` are sums, so `StorageRep` stores `{tag, data}` to restore the runtime variant. This is not “RuntimeValue as storage”; the discriminant belongs to the sum type
 - structs store each field's `StorageRep` inline, including padding. The struct body itself is not a slab object
 
 `Ptr(T) + n` uses `size_of(StorageRep(T))` as the byte stride. See [Operators](operators.md) and [Memory Management](../reference/memory-management.md).

@@ -5,6 +5,7 @@
 //! pointer stride or storage layout.
 
 use inkwell::AddressSpace;
+use inkwell::OptimizationLevel;
 use inkwell::targets::{
     CodeModel, InitializationConfig, RelocMode, Target, TargetMachine, TargetTriple,
 };
@@ -13,7 +14,7 @@ use inkwell::values::IntValue;
 
 use crate::front::error::SprsError;
 use crate::front::span::Span;
-use crate::front::type_helper::{Type, maybe_uninit_inner};
+use crate::front::type_helper::{Type, is_handle_type, maybe_uninit_inner};
 use crate::llvm::compiler::Compiler;
 
 #[derive(Clone, Copy, Debug)]
@@ -28,6 +29,12 @@ pub fn host_target_machine() -> TargetMachine {
     create_target_machine(&TargetMachine::get_default_triple())
 }
 
+/// Object codegen and layout share one TargetMachine. Opt level does not
+/// change TargetData size/align; keep Default so final objects are not None.
+pub fn target_opt_level() -> OptimizationLevel {
+    OptimizationLevel::Default
+}
+
 pub fn create_target_machine(triple: &TargetTriple) -> TargetMachine {
     let _ = Target::initialize_native(&InitializationConfig::default());
     Target::initialize_x86(&InitializationConfig::default());
@@ -39,7 +46,7 @@ pub fn create_target_machine(triple: &TargetTriple) -> TargetMachine {
             triple,
             "generic",
             "",
-            inkwell::OptimizationLevel::None,
+            target_opt_level(),
             RelocMode::PIC,
             CodeModel::Default,
         )
@@ -59,21 +66,6 @@ fn layout_error(message: impl Into<String>) -> SprsError {
         message: message.into(),
         location: None,
     }
-}
-
-fn is_handle_type(ty: &Type) -> bool {
-    matches!(
-        ty,
-        Type::Str
-            | Type::Buffer
-            | Type::AtomVal
-            | Type::ClosedLabelSet(_)
-            | Type::Range
-            | Type::Atom(_)
-    ) || matches!(
-        ty,
-        Type::App(name, _) if name == "List" || name == "Process" || name == "Label"
-    )
 }
 
 fn is_user_struct_app(ty: &Type) -> bool {
@@ -152,13 +144,13 @@ impl<'ctx> Compiler<'ctx> {
                 Ok(self.context.ptr_type(AddressSpace::default()).into())
             }
             Type::Unit => Ok(self.context.struct_type(&[], false).into()),
-            Type::Label => Ok(self.runtime_value_type.into()),
+            Type::Label | Type::Any => Ok(self.runtime_value_type.into()),
             Type::Struct(_) => self.struct_storage_llvm_type(&ty),
             other if is_handle_type(other) => Ok(self.context.i64_type().into()),
             other if is_user_struct_app(other) => self.struct_storage_llvm_type(other),
-            Type::Any | Type::Named(_) | Type::SelfType | Type::Param(_) => Err(layout_error(
-                format!("no concrete StorageRep for unresolved type {ty}"),
-            )),
+            Type::Named(_) | Type::SelfType | Type::Param(_) => Err(layout_error(format!(
+                "no concrete StorageRep for unresolved type {ty}"
+            ))),
             other => Err(layout_error(format!(
                 "no concrete StorageRep for type {other}"
             ))),
@@ -274,6 +266,7 @@ mod tests {
         StructField as HirStructField, StructId, StructInstanceId, StructSpecialization,
     };
     use crate::front::type_helper::{maybe_uninit_type, ptr_type};
+    use inkwell::OptimizationLevel;
     use inkwell::context::Context;
 
     fn field(name: &str, ty: Type) -> StructField {
@@ -444,6 +437,13 @@ mod tests {
             .unwrap();
         assert_eq!(mu.size, label.size);
         assert_eq!(mu.align, label.align);
+        let any = compiler.storage_layout(&Type::Any).unwrap();
+        assert_eq!(any.size, label.size);
+        assert_eq!(any.align, label.align);
+        let mu_any = compiler
+            .storage_layout(&maybe_uninit_type(Type::Any))
+            .unwrap();
+        assert_eq!(mu_any.size, any.size);
         assert_eq!(compiler.storage_layout(&Type::AtomVal).unwrap().size, 8);
         assert_eq!(
             compiler
@@ -455,6 +455,12 @@ mod tests {
                 .size,
             8
         );
+    }
+
+    #[test]
+    fn object_codegen_uses_default_optimization() {
+        assert_eq!(target_opt_level(), OptimizationLevel::Default);
+        assert_ne!(target_opt_level(), OptimizationLevel::None);
     }
 
     #[test]

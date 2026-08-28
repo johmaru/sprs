@@ -246,6 +246,7 @@ pub fn is_storage_indirect(ty: &Type) -> bool {
         Type::Str
             | Type::Buffer
             | Type::Label
+            | Type::Any
             | Type::AtomVal
             | Type::ClosedLabelSet(_)
             | Type::Range
@@ -266,10 +267,26 @@ pub fn is_user_struct_type(ty: &Type) -> bool {
     }
 }
 
-/// Broad `Label` is a sum of Atom and payload Label, so StorageRep stores
-/// the runtime tag plus data. Exact atoms / `Label(:name, T)` stay handles.
+/// Broad `Label` and `Any` are sums, so StorageRep stores `{tag, data}`
+/// to restore the runtime variant. Exact atoms / `Label(:name, T)` stay i64.
 pub fn is_tagged_storage(ty: &Type) -> bool {
-    matches!(ty, Type::Label)
+    matches!(ty, Type::Label | Type::Any)
+}
+
+/// StorageRep is a single i64 (slab handle, intern id, or process id).
+pub fn is_handle_type(ty: &Type) -> bool {
+    matches!(
+        ty,
+        Type::Str
+            | Type::Buffer
+            | Type::AtomVal
+            | Type::ClosedLabelSet(_)
+            | Type::Range
+            | Type::Atom(_)
+    ) || matches!(
+        ty,
+        Type::App(name, _) if name == "List" || name == "Process" || name == "Label"
+    )
 }
 
 /// Result type tracked by `Process(T)`, if this is a process constructor app.
@@ -916,6 +933,24 @@ mod tests {
             .unwrap(),
             Type::App("MaybeUninit".into(), vec![Type::TypeI64])
         );
+    }
+
+    #[test]
+    fn tagged_and_handle_storage_classification() {
+        assert!(is_tagged_storage(&Type::Label));
+        assert!(is_tagged_storage(&Type::Any));
+        assert!(!is_tagged_storage(&Type::AtomVal));
+        assert!(!is_tagged_storage(&Type::App(
+            "Label".into(),
+            vec![Type::Atom("ok".into()), Type::TypeI64]
+        )));
+        assert!(is_handle_type(&Type::Str));
+        assert!(is_handle_type(&Type::AtomVal));
+        assert!(is_handle_type(&Type::Atom("ok".into())));
+        assert!(!is_handle_type(&Type::Label));
+        assert!(!is_handle_type(&Type::Any));
+        assert!(is_storage_indirect(&Type::Any));
+        assert!(is_storage_indirect(&Type::Label));
     }
 
     #[test]

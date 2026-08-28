@@ -45,8 +45,9 @@
 
 - プリミティブは値そのものを置く（`i8`、`i32`、`f64`。`usize` は pointer 幅の符号なし整数）
 - `Ptr(T)` はネイティブアドレスを置く
-- runtime 管理の owned 型（`str`、`Buffer`、正確な `:name` / `Atom`、`Label(:name, T)` など）は owned ハンドルを置く。payload は slab に残る
-- 広い `Label` は payload なし Atom と payload 付き Label の直和なので、`StorageRep(Label)` は runtime variant を復元するために `{tag, data}` を置く。これは「RuntimeValue を storage に使う」ではなく、直和型自身が discriminant を持つためである
+- runtime 管理の owned 型（`str`、`Buffer`、`List(T)`、payload の `Label(:name, T)`）は slab ハンドルを置く。payload は slab に残る
+- 正確な Atom / 閉じたラベル集合の要素は intern id を置く（即値の `i64` であり、slab オブジェクトではない）
+- 広い `Label` と `Any` は直和なので、`StorageRep` は runtime variant を復元するために `{tag, data}` を置く。これは「RuntimeValue を storage に使う」ではなく、直和型自身が discriminant を持つためである
 - 構造体は各 field の `StorageRep` を padding 込みで inline 配置する。構造体本体は slab オブジェクトではない
 
 `Ptr(T) + n` のバイト stride は `size_of(StorageRep(T))` です。[演算子](operators.md) と [メモリ管理](../reference/memory-management.md) を参照してください。

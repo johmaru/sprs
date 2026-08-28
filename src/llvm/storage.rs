@@ -7,7 +7,9 @@ use inkwell::values::{BasicValueEnum, IntValue, PointerValue, ValueKind};
 
 use crate::front::error::SprsError;
 use crate::front::hir;
-use crate::front::type_helper::{Type, is_tagged_storage, is_user_struct_type, ptr_element};
+use crate::front::type_helper::{
+    Type, is_handle_type, is_tagged_storage, is_user_struct_type, ptr_element,
+};
 use crate::llvm::builder_helper::BuilderExt;
 use crate::llvm::compiler::{Compiler, StoreTag, StoreValue, Tag};
 use crate::llvm::layout::unwrap_storage_type;
@@ -25,21 +27,6 @@ fn storage_error(message: impl Into<String>) -> SprsError {
         message: message.into(),
         location: None,
     }
-}
-
-fn is_handle_type(ty: &Type) -> bool {
-    matches!(
-        ty,
-        Type::Str
-            | Type::Buffer
-            | Type::AtomVal
-            | Type::ClosedLabelSet(_)
-            | Type::Range
-            | Type::Atom(_)
-    ) || matches!(
-        ty,
-        Type::App(name, _) if name == "List" || name == "Process" || name == "Label"
-    )
 }
 
 fn is_user_struct(ty: &Type) -> bool {
@@ -172,24 +159,23 @@ pub fn load_storage_as_runtime<'ctx>(
     mode: StorageLoad,
 ) -> Result<PointerValue<'ctx>, SprsError> {
     let ty = unwrap_storage_type(ty);
-    let loaded = load_storage_value(compiler, module, place, &ty)?;
     match mode {
-        StorageLoad::Clone => {
-            let cloned = clone_runtime_value(compiler, loaded, module)?;
-            if is_user_struct(&ty) {
-                let handle = load_runtime_data(compiler, loaded, "clone_temp_struct");
-                let forget_fn = compiler.get_runtime_fn(module, "__struct_forget_owned")?;
-                compiler
-                    .builder
-                    .build_call(forget_fn, &[handle.into()], "clone_forget_temp")
-                    .unwrap();
-                let drop_fn = compiler.get_runtime_fn(module, "__drop")?;
-                drop_var(compiler, loaded, drop_fn, "clone_temp_struct");
-            }
-            Ok(cloned)
-        }
-        StorageLoad::Move => Ok(loaded),
+        StorageLoad::Clone => clone_from_storage(compiler, module, place, &ty),
+        StorageLoad::Move => load_storage_value(compiler, module, place, &ty),
     }
+}
+
+fn clone_from_storage<'ctx>(
+    compiler: &mut Compiler<'ctx>,
+    module: &Module<'ctx>,
+    place: PointerValue<'ctx>,
+    ty: &Type,
+) -> Result<PointerValue<'ctx>, SprsError> {
+    if is_user_struct(ty) {
+        return materialize_struct(compiler, module, place, ty, true);
+    }
+    let loaded = load_storage_value(compiler, module, place, ty)?;
+    clone_runtime_value(compiler, loaded, module)
 }
 
 pub fn store_runtime_to_storage<'ctx>(
@@ -532,6 +518,16 @@ fn unpack_struct<'ctx>(
     place: PointerValue<'ctx>,
     ty: &Type,
 ) -> Result<PointerValue<'ctx>, SprsError> {
+    materialize_struct(compiler, module, place, ty, false)
+}
+
+fn materialize_struct<'ctx>(
+    compiler: &mut Compiler<'ctx>,
+    module: &Module<'ctx>,
+    place: PointerValue<'ctx>,
+    ty: &Type,
+    clone_fields: bool,
+) -> Result<PointerValue<'ctx>, SprsError> {
     let backend = runtime_struct_backend_name(compiler, ty)?;
     let (slab_ty, field_tys) = {
         let def = compiler
@@ -592,7 +588,11 @@ fn unpack_struct<'ctx>(
                 &format!("unpack_src_{index}"),
             )
             .unwrap();
-        let field_runtime = load_storage_value(compiler, module, src, field_ty)?;
+        let field_runtime = if clone_fields {
+            clone_from_storage(compiler, module, src, field_ty)?
+        } else {
+            load_storage_value(compiler, module, src, field_ty)?
+        };
         let dest = compiler
             .builder
             .build_struct_gep(
